@@ -19,6 +19,7 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True  # helps while iterating UI
 jobs = {}
 job_queue = queue.Queue()
 lock = threading.Lock()
+queue_paused = threading.Event()
 
 DEFAULTS = {
     "height": 480,   # using HEIGHT (scale keeps aspect via -1:HEIGHT)
@@ -209,7 +210,13 @@ def find_videos(root_path):
 # -------- Worker thread --------
 def worker():
     while True:
-        job_id = job_queue.get()
+        if queue_paused.is_set():
+            time.sleep(0.2)
+            continue
+        try:
+            job_id = job_queue.get(timeout=0.2)
+        except queue.Empty:
+            continue
         if job_id is None:
             break
         job = jobs.get(job_id)
@@ -260,9 +267,57 @@ def home():
 
 @app.route("/queue")
 def queue_page():
+    limit = request.args.get("limit", 10, type=int)
+    if limit not in (10,25,50,100):
+        limit = 10
+    with job_queue.mutex:
+        queued_ids = list(job_queue.queue)
+    total = len(queued_ids)
     with lock:
-        all_jobs = list(jobs.values())
-    return render_template("queue.html", jobs=all_jobs)
+        ordered_jobs = [jobs[jid] for jid in queued_ids[:limit] if jid in jobs]
+    return render_template(
+        "queue.html",
+        jobs=ordered_jobs,
+        limit=limit,
+        shown=len(ordered_jobs),
+        total=total,
+        paused=queue_paused.is_set(),
+    )
+
+@app.route("/api/queue/<action>", methods=["POST"])
+def api_queue_control(action):
+    if action == "start":
+        queue_paused.clear()
+    elif action == "pause":
+        queue_paused.set()
+    elif action == "stop":
+        queue_paused.set()
+        with job_queue.mutex:
+            ids = list(job_queue.queue)
+            job_queue.queue.clear()
+        with lock:
+            for jid in ids:
+                j = jobs.get(jid)
+                if j and j.get("status") == "queued":
+                    j["status"] = "stopped"
+    return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
+
+@app.route("/api/queue/move/<job_id>/<direction>", methods=["POST"])
+def api_queue_move(job_id, direction):
+    with job_queue.mutex:
+        q = list(job_queue.queue)
+        try:
+            idx = q.index(job_id)
+        except ValueError:
+            pass
+        else:
+            if direction == "up" and idx > 0:
+                q[idx-1], q[idx] = q[idx], q[idx-1]
+            elif direction == "down" and idx < len(q)-1:
+                q[idx+1], q[idx] = q[idx], q[idx+1]
+            job_queue.queue.clear()
+            job_queue.queue.extend(q)
+    return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
 
 @app.route("/completed")
 def completed_page():
