@@ -4,10 +4,30 @@
 
 {% block content %}
   <h1>Queue</h1>
+  <p>Queue status: {{ 'Paused' if paused else 'Running' }}</p>
+  <div style="display:flex;gap:8px;margin-bottom:12px;">
+    <form method="post" action="/api/queue/start?limit={{ limit }}"><button type="submit">Start</button></form>
+    <form method="post" action="/api/queue/pause?limit={{ limit }}"><button type="submit">Pause</button></form>
+    <form method="post" action="/api/queue/stop?limit={{ limit }}"><button type="submit">Stop</button></form>
+    <form method="get" action="/queue" style="margin-left:20px;">
+      Show
+      <select name="limit" onchange="this.form.submit()">
+        {% for opt in [10,25,50,100] %}
+        <option value="{{opt}}" {% if opt==limit %}selected{% endif %}>{{opt}}</option>
+        {% endfor %}
+      </select>
+      items
+    </form>
+  </div>
+  <p>{{ shown }} of {{ total }} items in queue displayed</p>
   <table border="1" cellpadding="6" cellspacing="0">
-    <tr><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
+    <tr><th>Move</th><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
     {% for j in jobs %}
     <tr>
+      <td>
+        <form method="post" action="/api/queue/move/{{ j.id }}/up?limit={{ limit }}" style="display:inline"><button>&uarr;</button></form>
+        <form method="post" action="/api/queue/move/{{ j.id }}/down?limit={{ limit }}" style="display:inline"><button>&darr;</button></form>
+      </td>
       <td>{{ j.id }}</td>
       <td><code>{{ j.video }}</code></td>
       <td>{{ j.status }}</td>
