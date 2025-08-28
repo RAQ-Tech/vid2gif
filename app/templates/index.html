@@ -1,9 +1,9 @@
-<!doctype html>
-<html>
-<head>
-  <title>vid2gif • New Job</title>
+{% extends 'base.html' %}
+
+{% block title %}vid2gif • New Job{% endblock %}
+
+{% block head %}
   <style>
-    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
     input, select, button { font-size: 16px; padding: 8px; }
     label { display:block; margin-top:10px; }
     .row { display:flex; gap:12px; flex-wrap: wrap; }
@@ -26,29 +26,9 @@
     }
     window.addEventListener('DOMContentLoaded', init);
   </script>
-</head>
-<body>
-  <nav class="tabs" style="display:flex;gap:14px;padding:10px 12px;border-bottom:1px solid #ddd;">
-  <a href="/"          class="tab">New Job</a>
-  <a href="/queue"     class="tab">Queue</a>
-  <a href="/completed" class="tab">Completed</a>
-  <a href="/live"      class="tab">Live Logs</a>
-</nav>
-<style>
-  .tabs .tab { color:#0366d6; text-decoration:none; }
-  .tabs .tab:hover { text-decoration:underline; }
-  .tabs .tab.active { font-weight:600; text-decoration:underline; }
-</style>
-<script>
-  (function(){
-    var path = location.pathname.replace(/\/+$/,'') || '/';
-    document.querySelectorAll('.tabs .tab').forEach(function(a){
-      var href = a.getAttribute('href').replace(/\/+$/,'') || '/';
-      if (href === path) a.classList.add('active');
-    });
-  })();
-</script>
+{% endblock %}
 
+{% block content %}
   <h1>New Job</h1>
   <p class="muted">ffmpeg: {{ ffmpeg }}</p>
 
@@ -112,5 +92,5 @@
     <br><br>
     <button type="submit">Add Job</button>
   </form>
-</body>
-</html>
+{% endblock %}
+
