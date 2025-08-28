@@ -198,7 +198,10 @@ def find_videos(root_path):
 def worker():
     while True:
         job_id = job_queue.get()
+        # A ``None`` job_id is a sentinel indicating shutdown.
+        # Make sure to mark the task as done so ``join`` calls do not block.
         if job_id is None:
+            job_queue.task_done()
             break
         job = jobs.get(job_id)
         if not job:
@@ -228,7 +231,16 @@ def worker():
         finally:
             job_queue.task_done()
 
-threading.Thread(target=worker, daemon=True).start()
+# Start the background worker thread and expose a helper to shut it down
+# gracefully.  The thread watches for a ``None`` sentinel on the queue to
+# terminate.
+worker_thread = threading.Thread(target=worker, daemon=True)
+worker_thread.start()
+
+def stop_worker():
+    """Signal the worker thread to exit and wait for it to finish."""
+    job_queue.put(None)
+    worker_thread.join()
 
 # -------- Web routes --------
 @app.route("/")
