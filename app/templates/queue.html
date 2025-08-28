@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><title>vid2gif • Queue</title></head>
+<body style="font-family:system-ui,Arial;margin:24px">
+  <nav class="tabs" style="display:flex;gap:14px;padding:10px 12px;border-bottom:1px solid #ddd;">
+  <a href="/"          class="tab">New Job</a>
+  <a href="/queue"     class="tab">Queue</a>
+  <a href="/completed" class="tab">Completed</a>
+  <a href="/live"      class="tab">Live Logs</a>
+</nav>
+<style>
+  .tabs .tab { color:#0366d6; text-decoration:none; }
+  .tabs .tab:hover { text-decoration:underline; }
+  .tabs .tab.active { font-weight:600; text-decoration:underline; }
+</style>
+<script>
+  (function(){
+    var path = location.pathname.replace(/\/+$/,'') || '/';
+    document.querySelectorAll('.tabs .tab').forEach(function(a){
+      var href = a.getAttribute('href').replace(/\/+$/,'') || '/';
+      if (href === path) a.classList.add('active');
+    });
+  })();
+</script>
+
+  <h1>Queue</h1>
+  <table border="1" cellpadding="6" cellspacing="0">
+    <tr><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
+    {% for j in jobs %}
+    <tr>
+      <td>{{ j.id }}</td>
+      <td><code>{{ j.video }}</code></td>
+      <td>{{ j.status }}</td>
+      <td><code>{{ j.progress_text }}</code></td>
+      <td><a href="/logs/{{ j.id }}">view</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
