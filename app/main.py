@@ -1,4 +1,4 @@
-import os, threading, queue, subprocess, shlex, datetime, time
+import os, threading, queue, subprocess, shlex, datetime, time, logging
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
 
 # -------- Paths & setup --------
@@ -31,15 +31,25 @@ DEFAULTS = {
     "loop_forever": True
 }
 
-def ts(): return datetime.datetime.now().strftime("%H:%M:%S")
+class JobFileHandler(logging.FileHandler):
+    """File handler that fsyncs after each log record."""
 
-def log_write(job, msg):
-    line = f"[{ts()}] {msg}"
-    with open(job["log_path"], "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-        f.flush()  # make sure it hits disk for the tailer
-        os.fsync(f.fileno())
-    job["last_log"] = line
+    def emit(self, record):
+        super().emit(record)
+        if self.stream and hasattr(self.stream, "fileno"):
+            os.fsync(self.stream.fileno())
+
+
+def create_logger(job_id, log_path):
+    logger = logging.getLogger(job_id)
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    handler = JobFileHandler(log_path, encoding="utf-8")
+    fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
+    handler.setFormatter(fmt)
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
 
 def parse_float(s, fb):
     try: return float(s)
@@ -143,16 +153,17 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]
 
     # Log the full command
-    log_write(job, "----- FFMPEG CMD -----")
-    log_write(job, " ".join(shlex.quote(a) for a in args))
+    job["logger"].info("----- FFMPEG CMD -----")
+    job["logger"].info(" ".join(shlex.quote(a) for a in args))
 
     # Run & tee output into the log (stderr merged)
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
     for raw in proc.stdout:
         line = (raw or "").rstrip("\n")
-        if not line: continue
-        log_write(job, line)
+        if not line:
+            continue
+        job["logger"].info(line)
         if "frame=" in line or "time=" in line or "speed=" in line or line.startswith("out_time="):
             job["progress_text"] = line.strip()
     proc.wait()
@@ -165,11 +176,10 @@ def enqueue_job(video_path, cfg):
 
     job_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     log_path = os.path.join(LOG_DIR, f"{job_id}.txt")
-    # Create log immediately so Live tab can tail it
-    with open(log_path, "w", encoding="utf-8") as f:
-        f.write(f"[{ts()}] Job created\n")
-        f.write(f"[{ts()}] Video: {video_path}\n")
-        f.write(f"[{ts()}] Out  : {out_gif}\n")
+    logger = create_logger(job_id, log_path)
+    logger.info("Job created")
+    logger.info(f"Video: {video_path}")
+    logger.info(f"Out  : {out_gif}")
 
     job = {
         "id": job_id,
@@ -178,7 +188,8 @@ def enqueue_job(video_path, cfg):
         "status": "queued",
         "cfg": cfg,
         "log_path": log_path,
-        "progress_text": ""
+        "progress_text": "",
+        "logger": logger,
     }
     with lock:
         jobs[job_id] = job
@@ -206,27 +217,38 @@ def worker():
             continue
         try:
             job["status"] = "running"
-            log_write(job, f"Starting: {job['video']}")
-            log_write(job, "----- PROBE -----")
-            log_write(job, probe_video_details(job["video"]))
-            log_write(job, "----- CONFIG ----")
-            log_write(job, f"height={job['cfg']['height']} fps={job['cfg']['fps']} clip_len={job['cfg']['clip_len']}")
+            job["logger"].info(f"Starting: {job['video']}")
+            job["logger"].info("----- PROBE -----")
+            job["logger"].info(probe_video_details(job["video"]))
+            job["logger"].info("----- CONFIG ----")
+            job["logger"].info(
+                f"height={job['cfg']['height']} fps={job['cfg']['fps']} clip_len={job['cfg']['clip_len']}"
+            )
 
             dur = get_duration(job["video"])
             if not dur or dur < 0.2:
                 job["status"] = "failed"
-                log_write(job, "Could not read duration.")
+                job["logger"].error("Could not read duration.")
             else:
                 segs = build_segments(dur, job["cfg"])
-                log_write(job, f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s")
+                job["logger"].info(
+                    f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s"
+                )
                 ok = make_gif_multi_inputs(job["video"], segs, job["out_gif"], job["cfg"], job)
                 job["status"] = "success" if ok else "failed"
-                log_write(job, ("GIF ready: " if ok else "ffmpeg failed: ") + job["out_gif"])
+                if ok:
+                    job["logger"].info("GIF ready: " + job["out_gif"])
+                else:
+                    job["logger"].error("ffmpeg failed: " + job["out_gif"])
         except Exception as e:
             job["status"] = "failed"
-            log_write(job, f"Exception: {e}")
+            job["logger"].error(f"Exception: {e}")
         finally:
             job_queue.task_done()
+            logger = job.get("logger")
+            if logger:
+                for h in logger.handlers:
+                    h.close()
 
 threading.Thread(target=worker, daemon=True).start()
 
