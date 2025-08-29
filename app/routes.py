@@ -1,0 +1,201 @@
+import os
+import time
+from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
+
+from config import DEFAULTS, LIB_ROOT
+from utils import parse_float, parse_int_list, choose_numeric
+from ffmpeg_utils import ffmpeg_version
+from jobs import (
+    jobs,
+    job_queue,
+    lock,
+    queue_paused,
+    enqueue_job,
+    find_videos,
+)
+
+app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+
+@app.route("/")
+def home():
+    return render_template("index.html", defaults=DEFAULTS, ffmpeg=ffmpeg_version())
+
+
+@app.route("/queue")
+def queue_page():
+    limit = request.args.get("limit", 10, type=int)
+    if limit not in (10, 25, 50, 100):
+        limit = 10
+    with job_queue.mutex:
+        queued_ids = list(job_queue.queue)
+    total = len(queued_ids)
+    with lock:
+        ordered_jobs = [jobs[jid] for jid in queued_ids[:limit] if jid in jobs]
+    return render_template(
+        "queue.html",
+        jobs=ordered_jobs,
+        limit=limit,
+        shown=len(ordered_jobs),
+        total=total,
+        paused=queue_paused.is_set(),
+    )
+
+
+@app.route("/api/queue/<action>", methods=["POST"])
+def api_queue_control(action):
+    if action == "start":
+        queue_paused.clear()
+    elif action == "pause":
+        queue_paused.set()
+    elif action == "stop":
+        queue_paused.set()
+        with job_queue.mutex:
+            ids = list(job_queue.queue)
+            job_queue.queue.clear()
+        with lock:
+            for jid in ids:
+                j = jobs.get(jid)
+                if j and j.get("status") == "queued":
+                    j["status"] = "stopped"
+    return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
+
+
+@app.route("/api/queue/move/<job_id>/<direction>", methods=["POST"])
+def api_queue_move(job_id, direction):
+    with job_queue.mutex:
+        q = list(job_queue.queue)
+        try:
+            idx = q.index(job_id)
+        except ValueError:
+            pass
+        else:
+            if direction == "up" and idx > 0:
+                q[idx - 1], q[idx] = q[idx], q[idx - 1]
+            elif direction == "down" and idx < len(q) - 1:
+                q[idx + 1], q[idx] = q[idx], q[idx + 1]
+            job_queue.queue.clear()
+            job_queue.queue.extend(q)
+    return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
+
+
+@app.route("/completed")
+def completed_page():
+    with lock:
+        all_jobs = [j for j in jobs.values() if j["status"] in ("success", "failed")]
+    return render_template("completed.html", jobs=all_jobs)
+
+
+@app.route("/live")
+def live_page():
+    with lock:
+        all_jobs = list(jobs.values())
+    all_jobs.sort(key=lambda j: j.get("id", ""), reverse=True)
+    return render_template("live.html", jobs=all_jobs)
+
+
+@app.route("/logs/<job_id>")
+def logs(job_id):
+    j = jobs.get(job_id)
+    if not j:
+        return "Not found", 404
+    if not os.path.isfile(j["log_path"]):
+        return "No log", 404
+    text = open(j["log_path"], "r", encoding="utf-8").read()
+    return "<pre style='white-space:pre-wrap;font-family:ui-monospace'>" + text + "</pre>"
+
+
+def _sse_format(line: str) -> str:
+    return "data: " + line.replace("\r", "") + "\n\n"
+
+
+@app.route("/api/stream/<job_id>")
+def api_stream(job_id):
+    j = jobs.get(job_id)
+    if not j or not os.path.isfile(j["log_path"]):
+        def not_found():
+            yield _sse_format("No log yet for this job.")
+
+        return Response(not_found(), mimetype="text/event-stream")
+
+    def tail():
+        path = j["log_path"]
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+        for line in lines[-200:]:
+            yield _sse_format(line.rstrip("\n"))
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(0, os.SEEK_END)
+            idle_ticks = 0
+            while True:
+                chunk = f.readline()
+                if chunk:
+                    idle_ticks = 0
+                    yield _sse_format(chunk.rstrip("\n"))
+                else:
+                    idle_ticks += 1
+                    if idle_ticks % 10 == 0:
+                        yield _sse_format("[heartbeat]")
+                    time.sleep(0.2)
+                    if j.get("status") in ("success", "failed") and idle_ticks > 50:
+                        time.sleep(0.5)
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return Response(tail(), headers=headers, mimetype="text/event-stream")
+
+
+@app.route("/api/status")
+def api_status():
+    with lock:
+        return jsonify(list(jobs.values()))
+
+
+@app.route("/api/add", methods=["POST"])
+def api_add():
+    target = (request.form.get("video", "") or "").strip()
+    if not target.startswith(LIB_ROOT):
+        return jsonify({"error": "Path must be under /library"}), 400
+
+    height = choose_numeric(request.form, "height_preset", "height_custom", int, DEFAULTS["height"])
+    fps = choose_numeric(request.form, "fps_preset", "fps_custom", int, DEFAULTS["fps"])
+    clip_len = choose_numeric(
+        request.form, "clip_len_preset", "clip_len_custom", float, DEFAULTS["clip_len"]
+    )
+
+    cfg = {
+        "height": height,
+        "fps": fps,
+        "clip_len": clip_len,
+        "percent_points": parse_int_list(
+            request.form.get("percent_points", DEFAULTS["percent_points"])
+        )
+        or parse_int_list(DEFAULTS["percent_points"]),
+        "abs_early": parse_float(
+            request.form.get("abs_early", DEFAULTS["abs_early"]), DEFAULTS["abs_early"]
+        ),
+        "abs_late_from_end": parse_float(
+            request.form.get("abs_late_from_end", DEFAULTS["abs_late_from_end"]),
+            DEFAULTS["abs_late_from_end"],
+        ),
+        "start_buffer": parse_float(
+            request.form.get("start_buffer", DEFAULTS["start_buffer"]), DEFAULTS["start_buffer"]
+        ),
+        "end_buffer": parse_float(
+            request.form.get("end_buffer", DEFAULTS["end_buffer"]), DEFAULTS["end_buffer"]
+        ),
+        "loop_forever": (request.form.get("loop_forever", "on") == "on"),
+    }
+
+    if os.path.isdir(target):
+        for v in find_videos(target):
+            enqueue_job(v, cfg)
+    else:
+        enqueue_job(target, cfg)
+
+    return redirect(url_for("live_page"))
+
