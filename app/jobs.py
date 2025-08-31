@@ -98,14 +98,21 @@ def worker():
             job["status"] = "running"
             job["logger"].info(f"Starting: {job['video']}")
             job["logger"].info("----- PROBE -----")
-            job["logger"].info(probe_video_details(job["video"]))
+            details, err = probe_video_details(job["video"])
+            if err:
+                job["logger"].error(err)
+            else:
+                job["logger"].info(details)
             job["logger"].info("----- CONFIG ----")
             job["logger"].info(
                 f"height={job['cfg']['height']} fps={job['cfg']['fps']} clip_len={job['cfg']['clip_len']}"
             )
 
-            dur = get_duration(job["video"])
-            if not dur or dur < 0.2:
+            dur, err = get_duration(job["video"])
+            if err:
+                job["status"] = "failed"
+                job["logger"].error(err)
+            elif not dur or dur < 0.2:
                 job["status"] = "failed"
                 job["logger"].error("Could not read duration.")
             else:
