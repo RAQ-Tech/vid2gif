@@ -3,7 +3,9 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from app.main import parse_int_list, build_segments, DEFAULTS
+from app.utils import parse_int_list
+from app.ffmpeg_utils import build_segments
+from app.config import DEFAULTS
 
 
 def test_parse_int_list_filters_non_ints():

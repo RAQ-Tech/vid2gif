@@ -96,7 +96,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
 
     for s in segs:
         dur = max(0.01, s["end"] - s["start"])
-        args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", video]
+        args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", video]
 
     n = len(segs)
     concat_inputs = "".join(f"[{i}:v]" for i in range(n))
