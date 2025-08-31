@@ -21,9 +21,24 @@ def get_duration(video_path):
         video_path,
     ]
     try:
-        return float(subprocess.check_output(cmd).decode().strip())
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    except Exception as e:
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, f"Command {cmd_str} failed: {e}"
+
+    if proc.returncode != 0:
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, (
+            f"Command {cmd_str} returned {proc.returncode}: {proc.stderr.strip()}"
+        )
+
+    try:
+        return float(proc.stdout.strip()), None
     except Exception:
-        return None
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, (
+            f"Command {cmd_str} produced unexpected output: {proc.stdout.strip()}"
+        )
 
 
 def probe_video_details(video_path):
@@ -40,9 +55,18 @@ def probe_video_details(video_path):
         video_path,
     ]
     try:
-        return subprocess.check_output(cmd, text=True)
-    except Exception:
-        return "ffprobe stream query failed"
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    except Exception as e:
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, f"Command {cmd_str} failed: {e}"
+
+    if proc.returncode != 0:
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, (
+            f"Command {cmd_str} returned {proc.returncode}: {proc.stderr.strip()}"
+        )
+
+    return proc.stdout, None
 
 
 def build_segments(dur, cfg):
