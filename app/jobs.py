@@ -5,7 +5,7 @@ import datetime
 import logging
 import time
 
-from config import LOG_DIR, VIDEO_EXTS, LIB_ROOT
+from config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, TMP_ROOT as PROCESS_TMP_ROOT
 from ffmpeg_utils import (
     get_duration,
     probe_video_details,
@@ -45,6 +45,8 @@ def enqueue_job(video_path, cfg):
     if not video_path.startswith(LIB_ROOT):
         return None, "Path must be under /library"
     out_gif = os.path.join(os.path.dirname(video_path), "poster.gif")
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    tmp_dir = os.path.join(PROCESS_TMP_ROOT, base)
 
     job_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     log_path = os.path.join(LOG_DIR, f"{job_id}.txt")
@@ -57,6 +59,7 @@ def enqueue_job(video_path, cfg):
         "id": job_id,
         "video": video_path,
         "out_gif": out_gif,
+        "tmp_dir": tmp_dir,
         "status": "queued",
         "cfg": cfg,
         "log_path": log_path,
