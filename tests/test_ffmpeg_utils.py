@@ -5,6 +5,8 @@ from app import ffmpeg_utils
 class DummyLogger:
     def info(self, msg):
         pass
+    def warning(self, msg):
+        pass
 
 
 def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
