@@ -1,5 +1,6 @@
 import subprocess
 import shlex
+from collections import deque
 
 
 def ffmpeg_version():
@@ -118,11 +119,14 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
         text=True,
         bufsize=1,
     )
+
+    last_lines = deque(maxlen=20)
     for raw in proc.stdout:
         line = (raw or "").rstrip("\n")
         if not line:
             continue
         job["logger"].info(line)
+        last_lines.append(line)
         if (
             "frame=" in line
             or "time=" in line
@@ -130,6 +134,13 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
             or line.startswith("out_time=")
         ):
             job["progress_text"] = line.strip()
+
     proc.wait()
-    return proc.returncode == 0
+    if proc.returncode != 0:
+        tail = "\n".join(last_lines)
+        msg = f"ffmpeg exited with code {proc.returncode}\n{tail}".rstrip()
+        job["logger"].error(msg)
+        return False, msg
+
+    return True, ""
 
