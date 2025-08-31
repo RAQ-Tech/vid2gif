@@ -113,14 +113,14 @@ def worker():
                 job["logger"].info(
                     f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s"
                 )
-                ok = make_gif_multi_inputs(
+                ok, err_msg = make_gif_multi_inputs(
                     job["video"], segs, job["out_gif"], job["cfg"], job
                 )
                 job["status"] = "success" if ok else "failed"
                 if ok:
                     job["logger"].info("GIF ready: " + job["out_gif"])
                 else:
-                    job["logger"].error("ffmpeg failed: " + job["out_gif"])
+                    job["logger"].error(err_msg)
         except Exception as e:
             job["status"] = "failed"
             job["logger"].error(f"Exception: {e}")
