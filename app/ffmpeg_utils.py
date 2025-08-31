@@ -1,6 +1,8 @@
 import subprocess
 import shlex
+import json
 from collections import deque
+
 
 
 def ffmpeg_version():
@@ -99,6 +101,37 @@ def build_segments(dur, cfg):
     return [{"start": st, "end": min(st + clip, dur)} for st in valid]
 
 
+def _first_video_stream_index(video, logger):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v",
+        "-show_entries",
+        "stream=index,disposition",
+        "-of",
+        "json",
+        video,
+    ]
+    try:
+        info = json.loads(subprocess.check_output(cmd, text=True))
+        streams = info.get("streams", [])
+        idx = 0
+        for i, s in enumerate(streams):
+            if s.get("disposition", {}).get("attached_pic") != 1:
+                idx = i
+                break
+        if streams and streams[0].get("disposition", {}).get("attached_pic") == 1 and idx != 0:
+            logger.warning(
+                "Discarding attached picture stream; using video stream index %s",
+                idx,
+            )
+        return idx
+    except Exception:
+        return 0
+
+
 def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
     fps = int(cfg["fps"])
     height = int(cfg["height"])
@@ -124,7 +157,8 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
         args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", video]
 
     n = len(segs)
-    concat_inputs = "".join(f"[{i}:v]" for i in range(n))
+    stream_idx = _first_video_stream_index(video, job["logger"])
+    concat_inputs = "".join(f"[{i}:v:{stream_idx}]" for i in range(n))
     filter_graph = (
         f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];"
         f"[vcat]fps={fps},scale=-1:{height}:flags=lanczos,format=rgb24,split[s0][s1];"
