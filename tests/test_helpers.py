@@ -1,6 +1,7 @@
 import pytest
 
-from app.main import parse_int_list, choose_numeric, build_segments
+from app.utils import parse_int_list, choose_numeric
+from app.ffmpeg_utils import build_segments
 
 
 def test_parse_int_list_basic():
