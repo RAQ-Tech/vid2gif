@@ -1,4 +1,5 @@
 import subprocess
+import json
 
 from app import ffmpeg_utils
 
@@ -10,8 +11,10 @@ class DummyLogger:
 
     def info(self, msg):
         pass
-    def warning(self, msg):
+    def warning(self, msg, *args):
         pass
+        if args:
+            msg = msg % args
         self.info_msgs.append(msg)
     def error(self, msg):
         self.error_msgs.append(msg)
@@ -67,3 +70,23 @@ def test_make_gif_multi_inputs_logs_failure(monkeypatch):
     assert "ffmpeg exited with code 1" in msg
     assert "last error" in msg
     assert logger.error_msgs and msg == logger.error_msgs[0]
+
+
+def test_first_video_stream_index_skips_attached_picture(monkeypatch):
+    data = {
+        "streams": [
+            {"index": 0, "disposition": {"attached_pic": 1}},
+            {"index": 2, "disposition": {}},
+        ]
+    }
+
+    def fake_check_output(cmd, text=True):
+        return json.dumps(data)
+
+    monkeypatch.setattr(ffmpeg_utils.subprocess, "check_output", fake_check_output)
+    logger = DummyLogger()
+
+    idx = ffmpeg_utils._first_video_stream_index("input.mp4", logger)
+
+    assert idx == 1
+    assert logger.info_msgs

@@ -94,15 +94,11 @@ def _first_video_stream_index(video, logger):
         info = json.loads(subprocess.check_output(cmd, text=True))
         streams = info.get("streams", [])
         idx = 0
-        for s in streams:
+        for i, s in enumerate(streams):
             if s.get("disposition", {}).get("attached_pic") != 1:
-                idx = int(s.get("index", 0))
+                idx = i
                 break
-        if (
-            streams
-            and streams[0].get("disposition", {}).get("attached_pic") == 1
-            and streams[0].get("index", 0) != idx
-        ):
+        if streams and streams[0].get("disposition", {}).get("attached_pic") == 1 and idx != 0:
             logger.warning(
                 "Discarding attached picture stream; using video stream index %s",
                 idx,
