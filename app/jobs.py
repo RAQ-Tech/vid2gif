@@ -4,6 +4,7 @@ import threading
 import datetime
 import logging
 import time
+import shutil
 
 from config import LOG_DIR, VIDEO_EXTS, LIB_ROOT
 from ffmpeg_utils import (
@@ -97,6 +98,15 @@ def worker():
         try:
             job["status"] = "running"
             job["logger"].info(f"Starting: {job['video']}")
+            job["tmp_dir"] = os.path.join(
+                os.path.dirname(job["out_gif"]), f".tmp_{job['id']}"
+            )
+            try:
+                os.makedirs(job["tmp_dir"], exist_ok=True)
+            except Exception as e:
+                job["status"] = "failed"
+                job["logger"].error(f"Failed to create tmp dir: {e}")
+                continue
             job["logger"].info("----- PROBE -----")
             details, err = probe_video_details(job["video"])
             if err:
@@ -120,13 +130,29 @@ def worker():
                 job["logger"].info(
                     f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s"
                 )
+                tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
                 ok, err_msg = make_gif_multi_inputs(
-                    job["video"], segs, job["out_gif"], job["cfg"], job
+                    job["video"], segs, tmp_gif, job["cfg"], job
                 )
-                job["status"] = "success" if ok else "failed"
                 if ok:
-                    job["logger"].info("GIF ready: " + job["out_gif"])
+                    try:
+                        shutil.move(tmp_gif, job["out_gif"])
+                    except Exception as e:
+                        job["status"] = "failed"
+                        job["logger"].error(f"Failed to move GIF: {e}")
+                    else:
+                        if os.path.isfile(job["out_gif"]):
+                            job["status"] = "success"
+                            job["logger"].info("GIF ready: " + job["out_gif"])
+                            try:
+                                shutil.rmtree(job["tmp_dir"])
+                            except Exception as e:
+                                job["logger"].error(f"Failed to remove tmp dir: {e}")
+                        else:
+                            job["status"] = "failed"
+                            job["logger"].error("Moved GIF not found.")
                 else:
+                    job["status"] = "failed"
                     job["logger"].error(err_msg)
         except Exception as e:
             job["status"] = "failed"
