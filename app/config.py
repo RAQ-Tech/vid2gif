@@ -5,9 +5,11 @@ LIB_ROOT   = "/library"
 STATE_ROOT = "/state"
 LOG_DIR    = os.path.join(STATE_ROOT, "logs")
 TMP_ROOT   = os.path.join(STATE_ROOT, "tmp")
+PROCESS_TMP_ROOT = os.path.join(STATE_ROOT, "processing", "tmp")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(TMP_ROOT, exist_ok=True)
+os.makedirs(PROCESS_TMP_ROOT, exist_ok=True)
 
 VIDEO_EXTS = {".mkv",".mp4",".m4v",".mov",".avi",".wmv",".mpg",".mpeg",".webm"}
 
