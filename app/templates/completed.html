@@ -3,24 +3,28 @@
 {% block title %}vid2gif • Completed{% endblock %}
 
 {% block content %}
-  <h1 class="mb-3">Completed</h1>
-  <div class="table-responsive">
-    <table class="table table-striped table-hover">
-      <thead class="table-light">
-        <tr><th>ID</th><th>Video</th><th>Status</th><th>Output</th><th>Log</th></tr>
-      </thead>
-      <tbody>
-      {% for j in jobs %}
-      <tr>
-        <td>{{ j.id }}</td>
-        <td><code>{{ j.video }}</code></td>
-        <td>{{ j.status }}</td>
-        <td><code>{{ j.out_gif }}</code></td>
-        <td><a href="/logs/{{ j.id }}">view</a></td>
-      </tr>
-      {% endfor %}
-      </tbody>
-    </table>
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h1 class="h3 mb-3">Completed</h1>
+      <div class="table-responsive">
+        <table class="table table-striped table-hover">
+          <thead class="table-light">
+            <tr><th>ID</th><th>Video</th><th>Status</th><th>Output</th><th>Log</th></tr>
+          </thead>
+          <tbody>
+          {% for j in jobs %}
+          <tr>
+            <td>{{ j.id }}</td>
+            <td><code>{{ j.video }}</code></td>
+            <td>{{ j.status }}</td>
+            <td><code>{{ j.out_gif }}</code></td>
+            <td><a href="/logs/{{ j.id }}">view</a></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 {% endblock %}
 
