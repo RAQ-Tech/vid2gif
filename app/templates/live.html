@@ -4,9 +4,6 @@
 
 {% block head %}
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
-    .row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
-    select, button { font-size: 14px; padding: 6px 10px; }
     #logbox {
       background: #111; color: #0f0; padding: 12px; border-radius: 8px;
       height: 60vh; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -22,22 +19,22 @@
 {% endblock %}
 
 {% block content %}
-  <h2>Live Logs</h2>
+  <h2 class="mb-3">Live Logs</h2>
 
-  <div class="row">
-    <label for="jobSel">Job:</label>
-    <select id="jobSel" onchange="startStream()">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+    <label for="jobSel" class="form-label m-0 me-2">Job:</label>
+    <select id="jobSel" onchange="startStream()" class="form-select form-select-sm w-auto">
       <option value="">-- select a job --</option>
       {% for j in jobs %}
         <option value="{{ j.id }}">{{ j.id }} | {{ j.status }} | {{ j.video }}</option>
       {% endfor %}
     </select>
-    <button onclick="startStream()">Start</button>
-    <button onclick="stopStream()">Stop</button>
-    <button onclick="clearLog()">Clear</button>
+    <button class="btn btn-primary btn-sm" onclick="startStream()">Start</button>
+    <button class="btn btn-secondary btn-sm" onclick="stopStream()">Stop</button>
+    <button class="btn btn-outline-secondary btn-sm" onclick="clearLog()">Clear</button>
   </div>
 
-  <div id="logbox"></div>
+  <div id="logbox" class="mb-2"></div>
   <div class="statusbar">
     <span id="jobStatus" class="pill queued">queued</span>
     <span id="progressText"></span>
