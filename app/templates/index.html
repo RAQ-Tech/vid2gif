@@ -3,20 +3,12 @@
 {% block title %}vid2gif • New Job{% endblock %}
 
 {% block head %}
-  <style>
-    input, select, button { font-size: 16px; padding: 8px; }
-    label { display:block; margin-top:10px; }
-    .row { display:flex; gap:12px; flex-wrap: wrap; }
-    .nav a { margin-right: 12px; }
-    .inline { display:inline-block; margin-right:12px; }
-    .muted { color:#666; font-size: 12px; }
-  </style>
   <script>
     function toggleCustom(selectElId, customInputId) {
       const sel = document.getElementById(selectElId);
       const inp = document.getElementById(customInputId);
       const useCustom = sel.value === 'custom';
-      inp.style.display = useCustom ? 'inline-block' : 'none';
+      inp.classList.toggle('d-none', !useCustom);
       if (!useCustom) inp.value = '';
     }
     function init() {
@@ -29,68 +21,85 @@
 {% endblock %}
 
 {% block content %}
-  <h1>New Job</h1>
-  <p class="muted">ffmpeg: {{ ffmpeg }}</p>
+  <h1 class="mb-3">New Job</h1>
+  <p class="text-muted">ffmpeg: {{ ffmpeg }}</p>
 
-  <form method="post" action="/api/add">
-    <label>Video path (under /library)</label>
-    <input name="video" placeholder="/library/movies/Example.mp4" style="width:600px" required>
-
-    <div class="row">
-      <div class="inline">
-        <label>Height</label>
-        <select id="height_preset" name="height_preset" onchange="toggleCustom('height_preset','height_custom')">
-          <option value="240">240</option>
-          <option value="360">360</option>
-          <option value="480" selected>480</option>
-          <option value="720">720</option>
-          <option value="1080">1080</option>
-          <option value="custom">Custom…</option>
-        </select>
-        <input id="height_custom" name="height_custom" placeholder="e.g. 500" style="display:none; width:110px">
-      </div>
-
-      <div class="inline">
-        <label>FPS</label>
-        <select id="fps_preset" name="fps_preset" onchange="toggleCustom('fps_preset','fps_custom')">
-          <option value="10">10</option>
-          <option value="12">12</option>
-          <option value="15" selected>15</option>
-          <option value="20">20</option>
-          <option value="24">24</option>
-          <option value="30">30</option>
-          <option value="custom">Custom…</option>
-        </select>
-        <input id="fps_custom" name="fps_custom" placeholder="e.g. 17" style="display:none; width:110px">
-      </div>
-
-      <div class="inline">
-        <label>Clip Length (seconds)</label>
-        <select id="clip_len_preset" name="clip_len_preset" onchange="toggleCustom('clip_len_preset','clip_len_custom')">
-          <option value="1">1</option>
-          <option value="2" selected>2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-          <option value="5">5</option>
-          <option value="custom">Custom…</option>
-        </select>
-        <input id="clip_len_custom" name="clip_len_custom" placeholder="e.g. 2.75" style="display:none; width:110px">
-      </div>
+  <form method="post" action="/api/add" class="row g-3">
+    <div class="col-12">
+      <label class="form-label">Video path (under /library)</label>
+      <input name="video" placeholder="/library/movies/Example.mp4" class="form-control" required>
     </div>
 
-    <label>Percent Points (comma list)</label>
-    <input name="percent_points" value="{{ defaults.percent_points }}" style="width:400px">
-
-    <div class="row">
-      <label>Abs Early (s) <input name="abs_early" value="{{ defaults.abs_early }}"></label>
-      <label>Abs Late from End (s) <input name="abs_late_from_end" value="{{ defaults.abs_late_from_end }}"></label>
-      <label>Start Buffer (s) <input name="start_buffer" value="{{ defaults.start_buffer }}"></label>
-      <label>End Buffer (s) <input name="end_buffer" value="{{ defaults.end_buffer }}"></label>
+    <div class="col-md-4">
+      <label class="form-label">Height</label>
+      <select id="height_preset" name="height_preset" onchange="toggleCustom('height_preset','height_custom')" class="form-select">
+        <option value="240">240</option>
+        <option value="360">360</option>
+        <option value="480" selected>480</option>
+        <option value="720">720</option>
+        <option value="1080">1080</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input id="height_custom" name="height_custom" placeholder="e.g. 500" class="form-control mt-2 d-none">
     </div>
 
-    <label><input type="checkbox" name="loop_forever" checked> Loop forever</label>
-    <br><br>
-    <button type="submit">Add Job</button>
+    <div class="col-md-4">
+      <label class="form-label">FPS</label>
+      <select id="fps_preset" name="fps_preset" onchange="toggleCustom('fps_preset','fps_custom')" class="form-select">
+        <option value="10">10</option>
+        <option value="12">12</option>
+        <option value="15" selected>15</option>
+        <option value="20">20</option>
+        <option value="24">24</option>
+        <option value="30">30</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input id="fps_custom" name="fps_custom" placeholder="e.g. 17" class="form-control mt-2 d-none">
+    </div>
+
+    <div class="col-md-4">
+      <label class="form-label">Clip Length (seconds)</label>
+      <select id="clip_len_preset" name="clip_len_preset" onchange="toggleCustom('clip_len_preset','clip_len_custom')" class="form-select">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input id="clip_len_custom" name="clip_len_custom" placeholder="e.g. 2.75" class="form-control mt-2 d-none">
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">Percent Points (comma list)</label>
+      <input name="percent_points" value="{{ defaults.percent_points }}" class="form-control">
+    </div>
+
+    <div class="col-sm-3">
+      <label class="form-label">Abs Early (s)</label>
+      <input name="abs_early" value="{{ defaults.abs_early }}" class="form-control">
+    </div>
+    <div class="col-sm-3">
+      <label class="form-label">Abs Late from End (s)</label>
+      <input name="abs_late_from_end" value="{{ defaults.abs_late_from_end }}" class="form-control">
+    </div>
+    <div class="col-sm-3">
+      <label class="form-label">Start Buffer (s)</label>
+      <input name="start_buffer" value="{{ defaults.start_buffer }}" class="form-control">
+    </div>
+    <div class="col-sm-3">
+      <label class="form-label">End Buffer (s)</label>
+      <input name="end_buffer" value="{{ defaults.end_buffer }}" class="form-control">
+    </div>
+
+    <div class="col-12 form-check">
+      <input type="checkbox" name="loop_forever" id="loop_forever" class="form-check-input" checked>
+      <label class="form-check-label" for="loop_forever">Loop forever</label>
+    </div>
+
+    <div class="col-12">
+      <button type="submit" class="btn btn-primary">Add Job</button>
+    </div>
   </form>
 {% endblock %}
 
