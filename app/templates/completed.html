@@ -11,7 +11,7 @@
           <thead class="table-light">
             <tr><th>ID</th><th>Video</th><th>Status</th><th>Output</th><th>Log</th></tr>
           </thead>
-          <tbody>
+          <tbody id="completed-body">
           {% for j in jobs %}
           <tr>
             <td>{{ j.id }}</td>
@@ -26,5 +26,32 @@
       </div>
     </div>
   </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    async function refreshCompleted() {
+      try {
+        const res = await fetch('/api/status');
+        const all = await res.json();
+        const completed = all.filter(j => j.status === 'success' || j.status === 'failed');
+        completed.sort((a,b) => b.id.localeCompare(a.id));
+        const tbody = document.getElementById('completed-body');
+        let rows = '';
+        completed.forEach(j => {
+          rows += `<tr><td>${j.id}</td>` +
+                  `<td><code>${j.video}</code></td>` +
+                  `<td>${j.status}</td>` +
+                  `<td><code>${j.out_gif || ''}</code></td>` +
+                  `<td><a href="/logs/${j.id}">view</a></td></tr>`;
+        });
+        tbody.innerHTML = rows;
+      } catch (e) {
+        // ignore
+      }
+    }
+    setInterval(refreshCompleted, 5000);
+    window.addEventListener('load', refreshCompleted);
+  </script>
 {% endblock %}
 
