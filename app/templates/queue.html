@@ -7,11 +7,13 @@
     <div class="card-body">
       <h1 class="h3 mb-3">Queue</h1>
       <p>Queue status:
+        <span id="queue-status">
         {% if paused %}
           <span class="badge bg-secondary">Paused</span>
         {% else %}
           <span class="badge bg-success">Running</span>
         {% endif %}
+        </span>
       </p>
       <div class="d-flex flex-wrap gap-2 mb-3">
         <form method="post" action="/api/queue/start?limit={{ limit }}"><button type="submit" class="btn btn-success btn-sm">Start</button></form>
@@ -27,13 +29,13 @@
           <span class="ms-2">items</span>
         </form>
       </div>
-      <p>{{ shown }} of {{ total }} items in queue displayed</p>
+      <p id="queue-count">{{ shown }} of {{ total }} items in queue displayed</p>
       <div class="table-responsive">
         <table class="table table-striped table-hover align-middle">
           <thead class="table-light">
             <tr><th>Move</th><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
           </thead>
-          <tbody>
+          <tbody id="queue-body">
           {% for j in running_jobs %}
           <tr>
             <td>
@@ -65,5 +67,49 @@
       </div>
     </div>
   </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const limit = {{ limit }};
+    async function refreshQueue() {
+      try {
+        const res = await fetch('/api/queue/status');
+        const data = await res.json();
+        const tbody = document.getElementById('queue-body');
+        const qs = document.getElementById('queue-status');
+        qs.innerHTML = data.paused
+          ? '<span class="badge bg-secondary">Paused</span>'
+          : '<span class="badge bg-success">Running</span>';
+        let rows = '';
+        data.running.forEach(j => {
+          rows += `<tr><td><button class="btn btn-outline-secondary btn-sm" disabled>&uarr;</button>` +
+                  `<button class="btn btn-outline-secondary btn-sm" disabled>&darr;</button></td>` +
+                  `<td>${j.id}</td><td><code>${j.video}</code></td>` +
+                  `<td>${j.status}</td><td><code>${j.progress_text || ''}</code></td>` +
+                  `<td><a href="/logs/${j.id}">view</a></td></tr>`;
+        });
+        const remaining = Math.max(0, limit - data.running.length);
+        data.queued.slice(0, remaining).forEach(j => {
+          rows += `<tr><td>` +
+                  `<form method="post" action="/api/queue/move/${j.id}/up?limit=${limit}" class="d-inline">` +
+                  `<button class="btn btn-outline-secondary btn-sm">&uarr;</button></form>` +
+                  `<form method="post" action="/api/queue/move/${j.id}/down?limit=${limit}" class="d-inline">` +
+                  `<button class="btn btn-outline-secondary btn-sm">&darr;</button></form>` +
+                  `</td><td>${j.id}</td><td><code>${j.video}</code></td>` +
+                  `<td>${j.status}</td><td><code>${j.progress_text || ''}</code></td>` +
+                  `<td><a href="/logs/${j.id}">view</a></td></tr>`;
+        });
+        tbody.innerHTML = rows;
+        const shown = Math.min(limit, data.running.length + data.queued.length);
+        const total = data.running.length + data.queued.length;
+        document.getElementById('queue-count').textContent = `${shown} of ${total} items in queue displayed`;
+      } catch (e) {
+        // ignore
+      }
+    }
+    setInterval(refreshQueue, 1000);
+    window.addEventListener('load', refreshQueue);
+  </script>
 {% endblock %}
 

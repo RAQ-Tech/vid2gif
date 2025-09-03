@@ -91,6 +91,19 @@ def api_queue_move(job_id, direction):
     return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
 
 
+@app.route("/api/queue/status")
+def api_queue_status():
+    with lock:
+        running = [j for j in jobs.values() if j.get("status") == "running"]
+    with job_queue.mutex:
+        queued_ids = list(job_queue.queue)
+    with lock:
+        queued = [jobs[jid] for jid in queued_ids if jid in jobs]
+    return jsonify(
+        {"running": running, "queued": queued, "paused": queue_paused.is_set()}
+    )
+
+
 @app.route("/completed")
 def completed_page():
     with lock:
