@@ -65,5 +65,22 @@
       </div>
     </div>
   </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const sel = document.querySelector('select[name="limit"]');
+      if (!sel) return;
+      const saved = localStorage.getItem('queue_limit');
+      const params = new URLSearchParams(location.search);
+      if (saved && !params.has('limit')) {
+        if (sel.value !== saved) {
+          location.search = '?limit=' + encodeURIComponent(saved);
+          return;
+        }
+      }
+      sel.addEventListener('change', () => {
+        localStorage.setItem('queue_limit', sel.value);
+      });
+    });
+  </script>
 {% endblock %}
 
