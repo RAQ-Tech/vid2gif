@@ -34,6 +34,19 @@
             <tr><th>Move</th><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
           </thead>
           <tbody>
+          {% for j in running_jobs %}
+          <tr>
+            <td>
+              <button class="btn btn-outline-secondary btn-sm" disabled>&uarr;</button>
+              <button class="btn btn-outline-secondary btn-sm" disabled>&darr;</button>
+            </td>
+            <td>{{ j.id }}</td>
+            <td><code>{{ j.video }}</code></td>
+            <td>{{ j.status }}</td>
+            <td><code>{{ j.progress_text }}</code></td>
+            <td><a href="/logs/{{ j.id }}">view</a></td>
+          </tr>
+          {% endfor %}
           {% for j in jobs %}
           <tr>
             <td>
