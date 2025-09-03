@@ -149,6 +149,47 @@ def api_stream(job_id):
     return Response(tail(), headers=headers, mimetype="text/event-stream")
 
 
+@app.route("/api/stream/live")
+def api_stream_live():
+    def tail_live():
+        last_id = None
+        f = None
+        idle_ticks = 0
+        while True:
+            with lock:
+                running = [j for j in jobs.values() if j.get("status") == "running"]
+            running.sort(key=lambda j: j.get("id", ""))
+            cur = running[0] if running else None
+            if cur and cur.get("id") != last_id:
+                if f:
+                    f.close()
+                last_id = cur.get("id")
+                yield _sse_format(f"[job {last_id}]")
+                try:
+                    f = open(cur["log_path"], "r", encoding="utf-8", errors="replace")
+                    lines = f.readlines()
+                except Exception:
+                    f = None
+                    lines = []
+                for line in lines[-200:]:
+                    yield _sse_format(line.rstrip("\n"))
+                if f:
+                    f.seek(0, os.SEEK_END)
+            if f:
+                chunk = f.readline()
+                if chunk:
+                    idle_ticks = 0
+                    yield _sse_format(chunk.rstrip("\n"))
+                    continue
+            idle_ticks += 1
+            if idle_ticks % 10 == 0:
+                yield _sse_format("[heartbeat]")
+            time.sleep(0.2)
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return Response(tail_live(), headers=headers, mimetype="text/event-stream")
+
+
 @app.route("/api/status")
 def api_status():
     with lock:
