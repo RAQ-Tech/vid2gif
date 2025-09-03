@@ -28,16 +28,22 @@ def queue_page():
     limit = request.args.get("limit", 10, type=int)
     if limit not in (10, 25, 50, 100):
         limit = 10
+    with lock:
+        running_jobs = [j for j in jobs.values() if j.get("status") == "running"]
     with job_queue.mutex:
         queued_ids = list(job_queue.queue)
-    total = len(queued_ids)
+    # Display running jobs at the top and fill remaining slots with queued ones
+    remaining = max(0, limit - len(running_jobs))
     with lock:
-        ordered_jobs = [jobs[jid] for jid in queued_ids[:limit] if jid in jobs]
+        ordered_jobs = [jobs[jid] for jid in queued_ids[:remaining] if jid in jobs]
+    shown = len(running_jobs) + len(ordered_jobs)
+    total = len(queued_ids) + len(running_jobs)
     return render_template(
         "queue.html",
+        running_jobs=running_jobs,
         jobs=ordered_jobs,
         limit=limit,
-        shown=len(ordered_jobs),
+        shown=shown,
         total=total,
         paused=queue_paused.is_set(),
     )
@@ -64,6 +70,9 @@ def api_queue_control(action):
 
 @app.route("/api/queue/move/<job_id>/<direction>", methods=["POST"])
 def api_queue_move(job_id, direction):
+    with lock:
+        if jobs.get(job_id, {}).get("status") == "running":
+            return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
     with job_queue.mutex:
         q = list(job_queue.queue)
         try:
