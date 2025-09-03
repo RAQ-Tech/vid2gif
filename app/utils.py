@@ -1,3 +1,5 @@
+import os
+
 
 def parse_float(s, fb):
     try:
@@ -42,4 +44,31 @@ def choose_numeric(form, preset_key, custom_key, caster, default_val):
         except Exception:
             return default_val
     return default_val
+
+def resolve_case_insensitive(path: str):
+    """Return the actual filesystem path matching the given path, ignoring case.
+
+    If any segment does not exist, return None.
+    """
+    if not os.path.isabs(path):
+        return None
+    parts = [p for p in path.split('/') if p]
+    if path.startswith('/'):
+        cur = '/'
+    else:
+        cur = ''
+    for part in parts:
+        try:
+            entries = os.listdir(cur or '/')
+        except Exception:
+            return None
+        match = None
+        for name in entries:
+            if name.lower() == part.lower():
+                match = name
+                break
+        if match is None:
+            return None
+        cur = os.path.join(cur, match)
+    return cur
 

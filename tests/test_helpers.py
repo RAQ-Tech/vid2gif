@@ -1,6 +1,6 @@
 import pytest
 
-from app.utils import parse_int_list, choose_numeric
+from app.utils import parse_int_list, choose_numeric, resolve_case_insensitive
 from app.ffmpeg_utils import build_segments
 
 
@@ -77,3 +77,12 @@ def test_build_segments_deduplicates_close_points():
     }
     segs = build_segments(100.0, cfg)
     assert segs == [{"start": 10.0, "end": 20.0}]
+
+
+def test_resolve_case_insensitive(tmp_path):
+    base = tmp_path / 'Lib'
+    (base / 'Sub').mkdir(parents=True)
+    (base / 'Sub' / 'Video.MP4').write_text('x')
+    path = str(base / 'sub' / 'video.mp4')
+    resolved = resolve_case_insensitive(path)
+    assert resolved == str(base / 'Sub' / 'Video.MP4')

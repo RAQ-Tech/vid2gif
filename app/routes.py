@@ -3,7 +3,7 @@ import time
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
 
 from config import DEFAULTS, LIB_ROOT
-from utils import parse_float, parse_int_list, choose_numeric
+from utils import parse_float, parse_int_list, choose_numeric, resolve_case_insensitive
 from ffmpeg_utils import ffmpeg_version
 from jobs import (
     jobs,
@@ -20,7 +20,9 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 @app.route("/")
 def home():
-    return render_template("index.html", defaults=DEFAULTS, ffmpeg=ffmpeg_version())
+    return render_template(
+        "index.html", defaults=DEFAULTS, ffmpeg=ffmpeg_version(), lib_root=LIB_ROOT
+    )
 
 
 @app.route("/queue")
@@ -205,11 +207,34 @@ def api_status():
         return jsonify(list(jobs.values()))
 
 
+@app.route("/api/listdir")
+def api_listdir():
+    path = request.args.get("path", LIB_ROOT)
+    if not path.lower().startswith(LIB_ROOT.lower()):
+        return jsonify([])
+    real = resolve_case_insensitive(path)
+    if not real or not os.path.isdir(real):
+        return jsonify([])
+    try:
+        entries = [
+            d
+            for d in os.listdir(real)
+            if os.path.isdir(os.path.join(real, d))
+        ]
+        entries.sort()
+    except Exception:
+        entries = []
+    return jsonify(entries)
+
+
 @app.route("/api/add", methods=["POST"])
 def api_add():
     target = (request.form.get("video", "") or "").strip()
-    if not target.startswith(LIB_ROOT):
+    if not target.lower().startswith(LIB_ROOT.lower()):
         return jsonify({"error": "Path must be under /library"}), 400
+    real_target = resolve_case_insensitive(target)
+    if not real_target or not real_target.startswith(LIB_ROOT):
+        return jsonify({"error": "Path not found"}), 400
 
     height = choose_numeric(request.form, "height_preset", "height_custom", int, DEFAULTS["height"])
     fps = choose_numeric(request.form, "fps_preset", "fps_custom", int, DEFAULTS["fps"])
@@ -241,11 +266,11 @@ def api_add():
         "loop_forever": (request.form.get("loop_forever", "on") == "on"),
     }
 
-    if os.path.isdir(target):
-        for v in find_videos(target):
+    if os.path.isdir(real_target):
+        for v in find_videos(real_target):
             enqueue_job(v, cfg)
     else:
-        enqueue_job(target, cfg)
+        enqueue_job(real_target, cfg)
 
     return redirect(url_for("live_page"))
 
