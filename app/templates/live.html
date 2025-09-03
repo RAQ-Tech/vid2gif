@@ -117,6 +117,23 @@
         // ignore
       }
     }, 1000);
+    document.addEventListener('DOMContentLoaded', () => {
+      const jobSel = document.getElementById('jobSel');
+      const auto = document.getElementById('autoscroll');
+      const savedJob = localStorage.getItem('live_jobSel');
+      if (savedJob) {
+        const opt = Array.from(jobSel.options).find(o => o.value === savedJob);
+        if (opt) jobSel.value = savedJob;
+      }
+      const savedAuto = localStorage.getItem('live_autoscroll');
+      if (savedAuto !== null) auto.checked = savedAuto === 'true';
+      jobSel.addEventListener('change', () => {
+        localStorage.setItem('live_jobSel', jobSel.value);
+      });
+      auto.addEventListener('change', () => {
+        localStorage.setItem('live_autoscroll', auto.checked);
+      });
+    });
 
     window.addEventListener('load', startStream);
   </script>

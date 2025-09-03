@@ -36,13 +36,47 @@
       container.appendChild(sel);
     }
 
+    function saveForm() {
+      const form = document.getElementById('newJobForm');
+      Array.from(form.elements).forEach(el => {
+        if (!el.name) return;
+        const key = 'newjob_' + el.name;
+        if (el.type === 'checkbox') {
+          localStorage.setItem(key, el.checked ? '1' : '0');
+        } else {
+          localStorage.setItem(key, el.value);
+        }
+      });
+    }
+
+    function loadForm() {
+      const form = document.getElementById('newJobForm');
+      Array.from(form.elements).forEach(el => {
+        if (!el.name) return;
+        const key = 'newjob_' + el.name;
+        const val = localStorage.getItem(key);
+        if (val === null) return;
+        if (el.type === 'checkbox') {
+          el.checked = val === '1';
+        } else {
+          el.value = val;
+        }
+      });
+    }
+
     async function init() {
+      loadForm();
       toggleCustom('height_preset','height_custom');
       toggleCustom('fps_preset','fps_custom');
       toggleCustom('clip_len_preset','clip_len_custom');
       const vid = document.getElementById('video');
-      vid.value = '{{ lib_root }}';
+      if (!vid.value) {
+        vid.value = '{{ lib_root }}';
+      }
       await addSelect('{{ lib_root }}');
+      const form = document.getElementById('newJobForm');
+      form.addEventListener('input', saveForm);
+      form.addEventListener('change', saveForm);
     }
     window.addEventListener('DOMContentLoaded', init);
   </script>
@@ -56,7 +90,7 @@
           <h1 class="h3 mb-3">New Job</h1>
           <p class="text-muted small">ffmpeg: {{ ffmpeg }}</p>
 
-          <form method="post" action="/api/add" class="row g-3">
+          <form id="newJobForm" method="post" action="/api/add" class="row g-3">
             <div class="col-12">
               <label class="form-label">Video path (under /library)</label>
               <input id="video" name="video" placeholder="/library/movies/Example.mp4" class="form-control" required>
