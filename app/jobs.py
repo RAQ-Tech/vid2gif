@@ -147,10 +147,6 @@ def worker():
                         if os.path.isfile(job["out_gif"]):
                             job["status"] = "success"
                             job["logger"].info("GIF ready: " + job["out_gif"])
-                            try:
-                                shutil.rmtree(job["tmp_dir"])
-                            except Exception as e:
-                                job["logger"].error(f"Failed to remove tmp dir: {e}")
                         else:
                             job["status"] = "failed"
                             job["logger"].error("Moved GIF not found.")
@@ -161,6 +157,12 @@ def worker():
             job["status"] = "failed"
             job["logger"].error(f"Exception: {e}")
         finally:
+            try:
+                tmp_dir = job.get("tmp_dir")
+                if tmp_dir and os.path.isdir(tmp_dir):
+                    shutil.rmtree(tmp_dir, ignore_errors=False)
+            except Exception as e:
+                job["logger"].error(f"Failed to remove tmp dir: {e}")
             job_queue.task_done()
             logger = job.get("logger")
             if logger:
