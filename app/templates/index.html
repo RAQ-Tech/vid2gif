@@ -11,10 +11,38 @@
       inp.classList.toggle('d-none', !useCustom);
       if (!useCustom) inp.value = '';
     }
-    function init() {
+
+    async function fetchDirs(path) {
+      const res = await fetch(`/api/listdir?path=${encodeURIComponent(path)}`);
+      return res.json();
+    }
+
+    async function addSelect(basePath) {
+      const dirs = await fetchDirs(basePath);
+      if (!dirs.length) return;
+      const container = document.getElementById('lib-browser');
+      const sel = document.createElement('select');
+      sel.className = 'form-select mt-2';
+      sel.innerHTML = '<option value="">...</option>' +
+        dirs.map(d => `<option value="${d}">${d}</option>`).join('');
+      sel.addEventListener('change', () => {
+        while (sel.nextSibling) sel.parentNode.removeChild(sel.nextSibling);
+        const vid = document.getElementById('video');
+        const choice = sel.value;
+        const newPath = choice ? `${basePath}/${choice}` : basePath;
+        vid.value = newPath;
+        if (choice) addSelect(newPath);
+      });
+      container.appendChild(sel);
+    }
+
+    async function init() {
       toggleCustom('height_preset','height_custom');
       toggleCustom('fps_preset','fps_custom');
       toggleCustom('clip_len_preset','clip_len_custom');
+      const vid = document.getElementById('video');
+      vid.value = '{{ lib_root }}';
+      await addSelect('{{ lib_root }}');
     }
     window.addEventListener('DOMContentLoaded', init);
   </script>
@@ -31,7 +59,8 @@
           <form method="post" action="/api/add" class="row g-3">
             <div class="col-12">
               <label class="form-label">Video path (under /library)</label>
-              <input name="video" placeholder="/library/movies/Example.mp4" class="form-control" required>
+              <input id="video" name="video" placeholder="/library/movies/Example.mp4" class="form-control" required>
+              <div id="lib-browser" class="d-flex flex-wrap gap-2 mt-2"></div>
             </div>
 
             <div class="col-md-4">
