@@ -27,7 +27,7 @@
       <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
         <label for="jobSel" class="form-label m-0 me-2">Job:</label>
         <select id="jobSel" onchange="startStream()" class="form-select form-select-sm w-auto">
-          <option value="">-- select a job --</option>
+          <option value="live" selected>Live</option>
           {% for j in jobs %}
             <option value="{{ j.id }}">{{ j.id }} | {{ j.status }} | {{ j.video }}</option>
           {% endfor %}
@@ -35,6 +35,10 @@
         <button class="btn btn-primary btn-sm" onclick="startStream()">Start</button>
         <button class="btn btn-secondary btn-sm" onclick="stopStream()">Stop</button>
         <button class="btn btn-outline-secondary btn-sm" onclick="clearLog()">Clear</button>
+        <div class="form-check form-switch ms-2">
+          <input class="form-check-input" type="checkbox" id="autoscroll" checked>
+          <label class="form-check-label" for="autoscroll">Autoscroll</label>
+        </div>
       </div>
 
       <div id="logbox" class="mb-2"></div>
@@ -48,11 +52,14 @@
   <script>
     let es = null;
     let currentJob = "";
+    let autoMode = true;
 
     function append(line) {
       const box = document.getElementById('logbox');
       box.textContent += (box.textContent ? "\n" : "") + line;
-      box.scrollTop = box.scrollHeight;
+      if (document.getElementById('autoscroll').checked) {
+        box.scrollTop = box.scrollHeight;
+      }
     }
     function clearLog() {
       document.getElementById('logbox').textContent = "";
@@ -69,12 +76,13 @@
     function startStream() {
       stopStream();
       const sel = document.getElementById('jobSel');
-      const job = sel.value;
-      if (!job) return;
-      currentJob = job;
+      const job = sel.value || 'live';
+      autoMode = job === 'live';
+      currentJob = autoMode ? '' : job;
       clearLog();
       setStatus('running');
-      es = new EventSource(`/api/stream/${encodeURIComponent(job)}`);
+      const url = job === 'live' ? '/api/stream/live' : `/api/stream/${encodeURIComponent(job)}`;
+      es = new EventSource(url);
       es.onmessage = (e) => {
         append(e.data);
       };
@@ -85,18 +93,32 @@
 
     // Light polling to update status/progress while SSE streams logs
     setInterval(async () => {
-      if (!currentJob) return;
       try {
         const res = await fetch('/api/status');
         const all = await res.json();
-        const j = all.find(x => x.id === currentJob);
-        if (!j) return;
-        document.getElementById('progressText').textContent = j.progress_text || "";
-        setStatus(j.status || "queued");
+        if (autoMode) {
+          const running = all.find(x => x.status === 'running');
+          if (running) {
+            currentJob = running.id;
+            document.getElementById('progressText').textContent = running.progress_text || "";
+            setStatus(running.status || 'queued');
+          } else {
+            currentJob = '';
+            document.getElementById('progressText').textContent = '';
+            setStatus('queued');
+          }
+        } else if (currentJob) {
+          const j = all.find(x => x.id === currentJob);
+          if (!j) return;
+          document.getElementById('progressText').textContent = j.progress_text || "";
+          setStatus(j.status || 'queued');
+        }
       } catch (e) {
         // ignore
       }
     }, 1000);
+
+    window.addEventListener('load', startStream);
   </script>
 {% endblock %}
 
