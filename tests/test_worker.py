@@ -16,10 +16,12 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
     video = tmp_path / 'video.mp4'
     video.write_bytes(b'\x00')
     out_gif = tmp_path / 'poster.gif'
+    tmp_dir = tmp_path / job_id
     job = {
         'id': job_id,
         'video': str(video),
         'out_gif': str(out_gif),
+        'tmp_dir': str(tmp_dir),
         'status': 'queued',
         'cfg': {'height': 100, 'fps': 10, 'clip_len': 1, 'loop_forever': True},
         'log_path': str(tmp_path / 'log.txt'),

@@ -46,10 +46,8 @@ def enqueue_job(video_path, cfg):
     if not video_path.startswith(LIB_ROOT):
         return None, "Path must be under /library"
     out_gif = os.path.join(os.path.dirname(video_path), "poster.gif")
-    base = os.path.splitext(os.path.basename(video_path))[0]
-    tmp_dir = os.path.join(PROCESS_TMP_ROOT, base)
-
     job_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    tmp_dir = os.path.join(PROCESS_TMP_ROOT, job_id)
     log_path = os.path.join(LOG_DIR, f"{job_id}.txt")
     logger = create_logger(job_id, log_path)
     logger.info("Job created")
@@ -101,9 +99,6 @@ def worker():
         try:
             job["status"] = "running"
             job["logger"].info(f"Starting: {job['video']}")
-            job["tmp_dir"] = os.path.join(
-                os.path.dirname(job["out_gif"]), f".tmp_{job['id']}"
-            )
             try:
                 os.makedirs(job["tmp_dir"], exist_ok=True)
             except Exception as e:
