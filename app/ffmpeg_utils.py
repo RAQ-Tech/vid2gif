@@ -162,7 +162,21 @@ def _get_source_fps(video):
 
 
 def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
-    fps = int(cfg["fps"])
+    fps_cfg = cfg["fps"]
+    if fps_cfg == "original":
+        details, err = probe_video_details(video)
+        if err:
+            return False, err
+        try:
+            info = json.loads(details or "{}")
+            stream = info.get("streams", [{}])[0]
+            fps = stream.get("avg_frame_rate", "0")
+            if not fps or fps == "0/0":
+                fps = "15"
+        except Exception as e:
+            return False, str(e)
+    else:
+        fps = str(int(fps_cfg))
     height = int(cfg["height"])
     loop = "0" if cfg["loop_forever"] else "1"
 
