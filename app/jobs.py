@@ -13,12 +13,28 @@ from ffmpeg_utils import (
     build_segments,
     make_gif_multi_inputs,
 )
+from sockets import socketio
 
 
 jobs = {}
 job_queue = queue.Queue()
 lock = threading.Lock()
 queue_paused = threading.Event()
+
+
+def emit_queue_status():
+    if not socketio.server:
+        return
+    with lock:
+        running = [j for j in jobs.values() if j.get("status") == "running"]
+    with job_queue.mutex:
+        queued_ids = list(job_queue.queue)
+    with lock:
+        queued = [jobs[jid] for jid in queued_ids if jid in jobs]
+    socketio.emit(
+        "queue_update",
+        {"running": running, "queued": queued, "paused": queue_paused.is_set()},
+    )
 
 
 class JobFileHandler(logging.FileHandler):
@@ -69,6 +85,7 @@ def enqueue_job(video_path, cfg):
     with lock:
         jobs[job_id] = job
     job_queue.put(job_id)
+    emit_queue_status()
     return job_id, None
 
 
@@ -100,6 +117,7 @@ def worker():
         try:
             job["status"] = "running"
             job["logger"].info(f"Starting: {job['video']}")
+            emit_queue_status()
             try:
                 os.makedirs(job["tmp_dir"], exist_ok=True)
             except Exception as e:
@@ -164,8 +182,16 @@ def worker():
             if logger:
                 for h in logger.handlers:
                     h.close()
+            emit_queue_status()
 
 
 def start_worker():
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=_broadcast_loop, daemon=True).start()
+
+
+def _broadcast_loop():
+    while True:
+        emit_queue_status()
+        time.sleep(1)
 
