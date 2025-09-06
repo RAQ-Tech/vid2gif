@@ -48,6 +48,61 @@ def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
         assert args[idx - 1] == "-i"
 
 
+def test_make_gif_multi_inputs_minterpolate(monkeypatch):
+    video = "input.mp4"
+    segs = [{"start": 0.0, "end": 1.0}]
+    cfg = {"fps": 30, "height": 320, "loop_forever": True, "smooth": True}
+    job = {"logger": DummyLogger(), "progress_text": ""}
+
+    captured = {}
+
+    class DummyPopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.stdout = []
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", DummyPopen)
+    monkeypatch.setattr(ffmpeg_utils, "_get_source_fps", lambda v: 24.0)
+
+    ffmpeg_utils.make_gif_multi_inputs(video, segs, "out.gif", cfg, job)
+
+    args = captured["args"]
+    filt = args[args.index("-filter_complex") + 1]
+    assert "minterpolate=fps=30" in filt
+    assert filt.index("minterpolate=fps=30") < filt.index("fps=30")
+
+
+def test_make_gif_multi_inputs_no_minterpolate_when_match(monkeypatch):
+    video = "input.mp4"
+    segs = [{"start": 0.0, "end": 1.0}]
+    cfg = {"fps": 24, "height": 320, "loop_forever": True, "smooth": True}
+    job = {"logger": DummyLogger(), "progress_text": ""}
+
+    captured = {}
+
+    class DummyPopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.stdout = []
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", DummyPopen)
+    monkeypatch.setattr(ffmpeg_utils, "_get_source_fps", lambda v: 24.0)
+
+    ffmpeg_utils.make_gif_multi_inputs(video, segs, "out.gif", cfg, job)
+
+    args = captured["args"]
+    filt = args[args.index("-filter_complex") + 1]
+    assert "minterpolate" not in filt
+
+
 def test_make_gif_multi_inputs_logs_failure(monkeypatch):
     video = "input.mp4"
     segs = [{"start": 0.0, "end": 1.0}]

@@ -285,6 +285,7 @@ def api_add():
             request.form.get("end_buffer", DEFAULTS["end_buffer"]), DEFAULTS["end_buffer"]
         ),
         "loop_forever": (request.form.get("loop_forever", "on") == "on"),
+        "smooth": (request.form.get("smooth", "off") == "on"),
     }
 
     if os.path.isdir(real_target):

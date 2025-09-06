@@ -132,6 +132,35 @@ def _first_video_stream_index(video, logger):
         return 0
 
 
+def _get_source_fps(video):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        video,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return None
+        rate = proc.stdout.strip()
+        if not rate or rate == "0/0" or "/" not in rate:
+            return None
+        num, den = rate.split("/")
+        den = float(den)
+        if den == 0:
+            return None
+        return float(num) / den
+    except Exception:
+        return None
+
+
 def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
     fps = int(cfg["fps"])
     height = int(cfg["height"])
@@ -159,10 +188,18 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
     n = len(segs)
     stream_idx = _first_video_stream_index(video, job["logger"])
     concat_inputs = "".join(f"[{i}:v:{stream_idx}]" for i in range(n))
+
+    main_filters = ""
+    if cfg.get("smooth"):
+        src_fps = _get_source_fps(video)
+        if src_fps and abs(src_fps - fps) > 0.1:
+            main_filters += f"minterpolate=fps={fps},"
+    main_filters += (
+        f"fps={fps},scale=-1:{height}:flags=lanczos,"
+        "format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+    )
     filter_graph = (
-        f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];"
-        f"[vcat]fps={fps},scale=-1:{height}:flags=lanczos,format=rgb24,split[s0][s1];"
-        f"[s0]palettegen[p];[s1][p]paletteuse"
+        f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];" f"[vcat]{main_filters}"
     )
 
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]
