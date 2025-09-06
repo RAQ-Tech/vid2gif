@@ -250,7 +250,13 @@ def api_add():
         return jsonify({"error": "Path not found"}), 400
 
     height = choose_numeric(request.form, "height_preset", "height_custom", int, DEFAULTS["height"])
-    fps = choose_numeric(request.form, "fps_preset", "fps_custom", int, DEFAULTS["fps"])
+    fps = (
+        "original"
+        if request.form.get("fps_original")
+        else choose_numeric(
+            request.form, "fps_preset", "fps_custom", int, DEFAULTS["fps"]
+        )
+    )
     clip_len = choose_numeric(
         request.form, "clip_len_preset", "clip_len_custom", float, DEFAULTS["clip_len"]
     )

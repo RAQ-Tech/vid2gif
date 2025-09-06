@@ -4,11 +4,13 @@
 
 {% block head %}
   <script>
-    function toggleCustom(selectElId, customInputId) {
+    function toggleCustom(selectElId, customInputId, originalCheckboxId) {
       const sel = document.getElementById(selectElId);
       const inp = document.getElementById(customInputId);
-      const useCustom = sel.value === 'custom';
+      const orig = originalCheckboxId ? document.getElementById(originalCheckboxId) : null;
+      const useCustom = sel.value === 'custom' && !(orig && orig.checked);
       inp.classList.toggle('d-none', !useCustom);
+      inp.disabled = !useCustom;
       if (!useCustom) inp.value = '';
     }
 
@@ -67,7 +69,7 @@
     async function init() {
       loadForm();
       toggleCustom('height_preset','height_custom');
-      toggleCustom('fps_preset','fps_custom');
+      toggleCustom('fps_preset','fps_custom','fps_original');
       toggleCustom('clip_len_preset','clip_len_custom');
       const vid = document.getElementById('video');
       if (!vid.value) {
@@ -112,7 +114,7 @@
 
             <div class="col-md-4">
               <label class="form-label">FPS</label>
-              <select id="fps_preset" name="fps_preset" onchange="toggleCustom('fps_preset','fps_custom')" class="form-select">
+              <select id="fps_preset" name="fps_preset" onchange="toggleCustom('fps_preset','fps_custom','fps_original')" class="form-select">
                 <option value="10">10</option>
                 <option value="12">12</option>
                 <option value="15" selected>15</option>
@@ -122,6 +124,10 @@
                 <option value="custom">Custom…</option>
               </select>
               <input id="fps_custom" name="fps_custom" placeholder="e.g. 17" class="form-control mt-2 d-none">
+              <div class="form-check mt-2">
+                <input type="checkbox" id="fps_original" name="fps_original" class="form-check-input" onchange="toggleCustom('fps_preset','fps_custom','fps_original')">
+                <label class="form-check-label" for="fps_original">Original</label>
+              </div>
             </div>
 
             <div class="col-md-4">
