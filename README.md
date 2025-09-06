@@ -118,7 +118,12 @@ These can be overridden when invoking `python app/main.py` or the Docker contain
 
 4\. Completed GIFs can be downloaded from the \*\*Completed\*\* tab.
 
+\## Smooth Motion
 
+Enable the **Smooth motion** option in the New Job form to generate
+intermediate frames with ffmpeg's `minterpolate` filter when the
+requested GIF FPS differs from the source video. This makes motion look
+fluid but can significantly increase processing time.
 
 \## Contributing
 

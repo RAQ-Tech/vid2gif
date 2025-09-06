@@ -22,5 +22,6 @@ DEFAULTS = {
     "abs_late_from_end": 10.0,
     "start_buffer": 5.0,
     "end_buffer": 5.0,
-    "loop_forever": True
+    "loop_forever": True,
+    "smooth": False,
 }
