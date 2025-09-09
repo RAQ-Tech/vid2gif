@@ -78,6 +78,9 @@ pytest
 
 &nbsp;    -p 904:904 \\
 
+&nbsp;    -e PUID=99 \\
+&nbsp;    -e PGID=100 \\
+
 &nbsp;    -v /path/to/videos:/library \\
 
 &nbsp;    -v /path/to/state:/state \\
@@ -97,6 +100,10 @@ The application looks for a few environment variables to control where data live
 | Variable    | Default      | Purpose                                  |
 
 |-------------|--------------|------------------------------------------|
+
+| `PUID`      | `99`         | User ID the app runs as                  |
+
+| `PGID`      | `100`        | Group ID the app runs as                 |
 
 | `LIB\_ROOT`  | `/library`   | Location of the video library            |
 
