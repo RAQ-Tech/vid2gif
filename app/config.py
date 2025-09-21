@@ -1,15 +1,16 @@
 import os
 
 # -------- Paths & setup --------
-LIB_ROOT   = "/library"
-STATE_ROOT = "/state"
-LOG_DIR    = os.path.join(STATE_ROOT, "logs")
-TMP_ROOT   = os.path.join(STATE_ROOT, "tmp")
-PROCESS_TMP_ROOT = os.path.join(STATE_ROOT, "processing", "tmp")
+LIB_ROOT = os.getenv("LIB_ROOT", "/library")
+STATE_ROOT = os.getenv("STATE_ROOT", "/state")
+LOG_DIR = os.getenv("LOG_DIR", os.path.join(STATE_ROOT, "logs"))
+TMP_ROOT = os.getenv("TMP_ROOT", os.path.join(STATE_ROOT, "tmp"))
+PROCESS_TMP_ROOT = os.getenv(
+    "PROCESS_TMP_ROOT", os.path.join(STATE_ROOT, "processing", "tmp")
+)
 
-os.makedirs(LOG_DIR, exist_ok=True)
-os.makedirs(TMP_ROOT, exist_ok=True)
-os.makedirs(PROCESS_TMP_ROOT, exist_ok=True)
+for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT):
+    os.makedirs(path, exist_ok=True)
 
 VIDEO_EXTS = {".mkv",".mp4",".m4v",".mov",".avi",".wmv",".mpg",".mpeg",".webm"}
 

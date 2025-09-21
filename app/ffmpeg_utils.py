@@ -161,6 +161,26 @@ def _get_source_fps(video):
         return None
 
 
+def _fps_to_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        if "/" in value:
+            num, den = value.split("/", 1)
+            try:
+                den = float(den)
+                if den == 0:
+                    return None
+                return float(num) / den
+            except (ValueError, ZeroDivisionError):
+                return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
     fps_cfg = cfg["fps"]
     if fps_cfg == "original":
@@ -206,7 +226,8 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
     main_filters = ""
     if cfg.get("smooth"):
         src_fps = _get_source_fps(video)
-        if src_fps and abs(src_fps - fps) > 0.1:
+        target_fps = _fps_to_float(fps)
+        if src_fps is not None and target_fps is not None and abs(src_fps - target_fps) > 0.1:
             main_filters += f"minterpolate=fps={fps},"
     main_filters += (
         f"fps={fps},scale=-1:{height}:flags=lanczos,"
