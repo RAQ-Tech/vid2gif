@@ -21,4 +21,6 @@ for dir in /library /state; do
     fi
 done
 
+python -m pip install --no-cache-dir -r /srv/requirements.txt
+
 exec gosu app "$@"
