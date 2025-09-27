@@ -32,7 +32,7 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, 'probe_video_details', lambda v: ('', None))
     monkeypatch.setattr(jobs, 'get_duration', lambda v: (10.0, None))
     monkeypatch.setattr(jobs, 'build_segments', lambda d, c: [{'start': 0, 'end': 1}])
-    def fake_make_gif(video, segs, out_gif, cfg, job):
+    def fake_make_gif(video, segs, out_gif, cfg, job, background_image=None):
         with open(out_gif, 'wb') as f:
             f.write(b'GIF89a')
         return True, ''

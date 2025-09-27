@@ -14,6 +14,7 @@ from ffmpeg_utils import (
     make_gif_multi_inputs,
 )
 from sockets import socketio
+from utils import find_background_image
 
 
 jobs = {}
@@ -144,12 +145,22 @@ def worker():
                 job["logger"].error("Could not read duration.")
             else:
                 segs = build_segments(dur, job["cfg"])
+                bg_image = find_background_image(job["video"])
+                if bg_image:
+                    job["logger"].info(f"Background image: {bg_image}")
+                else:
+                    job["logger"].info("Background image: not found")
                 job["logger"].info(
                     f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s"
                 )
                 tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
                 ok, err_msg = make_gif_multi_inputs(
-                    job["video"], segs, tmp_gif, job["cfg"], job
+                    job["video"],
+                    segs,
+                    tmp_gif,
+                    job["cfg"],
+                    job,
+                    background_image=bg_image,
                 )
                 if ok:
                     try:
