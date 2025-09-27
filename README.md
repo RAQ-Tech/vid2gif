@@ -78,6 +78,9 @@ pytest
 
 &nbsp;    -p 904:904 \\
 
+&nbsp;    -e PUID=99 \\
+&nbsp;    -e PGID=100 \\
+
 &nbsp;    -v /path/to/videos:/library \\
 
 &nbsp;    -v /path/to/state:/state \\
@@ -97,6 +100,10 @@ The application looks for a few environment variables to control where data live
 | Variable    | Default      | Purpose                                  |
 
 |-------------|--------------|------------------------------------------|
+
+| `PUID`      | `99`         | User ID the app runs as                  |
+
+| `PGID`      | `100`        | Group ID the app runs as                 |
 
 | `LIB\_ROOT`  | `/library`   | Location of the video library            |
 
@@ -118,7 +125,12 @@ These can be overridden when invoking `python app/main.py` or the Docker contain
 
 4\. Completed GIFs can be downloaded from the \*\*Completed\*\* tab.
 
+\## Smooth Motion
 
+Enable the **Smooth motion** option in the New Job form to generate
+intermediate frames with ffmpeg's `minterpolate` filter when the
+requested GIF FPS differs from the source video. This makes motion look
+fluid but can significantly increase processing time.
 
 \## Contributing
 

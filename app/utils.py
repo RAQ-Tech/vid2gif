@@ -72,3 +72,36 @@ def resolve_case_insensitive(path: str):
         cur = os.path.join(cur, match)
     return cur
 
+
+def find_background_image(video_path: str):
+    """Return a companion background image for ``video_path`` if present.
+
+    The expected naming convention is ``<video name>-background.<ext>`` where
+    the extension is a common image type.  Matching is case-insensitive.
+    """
+
+    if not video_path:
+        return None
+
+    directory = os.path.dirname(video_path)
+    base_name = os.path.splitext(os.path.basename(video_path))[0]
+    if not directory or not base_name:
+        return None
+
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return None
+
+    target_prefix = f"{base_name}-background".lower()
+    allowed_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+    for entry in entries:
+        name, ext = os.path.splitext(entry)
+        if ext.lower() not in allowed_exts:
+            continue
+        if name.lower() == target_prefix:
+            return os.path.join(directory, entry)
+
+    return None
+

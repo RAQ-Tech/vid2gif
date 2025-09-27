@@ -132,7 +132,56 @@ def _first_video_stream_index(video, logger):
         return 0
 
 
-def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
+def _get_source_fps(video):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        video,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return None
+        rate = proc.stdout.strip()
+        if not rate or rate == "0/0" or "/" not in rate:
+            return None
+        num, den = rate.split("/")
+        den = float(den)
+        if den == 0:
+            return None
+        return float(num) / den
+    except Exception:
+        return None
+
+
+def _fps_to_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        if "/" in value:
+            num, den = value.split("/", 1)
+            try:
+                den = float(den)
+                if den == 0:
+                    return None
+                return float(num) / den
+            except (ValueError, ZeroDivisionError):
+                return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None):
     fps_cfg = cfg["fps"]
     if fps_cfg == "original":
         details, err = probe_video_details(video)
@@ -166,17 +215,46 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
         "-sn",
     ]
 
-    for s in segs:
+    input_refs = []
+
+    if background_image:
+        target_fps = _fps_to_float(fps)
+        if target_fps is None or target_fps <= 0:
+            target_fps = 15.0
+        still_duration = max(1.0 / target_fps, 1 / 30.0)
+        args += [
+            "-loop",
+            "1",
+            "-t",
+            f"{still_duration:.3f}",
+            "-i",
+            background_image,
+        ]
+        input_refs.append("[0:v]")
+
+    stream_idx = _first_video_stream_index(video, job["logger"])
+    video_offset = 1 if background_image else 0
+
+    for i, s in enumerate(segs):
         dur = max(0.01, s["end"] - s["start"])
         args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", video]
+        input_refs.append(f"[{i + video_offset}:v:{stream_idx}]")
 
-    n = len(segs)
-    stream_idx = _first_video_stream_index(video, job["logger"])
-    concat_inputs = "".join(f"[{i}:v:{stream_idx}]" for i in range(n))
+    n = len(input_refs)
+    concat_inputs = "".join(input_refs)
+
+    main_filters = ""
+    if cfg.get("smooth"):
+        src_fps = _get_source_fps(video)
+        target_fps = _fps_to_float(fps)
+        if src_fps is not None and target_fps is not None and abs(src_fps - target_fps) > 0.1:
+            main_filters += f"minterpolate=fps={fps},"
+    main_filters += (
+        f"fps={fps},scale=-1:{height}:flags=lanczos,"
+        "format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+    )
     filter_graph = (
-        f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];"
-        f"[vcat]fps={fps},scale=-1:{height}:flags=lanczos,format=rgb24,split[s0][s1];"
-        f"[s0]palettegen[p];[s1][p]paletteuse"
+        f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];" f"[vcat]{main_filters}"
     )
 
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]

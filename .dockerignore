@@ -1,0 +1,22 @@
+# Ignore Python cache directories
+__pycache__/
+*.py[cod]
+
+# Exclude tests from Docker build context
+/tests/
+
+# Exclude git metadata
+.git/
+
+# Virtual environments and local configuration
+.venv/
+.env
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

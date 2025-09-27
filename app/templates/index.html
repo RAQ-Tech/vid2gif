@@ -170,6 +170,11 @@
               <label class="form-check-label" for="loop_forever">Loop forever</label>
             </div>
 
+            <div class="col-12 form-check">
+              <input type="checkbox" name="smooth" id="smooth" class="form-check-input" {% if defaults.smooth %}checked{% endif %}>
+              <label class="form-check-label" for="smooth">Smooth motion</label>
+            </div>
+
             <div class="col-12">
               <button type="submit" class="btn btn-primary">Add Job</button>
             </div>

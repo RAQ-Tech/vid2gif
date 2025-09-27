@@ -1,6 +1,7 @@
 import os
 import time
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
+from sockets import socketio
 
 from config import DEFAULTS, LIB_ROOT
 from utils import parse_float, parse_int_list, choose_numeric, resolve_case_insensitive
@@ -12,10 +13,17 @@ from jobs import (
     queue_paused,
     enqueue_job,
     find_videos,
+    emit_queue_status,
 )
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+socketio.init_app(app)
+
+
+@socketio.on("connect")
+def _on_connect():
+    emit_queue_status()
 
 
 @app.route("/")
@@ -283,6 +291,7 @@ def api_add():
             request.form.get("end_buffer", DEFAULTS["end_buffer"]), DEFAULTS["end_buffer"]
         ),
         "loop_forever": (request.form.get("loop_forever", "on") == "on"),
+        "smooth": (request.form.get("smooth", "off") == "on"),
     }
 
     if os.path.isdir(real_target):
