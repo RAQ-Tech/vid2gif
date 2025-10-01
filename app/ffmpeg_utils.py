@@ -161,7 +161,7 @@ def _get_source_fps(video):
         return None
 
 
-def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
+def make_gif_multi_inputs(video, segs, out_gif, cfg, job, still_image=None):
     fps = int(cfg["fps"])
     height = int(cfg["height"])
     loop = "0" if cfg["loop_forever"] else "1"
@@ -181,13 +181,25 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job):
         "-sn",
     ]
 
+    inputs = []
+    if still_image:
+        still_duration = max(0.1, float(cfg.get("still_frame_duration", 0.5)))
+        args += ["-loop", "1", "-t", f"{still_duration:.3f}", "-i", still_image]
+        inputs.append({"type": "image"})
+
     for s in segs:
         dur = max(0.01, s["end"] - s["start"])
         args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", video]
+        inputs.append({"type": "video"})
 
-    n = len(segs)
+    n = len(inputs)
     stream_idx = _first_video_stream_index(video, job["logger"])
-    concat_inputs = "".join(f"[{i}:v:{stream_idx}]" for i in range(n))
+    concat_inputs = ""
+    for i, spec in enumerate(inputs):
+        if spec["type"] == "image":
+            concat_inputs += f"[{i}:v:0]"
+        else:
+            concat_inputs += f"[{i}:v:{stream_idx}]"
 
     main_filters = ""
     if cfg.get("smooth"):

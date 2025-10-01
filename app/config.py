@@ -6,12 +6,14 @@ STATE_ROOT = "/state"
 LOG_DIR    = os.path.join(STATE_ROOT, "logs")
 TMP_ROOT   = os.path.join(STATE_ROOT, "tmp")
 PROCESS_TMP_ROOT = os.path.join(STATE_ROOT, "processing", "tmp")
+SKIP_LOG_PATH = os.path.join(LOG_DIR, "gif-skipped.txt")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(TMP_ROOT, exist_ok=True)
 os.makedirs(PROCESS_TMP_ROOT, exist_ok=True)
 
 VIDEO_EXTS = {".mkv",".mp4",".m4v",".mov",".avi",".wmv",".mpg",".mpeg",".webm"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 DEFAULTS = {
     "height": 480,   # using HEIGHT (scale keeps aspect via -1:HEIGHT)
