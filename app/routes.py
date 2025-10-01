@@ -107,7 +107,11 @@ def api_queue_status():
 @app.route("/completed")
 def completed_page():
     with lock:
-        all_jobs = [j for j in jobs.values() if j["status"] in ("success", "failed")]
+        all_jobs = [
+            j
+            for j in jobs.values()
+            if j["status"] in ("success", "failed", "skipped")
+        ]
     return render_template("completed.html", jobs=all_jobs)
 
 
