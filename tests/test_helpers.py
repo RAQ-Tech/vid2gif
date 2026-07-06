@@ -1,6 +1,9 @@
-import pytest
-
-from app.utils import parse_int_list, choose_numeric, resolve_case_insensitive
+from app.utils import (
+    parse_int_list,
+    choose_numeric,
+    resolve_case_insensitive,
+    path_is_under,
+)
 from app.ffmpeg_utils import build_segments
 
 
@@ -86,3 +89,13 @@ def test_resolve_case_insensitive(tmp_path):
     path = str(base / 'sub' / 'video.mp4')
     resolved = resolve_case_insensitive(path)
     assert resolved == str(base / 'Sub' / 'Video.MP4')
+
+
+def test_path_is_under_rejects_prefix_sibling(tmp_path):
+    root = tmp_path / "library"
+    sibling = tmp_path / "library2"
+    root.mkdir()
+    sibling.mkdir()
+
+    assert path_is_under(str(root / "video.mp4"), str(root))
+    assert not path_is_under(str(sibling / "video.mp4"), str(root))

@@ -90,6 +90,21 @@
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
     const limit = {{ limit }};
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
+    }
+    function jobLogHref(id) {
+      return `/logs/${encodeURIComponent(id || '')}`;
+    }
+    function queueMoveAction(id, direction) {
+      return `/api/queue/move/${encodeURIComponent(id || '')}/${direction}?limit=${encodeURIComponent(limit)}`;
+    }
     function updateQueue(data) {
       const tbody = document.getElementById('queue-body');
       const qs = document.getElementById('queue-status');
@@ -100,20 +115,20 @@
       data.running.forEach(j => {
         rows += `<tr><td><button class="btn btn-outline-secondary btn-sm" disabled>&uarr;</button>` +
                 `<button class="btn btn-outline-secondary btn-sm" disabled>&darr;</button></td>` +
-                `<td>${j.id}</td><td><code>${j.video}</code></td>` +
-                `<td>${j.status}</td><td><code>${j.progress_text || ''}</code></td>` +
-                `<td><a href="/logs/${j.id}">view</a></td></tr>`;
+                `<td>${escapeHtml(j.id)}</td><td><code>${escapeHtml(j.video)}</code></td>` +
+                `<td>${escapeHtml(j.status)}</td><td><code>${escapeHtml(j.progress_text)}</code></td>` +
+                `<td><a href="${jobLogHref(j.id)}">view</a></td></tr>`;
       });
       const remaining = Math.max(0, limit - data.running.length);
       data.queued.slice(0, remaining).forEach(j => {
         rows += `<tr><td>` +
-                `<form method="post" action="/api/queue/move/${j.id}/up?limit=${limit}" class="d-inline">` +
+                `<form method="post" action="${queueMoveAction(j.id, 'up')}" class="d-inline">` +
                 `<button class="btn btn-outline-secondary btn-sm">&uarr;</button></form>` +
-                `<form method="post" action="/api/queue/move/${j.id}/down?limit=${limit}" class="d-inline">` +
+                `<form method="post" action="${queueMoveAction(j.id, 'down')}" class="d-inline">` +
                 `<button class="btn btn-outline-secondary btn-sm">&darr;</button></form>` +
-                `</td><td>${j.id}</td><td><code>${j.video}</code></td>` +
-                `<td>${j.status}</td><td><code>${j.progress_text || ''}</code></td>` +
-                `<td><a href="/logs/${j.id}">view</a></td></tr>`;
+                `</td><td>${escapeHtml(j.id)}</td><td><code>${escapeHtml(j.video)}</code></td>` +
+                `<td>${escapeHtml(j.status)}</td><td><code>${escapeHtml(j.progress_text)}</code></td>` +
+                `<td><a href="${jobLogHref(j.id)}">view</a></td></tr>`;
       });
       tbody.innerHTML = rows;
       const shown = Math.min(limit, data.running.length + data.queued.length);

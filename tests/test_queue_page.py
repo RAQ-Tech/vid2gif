@@ -3,10 +3,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(ROOT)
-sys.path.append(os.path.join(ROOT, "app"))
 
 from app.routes import app
-import jobs
+from app import jobs
 
 
 def _make_job(job_id: str, status: str):

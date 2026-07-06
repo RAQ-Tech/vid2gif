@@ -1,6 +1,6 @@
-from routes import app
-from jobs import start_worker
-from sockets import socketio
+from .routes import app
+from .jobs import start_worker
+from .sockets import socketio
 
 
 if __name__ == "__main__":

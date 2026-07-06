@@ -1,20 +1,20 @@
-import os
 import queue
 import threading
 import datetime
 import logging
+import os
 import time
 import shutil
 
-from config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, TMP_ROOT as PROCESS_TMP_ROOT
-from ffmpeg_utils import (
+from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
+from .ffmpeg_utils import (
     get_duration,
     probe_video_details,
     build_segments,
     make_gif_multi_inputs,
 )
-from sockets import socketio
-from utils import find_background_image
+from .sockets import socketio
+from .utils import find_background_image, path_is_under
 
 
 jobs = {}
@@ -23,15 +23,27 @@ lock = threading.Lock()
 queue_paused = threading.Event()
 
 
+def public_job(job):
+    return {
+        "id": job.get("id", ""),
+        "video": job.get("video", ""),
+        "out_gif": job.get("out_gif", ""),
+        "status": job.get("status", ""),
+        "progress_text": job.get("progress_text", ""),
+    }
+
+
 def emit_queue_status():
     if not socketio.server:
         return
     with lock:
-        running = [j for j in jobs.values() if j.get("status") == "running"]
+        running = [
+            public_job(j) for j in jobs.values() if j.get("status") == "running"
+        ]
     with job_queue.mutex:
         queued_ids = list(job_queue.queue)
     with lock:
-        queued = [jobs[jid] for jid in queued_ids if jid in jobs]
+        queued = [public_job(jobs[jid]) for jid in queued_ids if jid in jobs]
     socketio.emit(
         "queue_update",
         {"running": running, "queued": queued, "paused": queue_paused.is_set()},
@@ -60,7 +72,7 @@ def create_logger(job_id, log_path):
 
 
 def enqueue_job(video_path, cfg):
-    if not video_path.startswith(LIB_ROOT):
+    if not path_is_under(video_path, LIB_ROOT):
         return None, "Path must be under /library"
     out_gif = os.path.join(os.path.dirname(video_path), "poster.gif")
     base = os.path.splitext(os.path.basename(video_path))[0]

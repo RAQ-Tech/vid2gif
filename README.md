@@ -1,146 +1,103 @@
-\# vid2gif
+# vid2gif
 
+Dockerized Web UI for generating GIF previews from large video libraries.
 
+## Security Notice
 
-Dockerized WebUI for generating GIF previews from large video libraries.
+vid2gif is intended for trusted private networks only. Do not expose it directly
+to the public internet.
 
+The app can browse mounted library directories, shows video paths and file names
+to users of the Web UI, and can write `poster.gif` next to selected videos. Run
+it behind a firewall or private reverse proxy, and only mount media directories
+that the container should be allowed to inspect and write to.
 
+If you need internet-facing access, add authentication, CSRF protection, rate
+limiting, stricter file-serving rules, and reverse-proxy hardening before
+deployment.
 
+## Testing
 
-
-\## Testing
-
-
-
-Install the dependencies and run the test suite:
-
-
+Install development dependencies, audit runtime dependencies, and run tests:
 
 ```bash
-
-pip install -r requirements.txt
-
-pytest
-
+pip install -r requirements-dev.txt
+python -m pip_audit -r requirements.txt
+python -m pytest
 ```
 
+## Installation
 
+### Local Python
 
+1. Clone the repository and install dependencies:
 
+   ```bash
+   git clone https://github.com/RAQ-Tech/vid2gif.git
+   cd vid2gif
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
-\## Installation
+2. Launch the application:
 
+   ```bash
+   python -m app.main
+   ```
 
+### Docker
 
-\### Local Python
+1. Build the container:
 
-1\. Clone the repository and install dependencies:
+   ```bash
+   docker build -t vid2gif .
+   ```
 
-&nbsp;  ```bash
+2. Run the service, binding your video library and state directories:
 
-&nbsp;  git clone https://github.com/example/vid2gif.git
+   ```bash
+   docker run \
+     -p 904:904 \
+     -e PUID=99 \
+     -e PGID=100 \
+     -v /path/to/videos:/library \
+     -v /path/to/state:/state \
+     vid2gif
+   ```
 
-&nbsp;  cd vid2gif
+## Environment Variables
 
-&nbsp;  python -m venv .venv
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PUID` | `99` | User ID the app runs as in Docker |
+| `PGID` | `100` | Group ID the app runs as in Docker |
+| `LIB_ROOT` | `/library` | Location of the video library |
+| `STATE_ROOT` | `/state` | Base directory for logs and temporary output |
+| `LOG_DIR` | `/state/logs` | Job log directory |
+| `TMP_ROOT` | `/state/tmp` | General temporary directory |
+| `PROCESS_TMP_ROOT` | `/state/processing/tmp` | Per-job processing directory |
+| `SOCKETIO_CORS_ALLOWED_ORIGINS` | same-origin only | Optional comma-separated Socket.IO CORS allowlist; use `*` only on trusted networks |
 
-&nbsp;  source .venv/bin/activate
+These can be overridden when invoking `python -m app.main` or the Docker
+container, for example `docker run -e LIB_ROOT=/media/videos ...`.
 
-&nbsp;  pip install -r requirements.txt
+## Example Workflow
 
-&nbsp;  ```
+1. Start the server locally or via Docker.
+2. Visit [http://localhost:904](http://localhost:904) and select a video or folder under the mounted library.
+3. Submit the job and monitor progress on the **Live Logs** page.
+4. Completed jobs are listed on the **Completed** tab.
 
-2\. Launch the application:
+## Smooth Motion
 
-&nbsp;  ```bash
+Enable the **Smooth motion** option in the New Job form to generate intermediate
+frames with ffmpeg's `minterpolate` filter when the requested GIF FPS differs
+from the source video. This makes motion look fluid but can significantly
+increase processing time.
 
-&nbsp;  python app/main.py
+## Contributing
 
-&nbsp;  ```
-
-
-
-\### Docker
-
-1\. Build the container:
-
-&nbsp;  ```bash
-
-&nbsp;  docker build -t vid2gif .
-
-&nbsp;  ```
-
-2\. Run the service, binding your video library and state directories:
-
-&nbsp;  ```bash
-
-&nbsp;  docker run \\
-
-&nbsp;    -p 904:904 \\
-
-&nbsp;    -e PUID=99 \\
-&nbsp;    -e PGID=100 \\
-
-&nbsp;    -v /path/to/videos:/library \\
-
-&nbsp;    -v /path/to/state:/state \\
-
-&nbsp;    vid2gif
-
-&nbsp;  ```
-
-
-
-\## Environment Variables
-
-The application looks for a few environment variables to control where data lives:
-
-
-
-| Variable    | Default      | Purpose                                  |
-
-|-------------|--------------|------------------------------------------|
-
-| `PUID`      | `99`         | User ID the app runs as                  |
-
-| `PGID`      | `100`        | Group ID the app runs as                 |
-
-| `LIB\_ROOT`  | `/library`   | Location of the video library            |
-
-| `STATE\_ROOT`| `/state`     | Holds logs and temporary GIF output      |
-
-
-
-These can be overridden when invoking `python app/main.py` or the Docker container, e.g. `docker run -e LIB\_ROOT=/media/videos ...`.
-
-
-
-\## Example Workflow
-
-1\. Start the server locally or via Docker as shown above.
-
-2\. Visit \[http://localhost:904](http://localhost:904) and select a video or folder under the mounted library.
-
-3\. Submit the job and monitor progress on the \*\*Live Logs\*\* page.
-
-4\. Completed GIFs can be downloaded from the \*\*Completed\*\* tab.
-
-\## Smooth Motion
-
-Enable the **Smooth motion** option in the New Job form to generate
-intermediate frames with ffmpeg's `minterpolate` filter when the
-requested GIF FPS differs from the source video. This makes motion look
-fluid but can significantly increase processing time.
-
-\## Contributing
-
-\* Follow \[PEP8](https://peps.python.org/pep-0008/) style guidelines; automated formatting with `black` is encouraged.
-
-\* Add tests under \[`tests/`](tests/) and ensure they pass with `pytest` before submitting a pull request.
-
-\* The core application logic lives in \[`app/main.py`](app/main.py); an example test suite is in \[`tests/test\_main.py`](tests/test\_main.py).
-
-
-
-Thanks for contributing!
-
+- Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines.
+- Add tests under [`tests/`](tests/) and ensure they pass with `python -m pytest`.
+- Keep runtime dependencies in `requirements.txt` and development-only tools in `requirements-dev.txt`.

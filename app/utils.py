@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 
 def parse_float(s, fb):
@@ -45,21 +46,36 @@ def choose_numeric(form, preset_key, custom_key, caster, default_val):
             return default_val
     return default_val
 
+def path_is_under(path: str, root: str) -> bool:
+    """Return True when path is contained by root after normalization."""
+    if not path or not root:
+        return False
+    try:
+        path_abs = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        root_abs = os.path.normcase(os.path.realpath(os.path.abspath(root)))
+        return os.path.commonpath([path_abs, root_abs]) == root_abs
+    except (OSError, ValueError):
+        return False
+
 def resolve_case_insensitive(path: str):
     """Return the actual filesystem path matching the given path, ignoring case.
 
     If any segment does not exist, return None.
     """
-    if not os.path.isabs(path):
+    if not path or not os.path.isabs(path):
         return None
-    parts = [p for p in path.split('/') if p]
-    if path.startswith('/'):
-        cur = '/'
-    else:
-        cur = ''
-    for part in parts:
+
+    parts = Path(os.path.abspath(path)).parts
+    if not parts:
+        return None
+
+    cur = parts[0]
+    if not os.path.exists(cur):
+        return None
+
+    for part in parts[1:]:
         try:
-            entries = os.listdir(cur or '/')
+            entries = os.listdir(cur)
         except Exception:
             return None
         match = None

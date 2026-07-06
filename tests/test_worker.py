@@ -5,7 +5,6 @@ import logging
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(ROOT)
-sys.path.append(os.path.join(ROOT, 'app'))
 from app import jobs
 
 def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):

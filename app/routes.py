@@ -1,12 +1,18 @@
 import os
 import time
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
-from sockets import socketio
+from .sockets import socketio
 
-from config import DEFAULTS, LIB_ROOT
-from utils import parse_float, parse_int_list, choose_numeric, resolve_case_insensitive
-from ffmpeg_utils import ffmpeg_version
-from jobs import (
+from .config import DEFAULTS, LIB_ROOT
+from .utils import (
+    parse_float,
+    parse_int_list,
+    choose_numeric,
+    resolve_case_insensitive,
+    path_is_under,
+)
+from .ffmpeg_utils import ffmpeg_version
+from .jobs import (
     jobs,
     job_queue,
     lock,
@@ -14,6 +20,7 @@ from jobs import (
     enqueue_job,
     find_videos,
     emit_queue_status,
+    public_job,
 )
 
 app = Flask(__name__)
@@ -102,11 +109,13 @@ def api_queue_move(job_id, direction):
 @app.route("/api/queue/status")
 def api_queue_status():
     with lock:
-        running = [j for j in jobs.values() if j.get("status") == "running"]
+        running = [
+            public_job(j) for j in jobs.values() if j.get("status") == "running"
+        ]
     with job_queue.mutex:
         queued_ids = list(job_queue.queue)
     with lock:
-        queued = [jobs[jid] for jid in queued_ids if jid in jobs]
+        queued = [public_job(jobs[jid]) for jid in queued_ids if jid in jobs]
     return jsonify(
         {"running": running, "queued": queued, "paused": queue_paused.is_set()}
     )
@@ -134,8 +143,9 @@ def logs(job_id):
         return "Not found", 404
     if not os.path.isfile(j["log_path"]):
         return "No log", 404
-    text = open(j["log_path"], "r", encoding="utf-8").read()
-    return "<pre style='white-space:pre-wrap;font-family:ui-monospace'>" + text + "</pre>"
+    with open(j["log_path"], "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    return Response(text, mimetype="text/plain; charset=utf-8")
 
 
 def _sse_format(line: str) -> str:
@@ -225,16 +235,14 @@ def api_stream_live():
 @app.route("/api/status")
 def api_status():
     with lock:
-        return jsonify(list(jobs.values()))
+        return jsonify([public_job(j) for j in jobs.values()])
 
 
 @app.route("/api/listdir")
 def api_listdir():
     path = request.args.get("path", LIB_ROOT)
-    if not path.lower().startswith(LIB_ROOT.lower()):
-        return jsonify([])
     real = resolve_case_insensitive(path)
-    if not real or not os.path.isdir(real):
+    if not real or not path_is_under(real, LIB_ROOT) or not os.path.isdir(real):
         return jsonify([])
     try:
         entries = [
@@ -251,13 +259,15 @@ def api_listdir():
 @app.route("/api/add", methods=["POST"])
 def api_add():
     target = (request.form.get("video", "") or "").strip()
-    if not target.lower().startswith(LIB_ROOT.lower()):
-        return jsonify({"error": "Path must be under /library"}), 400
     real_target = resolve_case_insensitive(target)
-    if not real_target or not real_target.startswith(LIB_ROOT):
+    if not real_target:
+        return jsonify({"error": "Path not found"}), 400
+    if not path_is_under(real_target, LIB_ROOT):
         return jsonify({"error": "Path not found"}), 400
 
-    height = choose_numeric(request.form, "height_preset", "height_custom", int, DEFAULTS["height"])
+    height = choose_numeric(
+        request.form, "height_preset", "height_custom", int, DEFAULTS["height"]
+    )
     fps = (
         "original"
         if request.form.get("fps_original")
@@ -266,7 +276,11 @@ def api_add():
         )
     )
     clip_len = choose_numeric(
-        request.form, "clip_len_preset", "clip_len_custom", float, DEFAULTS["clip_len"]
+        request.form,
+        "clip_len_preset",
+        "clip_len_custom",
+        float,
+        DEFAULTS["clip_len"],
     )
 
     cfg = {
@@ -285,10 +299,12 @@ def api_add():
             DEFAULTS["abs_late_from_end"],
         ),
         "start_buffer": parse_float(
-            request.form.get("start_buffer", DEFAULTS["start_buffer"]), DEFAULTS["start_buffer"]
+            request.form.get("start_buffer", DEFAULTS["start_buffer"]),
+            DEFAULTS["start_buffer"],
         ),
         "end_buffer": parse_float(
-            request.form.get("end_buffer", DEFAULTS["end_buffer"]), DEFAULTS["end_buffer"]
+            request.form.get("end_buffer", DEFAULTS["end_buffer"]),
+            DEFAULTS["end_buffer"],
         ),
         "loop_forever": (request.form.get("loop_forever", "on") == "on"),
         "smooth": (request.form.get("smooth", "off") == "on"),

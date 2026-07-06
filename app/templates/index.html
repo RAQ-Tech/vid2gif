@@ -25,8 +25,8 @@
       const container = document.getElementById('lib-browser');
       const sel = document.createElement('select');
       sel.className = 'form-select mt-2';
-      sel.innerHTML = '<option value="">...</option>' +
-        dirs.map(d => `<option value="${d}">${d}</option>`).join('');
+      sel.appendChild(new Option('...', ''));
+      dirs.forEach(d => sel.appendChild(new Option(d, d)));
       sel.addEventListener('change', () => {
         while (sel.nextSibling) sel.parentNode.removeChild(sel.nextSibling);
         const vid = document.getElementById('video');

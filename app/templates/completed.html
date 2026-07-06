@@ -30,6 +30,18 @@
 
 {% block scripts %}
   <script>
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
+    }
+    function jobLogHref(id) {
+      return `/logs/${encodeURIComponent(id || '')}`;
+    }
     async function refreshCompleted() {
       try {
         const res = await fetch('/api/status');
@@ -39,11 +51,11 @@
         const tbody = document.getElementById('completed-body');
         let rows = '';
         completed.forEach(j => {
-          rows += `<tr><td>${j.id}</td>` +
-                  `<td><code>${j.video}</code></td>` +
-                  `<td>${j.status}</td>` +
-                  `<td><code>${j.out_gif || ''}</code></td>` +
-                  `<td><a href="/logs/${j.id}">view</a></td></tr>`;
+          rows += `<tr><td>${escapeHtml(j.id)}</td>` +
+                  `<td><code>${escapeHtml(j.video)}</code></td>` +
+                  `<td>${escapeHtml(j.status)}</td>` +
+                  `<td><code>${escapeHtml(j.out_gif)}</code></td>` +
+                  `<td><a href="${jobLogHref(j.id)}">view</a></td></tr>`;
         });
         tbody.innerHTML = rows;
       } catch (e) {
