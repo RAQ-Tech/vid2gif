@@ -20,6 +20,26 @@ class DummyLogger:
         self.error_msgs.append(msg)
 
 
+def _patch_probe(monkeypatch, width=640, height=360, fps="24/1"):
+    def fake_probe(video):
+        return (
+            json.dumps(
+                {
+                    "streams": [
+                        {
+                            "width": width,
+                            "height": height,
+                            "avg_frame_rate": fps,
+                        }
+                    ]
+                }
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(ffmpeg_utils, "probe_video_details", fake_probe)
+
+
 
 def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
     video = "input.mp4"
@@ -28,6 +48,7 @@ def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
     job = {"logger": DummyLogger(), "progress_text": ""}
 
     captured = {}
+    _patch_probe(monkeypatch)
 
     class DummyPopen:
         def __init__(self, args, **kwargs):
@@ -55,6 +76,7 @@ def test_make_gif_multi_inputs_minterpolate(monkeypatch):
     job = {"logger": DummyLogger(), "progress_text": ""}
 
     captured = {}
+    _patch_probe(monkeypatch)
 
     class DummyPopen:
         def __init__(self, args, **kwargs):
@@ -83,6 +105,7 @@ def test_make_gif_multi_inputs_no_minterpolate_when_match(monkeypatch):
     job = {"logger": DummyLogger(), "progress_text": ""}
 
     captured = {}
+    _patch_probe(monkeypatch)
 
     class DummyPopen:
         def __init__(self, args, **kwargs):
@@ -109,6 +132,7 @@ def test_make_gif_multi_inputs_logs_failure(monkeypatch):
     cfg = {"fps": 10, "height": 320, "loop_forever": True}
     logger = DummyLogger()
     job = {"logger": logger, "progress_text": ""}
+    _patch_probe(monkeypatch)
 
     class DummyPopen:
         def __init__(self, args, **kwargs):
@@ -125,6 +149,50 @@ def test_make_gif_multi_inputs_logs_failure(monkeypatch):
     assert "ffmpeg exited with code 1" in msg
     assert "last error" in msg
     assert logger.error_msgs and msg == logger.error_msgs[0]
+
+
+def test_make_gif_multi_inputs_normalizes_background_before_concat(monkeypatch, tmp_path):
+    video = "input.mp4"
+    background = tmp_path / "input-background.png"
+    background.write_bytes(b"png")
+    segs = [{"start": 0.0, "end": 1.0}, {"start": 2.0, "end": 3.0}]
+    cfg = {"fps": 10, "height": 360, "loop_forever": True}
+    job = {"logger": DummyLogger(), "progress_text": ""}
+    captured = {}
+    _patch_probe(monkeypatch, width=3840, height=2160)
+
+    class DummyPopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.stdout = []
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", DummyPopen)
+
+    ok, msg = ffmpeg_utils.make_gif_multi_inputs(
+        video,
+        segs,
+        "out.gif",
+        cfg,
+        job,
+        background_image=str(background),
+    )
+
+    assert ok
+    assert msg == ""
+    args = captured["args"]
+    filt = args[args.index("-filter_complex") + 1]
+    concat_pos = filt.index("concat=n=3")
+    assert filt.index("[0:v]scale=w=640:h=360") < concat_pos
+    assert filt.index("[1:v:0]scale=w=640:h=360") < concat_pos
+    assert filt.index("[2:v:0]scale=w=640:h=360") < concat_pos
+    assert "force_original_aspect_ratio=decrease" in filt
+    assert "pad=640:360:(ow-iw)/2:(oh-ih)/2" in filt
+    assert args.count(str(background)) == 1
+    assert not any(str(background) in arg and arg != str(background) for arg in args)
 
 
 def test_first_video_stream_index_skips_attached_picture(monkeypatch):

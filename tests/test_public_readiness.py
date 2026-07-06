@@ -148,6 +148,17 @@ def test_templates_escape_dynamic_job_tables():
     assert "escapeHtml(j.out_gif)" in completed_template
 
 
+def test_live_logs_tracks_last_job_result_instead_of_forcing_running():
+    live_template = (ROOT / "app" / "templates" / "live.html").read_text()
+
+    assert "setStatus('running')" not in live_template
+    assert "refreshStatus();" in live_template
+    assert "let lastJob" in live_template
+    assert "rememberStreamJob(e.data)" in live_template
+    assert "newestFinishedJob(all)" in live_template
+    assert 'class="pill idle">idle</span>' in live_template
+
+
 def test_dockerfile_uses_package_module_entrypoint():
     dockerfile = (ROOT / "Dockerfile").read_text()
 

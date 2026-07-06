@@ -16,6 +16,7 @@
     .success { background: var(--bs-success); }
     .failed { background: var(--bs-danger); }
     .queued { background: var(--bs-secondary); }
+    .idle { background: var(--bs-secondary); }
   </style>
 {% endblock %}
 
@@ -43,7 +44,7 @@
 
       <div id="logbox" class="mb-2"></div>
       <div class="statusbar">
-        <span id="jobStatus" class="pill queued">queued</span>
+        <span id="jobStatus" class="pill idle">idle</span>
         <span id="progressText"></span>
       </div>
     </div>
@@ -52,6 +53,7 @@
   <script>
     let es = null;
     let currentJob = "";
+    let lastJob = "";
     let autoMode = true;
 
     function append(line) {
@@ -69,8 +71,60 @@
     }
     function setStatus(text) {
       const pill = document.getElementById('jobStatus');
-      pill.textContent = text;
-      pill.className = "pill " + (text || "queued");
+      const status = text || "idle";
+      pill.textContent = status;
+      pill.className = "pill " + status;
+    }
+    function setProgress(text) {
+      document.getElementById('progressText').textContent = text || "";
+    }
+    function rememberStreamJob(line) {
+      const match = line.match(/^\[job ([^\]]+)\]$/);
+      if (!match) return;
+      lastJob = match[1];
+      if (autoMode) {
+        currentJob = lastJob;
+      }
+    }
+    function newestFinishedJob(all) {
+      return all
+        .filter(x => x.status === 'success' || x.status === 'failed')
+        .sort((a, b) => (b.id || '').localeCompare(a.id || ''))[0];
+    }
+    async function refreshStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const all = await res.json();
+        if (autoMode) {
+          const running = all.find(x => x.status === 'running');
+          if (running) {
+            currentJob = running.id;
+            lastJob = running.id;
+            setProgress(running.progress_text);
+            setStatus(running.status);
+            return;
+          }
+          const last = all.find(x => x.id === lastJob || x.id === currentJob) || newestFinishedJob(all);
+          if (last) {
+            lastJob = last.id;
+            currentJob = last.id;
+            setProgress(last.progress_text);
+            setStatus(last.status);
+          } else {
+            currentJob = '';
+            setProgress('');
+            setStatus('idle');
+          }
+        } else if (currentJob) {
+          const j = all.find(x => x.id === currentJob);
+          if (!j) return;
+          lastJob = j.id;
+          setProgress(j.progress_text);
+          setStatus(j.status);
+        }
+      } catch (e) {
+        // ignore
+      }
     }
 
     function startStream() {
@@ -80,10 +134,11 @@
       autoMode = job === 'live';
       currentJob = autoMode ? '' : job;
       clearLog();
-      setStatus('running');
+      refreshStatus();
       const url = job === 'live' ? '/api/stream/live' : `/api/stream/${encodeURIComponent(job)}`;
       es = new EventSource(url);
       es.onmessage = (e) => {
+        rememberStreamJob(e.data);
         append(e.data);
       };
       es.onerror = () => {
@@ -92,31 +147,7 @@
     }
 
     // Light polling to update status/progress while SSE streams logs
-    setInterval(async () => {
-      try {
-        const res = await fetch('/api/status');
-        const all = await res.json();
-        if (autoMode) {
-          const running = all.find(x => x.status === 'running');
-          if (running) {
-            currentJob = running.id;
-            document.getElementById('progressText').textContent = running.progress_text || "";
-            setStatus(running.status || 'queued');
-          } else {
-            currentJob = '';
-            document.getElementById('progressText').textContent = '';
-            setStatus('queued');
-          }
-        } else if (currentJob) {
-          const j = all.find(x => x.id === currentJob);
-          if (!j) return;
-          document.getElementById('progressText').textContent = j.progress_text || "";
-          setStatus(j.status || 'queued');
-        }
-      } catch (e) {
-        // ignore
-      }
-    }, 1000);
+    setInterval(refreshStatus, 1000);
     document.addEventListener('DOMContentLoaded', () => {
       const jobSel = document.getElementById('jobSel');
       const auto = document.getElementById('autoscroll');

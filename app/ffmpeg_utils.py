@@ -181,23 +181,59 @@ def _fps_to_float(value):
     return None
 
 
+def _source_video_info(video):
+    details, err = probe_video_details(video)
+    if err:
+        return None, err
+    try:
+        info = json.loads(details or "{}")
+        stream = info.get("streams", [{}])[0]
+        return stream, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _target_width_for_height(stream, height):
+    try:
+        width = int(stream.get("width") or 0)
+        source_height = int(stream.get("height") or 0)
+    except (TypeError, ValueError):
+        width = 0
+        source_height = 0
+    if width <= 0 or source_height <= 0:
+        return None
+    target_width = round(width * height / source_height)
+    return max(1, target_width)
+
+
+def _normalize_filter(ref, label, width, height):
+    scale = (
+        f"{ref}scale=w={width}:h={height}:force_original_aspect_ratio=decrease:"
+        f"flags=lanczos,"
+    )
+    pad = (
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "setsar=1"
+    )
+    return f"{scale}{pad}[{label}]"
+
+
 def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None):
+    stream, err = _source_video_info(video)
+    if err:
+        return False, err
+
     fps_cfg = cfg["fps"]
     if fps_cfg == "original":
-        details, err = probe_video_details(video)
-        if err:
-            return False, err
-        try:
-            info = json.loads(details or "{}")
-            stream = info.get("streams", [{}])[0]
-            fps = stream.get("avg_frame_rate", "0")
-            if not fps or fps == "0/0":
-                fps = "15"
-        except Exception as e:
-            return False, str(e)
+        fps = stream.get("avg_frame_rate", "0")
+        if not fps or fps == "0/0":
+            fps = "15"
     else:
         fps = str(int(fps_cfg))
     height = int(cfg["height"])
+    width = _target_width_for_height(stream, height)
+    if width is None:
+        return False, "Could not read source video dimensions."
     loop = "0" if cfg["loop_forever"] else "1"
 
     args = [
@@ -216,6 +252,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     ]
 
     input_refs = []
+    input_filters = []
 
     if background_image:
         target_fps = _fps_to_float(fps)
@@ -230,7 +267,9 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
             "-i",
             background_image,
         ]
-        input_refs.append("[0:v]")
+        label = "v0"
+        input_filters.append(_normalize_filter("[0:v]", label, width, height))
+        input_refs.append(f"[{label}]")
 
     stream_idx = _first_video_stream_index(video, job["logger"])
     video_offset = 1 if background_image else 0
@@ -238,7 +277,16 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     for i, s in enumerate(segs):
         dur = max(0.01, s["end"] - s["start"])
         args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", video]
-        input_refs.append(f"[{i + video_offset}:v:{stream_idx}]")
+        label = f"v{len(input_refs)}"
+        input_filters.append(
+            _normalize_filter(
+                f"[{i + video_offset}:v:{stream_idx}]",
+                label,
+                width,
+                height,
+            )
+        )
+        input_refs.append(f"[{label}]")
 
     n = len(input_refs)
     concat_inputs = "".join(input_refs)
@@ -250,11 +298,14 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
         if src_fps is not None and target_fps is not None and abs(src_fps - target_fps) > 0.1:
             main_filters += f"minterpolate=fps={fps},"
     main_filters += (
-        f"fps={fps},scale=-1:{height}:flags=lanczos,"
+        f"fps={fps},"
         "format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
     )
     filter_graph = (
-        f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];" f"[vcat]{main_filters}"
+        ";".join(input_filters)
+        + ";"
+        + f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];"
+        + f"[vcat]{main_filters}"
     )
 
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]
