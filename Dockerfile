@@ -22,5 +22,7 @@ ENV PYTHONUNBUFFERED=1 \
     PUID=99 \
     PGID=100
 
+EXPOSE 904
+
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-u", "-m", "app.main"]

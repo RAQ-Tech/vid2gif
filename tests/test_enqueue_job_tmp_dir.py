@@ -6,6 +6,12 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(ROOT)
 
 from app import jobs
+from app import config
+
+
+def test_jobs_uses_processing_tmp_root_from_config():
+    assert jobs.PROCESS_TMP_ROOT == config.PROCESS_TMP_ROOT
+    assert jobs.PROCESS_TMP_ROOT != config.TMP_ROOT
 
 
 def test_enqueue_job_tmp_dir_contains_job_id(tmp_path, monkeypatch):

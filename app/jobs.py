@@ -21,6 +21,8 @@ jobs = {}
 job_queue = queue.Queue()
 lock = threading.Lock()
 queue_paused = threading.Event()
+_worker_start_lock = threading.Lock()
+_worker_started = False
 
 
 def public_job(job):
@@ -209,12 +211,20 @@ def worker():
 
 
 def start_worker():
-    threading.Thread(target=worker, daemon=True).start()
-    threading.Thread(target=_broadcast_loop, daemon=True).start()
+    global _worker_started
+    with _worker_start_lock:
+        if _worker_started:
+            return
+        threading.Thread(target=worker, daemon=True, name="vid2gif-worker").start()
+        threading.Thread(
+            target=_broadcast_loop,
+            daemon=True,
+            name="vid2gif-queue-broadcast",
+        ).start()
+        _worker_started = True
 
 
 def _broadcast_loop():
     while True:
         emit_queue_status()
         time.sleep(1)
-
