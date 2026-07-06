@@ -12,16 +12,11 @@ Dockerized WebUI for generating GIF previews from large video libraries.
 
 
 
-Install the dependencies and run the test suite:
-
-
+Install the development dependencies and run the test suite:
 
 ```bash
-
-pip install -r requirements.txt
-
+pip install -r requirements-dev.txt
 pytest
-
 ```
 
 
@@ -136,7 +131,7 @@ fluid but can significantly increase processing time.
 
 \* Follow \[PEP8](https://peps.python.org/pep-0008/) style guidelines; automated formatting with `black` is encouraged.
 
-\* Add tests under \[`tests/`](tests/) and ensure they pass with `pytest` before submitting a pull request.
+\* Add tests under \[`tests/`](tests/) and ensure they pass with `pytest` (after `pip install -r requirements-dev.txt`) before submitting a pull request.
 
 \* The core application logic lives in \[`app/main.py`](app/main.py); an example test suite is in \[`tests/test\_main.py`](tests/test\_main.py).
 
