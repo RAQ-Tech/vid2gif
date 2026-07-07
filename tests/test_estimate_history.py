@@ -68,6 +68,31 @@ def test_estimate_uses_median_history_ratios(monkeypatch):
     )
 
 
+def test_estimate_filters_history_by_optimization_mode(monkeypatch):
+    monkeypatch.setattr(estimate_history, "load_history", lambda path=None: [])
+    payload = estimate_history.estimate_payload(
+        2,
+        _cfg(optimize=False),
+        in_memory_samples=[
+            {
+                "settings_unit": 1,
+                "elapsed_seconds": 10,
+                "output_size_bytes": 100,
+                "optimize": True,
+            },
+            {
+                "settings_unit": 1,
+                "elapsed_seconds": 30,
+                "output_size_bytes": 300,
+                "optimize": False,
+            },
+        ],
+    )
+
+    assert payload["estimated_seconds"] == 60
+    assert payload["estimated_size_bytes"] == 600
+
+
 def test_no_history_returns_calibration_message(monkeypatch):
     monkeypatch.setattr(estimate_history, "load_history", lambda path=None: [])
 
@@ -127,5 +152,6 @@ def test_sample_from_job_contains_only_aggregate_metrics():
         "settings_unit": 1.0,
         "elapsed_seconds": 12.0,
         "output_size_bytes": 1234,
+        "optimize": True,
         "created_at": 99.0,
     }

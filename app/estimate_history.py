@@ -26,6 +26,14 @@ def _to_float(value, default):
     return value
 
 
+def _to_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def sample_count(cfg):
     points = cfg.get("percent_points") or []
     count = len(points)
@@ -51,6 +59,10 @@ def settings_unit(cfg):
     return (height / 480.0) ** 2 * (fps / 15.0) * ((clip_len * clips) / 22.0)
 
 
+def optimize_enabled(cfg):
+    return _to_bool((cfg or {}).get("optimize"), DEFAULTS.get("optimize", True))
+
+
 def _coerce_sample(raw):
     if not isinstance(raw, dict):
         return None
@@ -63,6 +75,7 @@ def _coerce_sample(raw):
         "settings_unit": unit,
         "elapsed_seconds": elapsed,
         "output_size_bytes": int(round(size)),
+        "optimize": _to_bool(raw.get("optimize"), DEFAULTS.get("optimize", True)),
         "created_at": _to_float(raw.get("created_at"), time.time()),
     }
 
@@ -78,6 +91,7 @@ def sample_from_job(job):
         "settings_unit": settings_unit(job.get("cfg") or {}),
         "elapsed_seconds": elapsed,
         "output_size_bytes": size,
+        "optimize": optimize_enabled(job.get("cfg") or {}),
         "created_at": job.get("_finished_ts") or time.time(),
     }
     return _coerce_sample(sample)
@@ -193,9 +207,12 @@ def estimate_payload(compatible_count, cfg, in_memory_samples=None):
 
     seconds_per_unit = []
     bytes_per_unit = []
+    target_optimize = optimize_enabled(cfg)
     for sample in samples:
         sample = _coerce_sample(sample)
         if not sample:
+            continue
+        if sample["optimize"] != target_optimize:
             continue
         seconds_per_unit.append(sample["elapsed_seconds"] / sample["settings_unit"])
         bytes_per_unit.append(sample["output_size_bytes"] / sample["settings_unit"])

@@ -173,6 +173,38 @@ def test_scan_estimate_uses_history_for_time_and_storage(monkeypatch, tmp_path):
     )
 
 
+def test_scan_estimate_uses_matching_optimization_samples(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    (lib / "a.mp4").write_text("x")
+    _reset_scan_state(monkeypatch, lib)
+    monkeypatch.setattr(
+        routes.estimate_history,
+        "load_history",
+        lambda path=None: [
+            {
+                "settings_unit": 1,
+                "elapsed_seconds": 600,
+                "output_size_bytes": 1024 * 1024 * 50,
+                "optimize": True,
+            },
+            {
+                "settings_unit": 1,
+                "elapsed_seconds": 120,
+                "output_size_bytes": 1024 * 1024 * 80,
+                "optimize": False,
+            },
+        ],
+    )
+
+    client = routes.app.test_client()
+    res = client.get("/api/scan-estimate", query_string=_query(lib, optimize="off"))
+
+    payload = res.get_json()
+    assert payload["estimated_seconds"] == 120
+    assert payload["estimated_size_bytes"] == 1024 * 1024 * 80
+
+
 def test_scan_estimate_message_does_not_include_dynamic_path(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     lib.mkdir()

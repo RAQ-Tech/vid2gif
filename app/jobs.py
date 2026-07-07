@@ -53,6 +53,7 @@ def public_job(job):
         "output_size_bytes": job.get("output_size_bytes"),
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
+        "optimize": (job.get("cfg") or {}).get("optimize"),
         "gif_size_before_opt_bytes": job.get("gif_size_before_opt_bytes"),
         "gif_size_after_opt_bytes": job.get("gif_size_after_opt_bytes"),
         "gif_optimization_saved_bytes": job.get("gif_optimization_saved_bytes"),
@@ -266,11 +267,15 @@ def worker():
                 job["logger"].info("Video details unavailable")
             else:
                 job["logger"].info(f"Video details: {summarize_video_details(details)}")
+            cfg = job["cfg"]
+            fps_label = "original FPS" if cfg.get("fps") == "original" else f"{cfg.get('fps')} FPS"
+            optimize_label = "on" if cfg.get("optimize", True) else "off"
             job["logger"].info(
                 "Settings: "
-                f"{job['cfg']['height']}px high, "
-                f"{job['cfg']['fps']} FPS, "
-                f"{job['cfg']['clip_len']}s clips"
+                f"{cfg['height']}px high, "
+                f"{fps_label}, "
+                f"{cfg['clip_len']}s clips, "
+                f"optimization {optimize_label}"
             )
 
             dur, err = get_duration(job["video"])

@@ -148,13 +148,10 @@
                     <option value="20">20</option>
                     <option value="24">24</option>
                     <option value="30">30</option>
+                    <option value="original">Original</option>
                     <option value="custom">Custom</option>
                   </select>
                   <input id="fps_custom" name="fps_custom" placeholder="e.g. 17" class="form-control mt-2 d-none">
-                  <div class="form-check mt-2">
-                    <input type="checkbox" id="fps_original" name="fps_original" class="form-check-input">
-                    <label class="form-check-label" for="fps_original">Original</label>
-                  </div>
                 </div>
 
                 <div class="col-md-4">
@@ -203,6 +200,7 @@
           </div>
 
           <div class="settings-panel settings-panel-actions">
+            <input type="hidden" name="optimize" id="optimize" value="{% if defaults.optimize %}on{% else %}off{% endif %}">
             <div class="form-check form-switch">
               <input type="checkbox" name="loop_forever" id="loop_forever" class="form-check-input" checked>
               <label class="form-check-label" for="loop_forever">Loop forever</label>
@@ -210,6 +208,10 @@
             <div class="form-check form-switch">
               <input type="checkbox" name="smooth" id="smooth" class="form-check-input" {% if defaults.smooth %}checked{% endif %}>
               <label class="form-check-label" for="smooth">Smooth motion</label>
+            </div>
+            <div class="form-check form-switch">
+              <input type="checkbox" id="optimize_toggle" class="form-check-input" {% if defaults.optimize %}checked{% endif %}>
+              <label class="form-check-label" for="optimize_toggle">Optimize GIF</label>
             </div>
             <button type="submit" class="btn btn-primary ms-md-auto">
               <i class="bi bi-plus-lg" aria-hidden="true"></i>
@@ -300,6 +302,21 @@
             <div class="text-muted small">Drag saved GIFs into any slot, or drag between slots to swap.</div>
           </div>
           <div class="toolbar-row mb-0">
+            <label class="form-label mb-0 compact-control" for="testLabPreviewLayout">
+              Layout
+              <select id="testLabPreviewLayout" class="form-select form-select-sm">
+                <option value="auto">Auto</option>
+                <option value="side">Side by side</option>
+                <option value="stacked">Stacked</option>
+              </select>
+            </label>
+            <label class="form-label mb-0 compact-control" for="testLabPreviewSizeMode">
+              Size
+              <select id="testLabPreviewSizeMode" class="form-select form-select-sm">
+                <option value="standardized">Standardized</option>
+                <option value="full">Full Resolution</option>
+              </select>
+            </label>
             <button id="testLabRestartPreviews" type="button" class="btn btn-outline-secondary btn-sm">
               <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
               <span>Restart</span>

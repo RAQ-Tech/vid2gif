@@ -46,6 +46,7 @@ from .utils import find_background_image, path_is_under
 SCHEMA_VERSION = 1
 MIN_VARIANTS = 2
 MAX_VARIANTS = 4
+MAX_DISPLAY_NAME_LENGTH = 80
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 LAB_TERMINAL_STATUSES = TERMINAL_STATUSES | {"partial"}
 __test__ = False
@@ -78,6 +79,13 @@ def _safe_name(value):
     if SAFE_NAME_RE.match(value):
         return value
     return None
+
+
+def _cfg_optimize_enabled(cfg):
+    value = (cfg or {}).get("optimize", GIF_OPTIMIZE)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _safe_file_path(run_id, filename):
@@ -155,20 +163,24 @@ def normalized_cfg(cfg):
         "end_buffer": round(float(cfg.get("end_buffer") or 0), 4),
         "loop_forever": bool(cfg.get("loop_forever")),
         "smooth": bool(cfg.get("smooth")),
+        "optimize": _cfg_optimize_enabled(cfg),
     }
 
 
 def request_fingerprint(video_path, cfg, lib_root=LIB_ROOT, background_image=None):
     if background_image is None:
         background_image = find_background_image(video_path)
+    optimize_enabled = _cfg_optimize_enabled(cfg)
     payload = {
         "schema": 1,
         "source": _file_identity(video_path, lib_root),
         "background": _file_identity(background_image, lib_root),
         "settings": normalized_cfg(cfg),
         "optimization": {
-            "enabled": bool(GIF_OPTIMIZE),
-            "level": normalize_optimize_level(GIF_OPTIMIZE_LEVEL),
+            "enabled": optimize_enabled,
+            "level": normalize_optimize_level(GIF_OPTIMIZE_LEVEL)
+            if optimize_enabled
+            else None,
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -183,9 +195,10 @@ def settings_label(cfg):
     except (TypeError, ValueError):
         clip_label = f"{clip_len}s clips"
     smooth = "smooth" if cfg.get("smooth") else "standard"
+    optimize = "optimized" if _cfg_optimize_enabled(cfg) else "unoptimized"
     return (
         f"{cfg.get('height')}px high, {fps}, {clip_label}, "
-        f"{sample_count(cfg)} samples, {smooth}"
+        f"{sample_count(cfg)} samples, {smooth}, {optimize}"
     )
 
 
@@ -226,6 +239,19 @@ def _write_manifest(run):
     }
     path = _manifest_path(run["id"])
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.{os.getpid()}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+        os.replace(tmp_path, path)
+    except Exception:
+        return False
+    return True
+
+
+def _write_manifest_data(run_id, data):
+    try:
+        path = _manifest_path(run_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp_path = f"{path}.{os.getpid()}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -441,7 +467,9 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
     first_variant_for_fingerprint = {}
     for index, raw in enumerate(variants, start=1):
         cfg = raw.get("cfg") or {}
-        name = (raw.get("name") or f"Variant {index}").strip()[:80]
+        name = (raw.get("name") or f"Variant {index}").strip()[
+            :MAX_DISPLAY_NAME_LENGTH
+        ]
         filename = f"variant-{index}.gif"
         variant_id = f"variant-{index}"
         fingerprint = request_fingerprint(
@@ -874,3 +902,44 @@ def delete_files(file_ids):
     payload = status_payload()
     payload.update({"deleted": deleted, "refused": refused, "missing": missing})
     return payload
+
+
+def rename_file(file_id, name):
+    file_id = str(file_id or "")
+    clean_name = str(name or "").strip()[:MAX_DISPLAY_NAME_LENGTH]
+    if not clean_name:
+        return None, "Name is required"
+    if "/" not in file_id:
+        return None, "Test GIF not found"
+    run_id, filename = file_id.split("/", 1)
+    path = _safe_file_path(run_id, filename)
+    if not path or not os.path.isfile(path):
+        return None, "Test GIF not found"
+
+    with test_lab_lock:
+        manifest = _read_manifest(run_id)
+        variants = manifest.get("variants") or []
+        target = None
+        for variant in variants:
+            if isinstance(variant, dict) and variant.get("filename") == filename:
+                target = variant
+                break
+        if not target:
+            return None, "Test GIF not found"
+        old_fingerprint = target.get("request_fingerprint", "")
+        target["name"] = clean_name
+        if target.get("request_fingerprint", "") != old_fingerprint:
+            return None, "Rename would change generation identity"
+        if not _write_manifest_data(run_id, manifest):
+            return None, "Could not save name"
+
+        run = test_lab_runs.get(run_id)
+        if run:
+            for variant in run.get("variants") or []:
+                if variant.get("filename") == filename:
+                    variant["name"] = clean_name
+                    break
+
+    payload = status_payload()
+    payload.update({"renamed": file_id, "name": clean_name})
+    return payload, None

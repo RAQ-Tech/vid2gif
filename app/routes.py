@@ -51,17 +51,23 @@ def _truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_truthy(values, key, default):
+    if key not in values:
+        return bool(default)
+    return _truthy(values.get(key))
+
+
 def _job_config_from_values(values):
     height = choose_numeric(
         values, "height_preset", "height_custom", int, DEFAULTS["height"]
     )
-    fps = (
-        "original"
-        if _truthy(values.get("fps_original"))
-        else choose_numeric(
+    fps_preset = str(values.get("fps_preset") or values.get("fps") or "").strip().lower()
+    if _truthy(values.get("fps_original")) or fps_preset == "original":
+        fps = "original"
+    else:
+        fps = choose_numeric(
             values, "fps_preset", "fps_custom", int, DEFAULTS["fps"]
         )
-    )
     clip_len = choose_numeric(
         values,
         "clip_len_preset",
@@ -95,6 +101,7 @@ def _job_config_from_values(values):
         ),
         "loop_forever": _truthy(values.get("loop_forever", "on")),
         "smooth": _truthy(values.get("smooth", "off")),
+        "optimize": _optional_truthy(values, "optimize", DEFAULTS["optimize"]),
     }
 
 
@@ -519,6 +526,15 @@ def api_test_lab_delete():
     if not isinstance(file_ids, list):
         return jsonify({"error": "Choose test GIFs to delete"}), 400
     return jsonify(test_lab.delete_files(file_ids))
+
+
+@app.route("/api/test-lab/rename", methods=["POST"])
+def api_test_lab_rename():
+    data = request.get_json(silent=True) or {}
+    payload, err = test_lab.rename_file(data.get("file_id"), data.get("name"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify(payload)
 
 
 @app.route("/test-lab/files/<run_id>/<filename>")

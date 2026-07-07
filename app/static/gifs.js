@@ -20,6 +20,8 @@
   let testLabSlotIds = ['', '', '', ''];
   let testLabLastRunId = '';
   let testLabSeenRunFileIds = new Set();
+  let testLabRenameDrafts = new Map();
+  let testLabSavingRenameIds = new Set();
 
   function byId(id) {
     return document.getElementById(id);
@@ -33,6 +35,13 @@
       '"': '&quot;',
       "'": '&#39;'
     }[ch]));
+  }
+
+  function escapeSelector(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+      return window.CSS.escape(String(value));
+    }
+    return String(value).replace(/["\\]/g, '\\$&');
   }
 
   function formatDuration(seconds, emptyValue) {
@@ -434,15 +443,21 @@
     pollTimer = setInterval(poll, 1000);
   }
 
-  function toggleCustom(selectElId, customInputId, originalCheckboxId) {
+  function toggleCustom(selectElId, customInputId) {
     const sel = byId(selectElId);
     const inp = byId(customInputId);
-    const orig = originalCheckboxId ? byId(originalCheckboxId) : null;
     if (!sel || !inp) return;
-    const useCustom = sel.value === 'custom' && !(orig && orig.checked);
+    const useCustom = sel.value === 'custom';
     inp.classList.toggle('d-none', !useCustom);
     inp.disabled = !useCustom;
     if (!useCustom) inp.value = '';
+  }
+
+  function syncOptimizeSetting() {
+    const hidden = byId('optimize');
+    const toggle = byId('optimize_toggle');
+    if (!hidden || !toggle) return;
+    hidden.value = toggle.checked ? 'on' : 'off';
   }
 
   async function fetchDirs(path) {
@@ -461,17 +476,13 @@
     const form = byId('newJobForm');
     const params = new URLSearchParams();
     if (!form) return params;
+    syncOptimizeSetting();
     const formData = new FormData(form);
     formData.forEach((value, key) => {
       params.set(key, value);
     });
     const video = byId('video');
     params.set('path', video ? video.value.trim() : '');
-    if (byId('fps_original')?.checked) {
-      params.set('fps_original', 'on');
-    } else {
-      params.delete('fps_original');
-    }
     return params;
   }
 
@@ -582,8 +593,14 @@
     const hadSavedPath = localStorage.getItem('newjob_video') !== null;
     loadForm();
     toggleCustom('height_preset', 'height_custom');
-    toggleCustom('fps_preset', 'fps_custom', 'fps_original');
+    toggleCustom('fps_preset', 'fps_custom');
     toggleCustom('clip_len_preset', 'clip_len_custom');
+    const optimizeHidden = byId('optimize');
+    const optimizeToggle = byId('optimize_toggle');
+    if (optimizeHidden && optimizeToggle) {
+      optimizeToggle.checked = optimizeHidden.value !== 'off';
+      syncOptimizeSetting();
+    }
     const vid = byId('video');
     if (vid && !vid.value) vid.value = config.libRoot || '/library';
     addSelect(config.libRoot || '/library');
@@ -596,9 +613,14 @@
       scheduleScanEstimate();
     });
     byId('height_preset').addEventListener('change', () => toggleCustom('height_preset', 'height_custom'));
-    byId('fps_preset').addEventListener('change', () => toggleCustom('fps_preset', 'fps_custom', 'fps_original'));
-    byId('fps_original').addEventListener('change', () => toggleCustom('fps_preset', 'fps_custom', 'fps_original'));
+    byId('fps_preset').addEventListener('change', () => toggleCustom('fps_preset', 'fps_custom'));
     byId('clip_len_preset').addEventListener('change', () => toggleCustom('clip_len_preset', 'clip_len_custom'));
+    byId('optimize_toggle')?.addEventListener('change', () => {
+      syncOptimizeSetting();
+      saveForm();
+      scheduleScanEstimate();
+    });
+    form.addEventListener('submit', syncOptimizeSetting);
     if (hadSavedPath && vid && vid.value.trim()) {
       scheduleScanEstimate(150);
     } else {
@@ -612,7 +634,6 @@
       name: `Variant ${index || testLabVariantCount + 1}`,
       height: defaults.height || 480,
       fps: defaults.fps || 15,
-      fps_original: false,
       clip_len: defaults.clip_len || 2,
       percent_points: defaults.percent_points || '10,20,30,40,50,60,70,80,90',
       abs_early: defaults.abs_early ?? 15,
@@ -620,7 +641,8 @@
       start_buffer: defaults.start_buffer ?? 5,
       end_buffer: defaults.end_buffer ?? 5,
       loop_forever: defaults.loop_forever !== false,
-      smooth: Boolean(defaults.smooth)
+      smooth: Boolean(defaults.smooth),
+      optimize: defaults.optimize !== false
     };
   }
 
@@ -643,10 +665,11 @@
 
   function testLabVariantHtml(values) {
     const heightPreset = presetOrCustom(values.height, ['240', '360', '480', '720', '1080']);
-    const fpsPreset = presetOrCustom(values.fps, ['10', '12', '15', '20', '24', '30']);
+    const fpsValue = values.fps;
+    const fpsPreset = String(fpsValue) === 'original' ? 'original' : presetOrCustom(fpsValue, ['10', '12', '15', '20', '24', '30']);
     const clipPreset = presetOrCustom(values.clip_len, ['1', '2', '3', '4', '5']);
     const showHeightCustom = heightPreset === 'custom';
-    const showFpsCustom = fpsPreset === 'custom' && !values.fps_original;
+    const showFpsCustom = fpsPreset === 'custom';
     const showClipCustom = clipPreset === 'custom';
     return `<div class="test-lab-variant settings-panel" data-test-lab-variant>` +
       `<div class="variant-heading">` +
@@ -663,6 +686,7 @@
       optionHtml('10', '10', fpsPreset) + optionHtml('12', '12', fpsPreset) +
       optionHtml('15', '15', fpsPreset) + optionHtml('20', '20', fpsPreset) +
       optionHtml('24', '24', fpsPreset) + optionHtml('30', '30', fpsPreset) +
+      optionHtml('original', 'Original', fpsPreset) +
       optionHtml('custom', 'Custom', fpsPreset) +
       `</select><input type="number" min="1" step="1" class="form-control form-control-sm mt-2${showFpsCustom ? '' : ' d-none'}" data-field="fps_custom" value="${showFpsCustom ? escapeHtml(values.fps) : ''}"${disabledAttr(!showFpsCustom)}></label>` +
       `<label class="form-label">Clip length<select class="form-select form-select-sm" data-field="clip_len_preset">` +
@@ -677,19 +701,18 @@
       `<label class="form-label">End buffer<input type="number" step="0.1" class="form-control form-control-sm" data-field="end_buffer" value="${escapeHtml(values.end_buffer)}"></label>` +
       `</div>` +
       `<div class="variant-switches">` +
-      `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="fps_original"${checkboxAttr(values.fps_original)}><label class="form-check-label">Original FPS</label></div>` +
       `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="loop_forever"${checkboxAttr(values.loop_forever)}><label class="form-check-label">Loop forever</label></div>` +
       `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="smooth"${checkboxAttr(values.smooth)}><label class="form-check-label">Smooth motion</label></div>` +
+      `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="optimize"${checkboxAttr(values.optimize)}><label class="form-check-label">Optimize GIF</label></div>` +
       `</div>` +
       `</div>`;
   }
 
-  function toggleVariantCustomInput(row, presetField, customField, originalField) {
+  function toggleVariantCustomInput(row, presetField, customField) {
     const preset = row.querySelector(`[data-field="${presetField}"]`);
     const custom = row.querySelector(`[data-field="${customField}"]`);
-    const original = originalField ? row.querySelector(`[data-field="${originalField}"]`) : null;
     if (!preset || !custom) return;
-    const showCustom = preset.value === 'custom' && !(original && original.checked);
+    const showCustom = preset.value === 'custom';
     custom.classList.toggle('d-none', !showCustom);
     custom.disabled = !showCustom;
     if (!showCustom) custom.value = '';
@@ -697,7 +720,7 @@
 
   function toggleTestLabVariantControls(row) {
     toggleVariantCustomInput(row, 'height_preset', 'height_custom');
-    toggleVariantCustomInput(row, 'fps_preset', 'fps_custom', 'fps_original');
+    toggleVariantCustomInput(row, 'fps_preset', 'fps_custom');
     toggleVariantCustomInput(row, 'clip_len_preset', 'clip_len_custom');
   }
 
@@ -732,7 +755,6 @@
         height_custom: field('height_custom')?.value || '',
         fps_preset: field('fps_preset')?.value || '',
         fps_custom: field('fps_custom')?.value || '',
-        fps_original: checked('fps_original'),
         clip_len_preset: field('clip_len_preset')?.value || '',
         clip_len_custom: field('clip_len_custom')?.value || '',
         percent_points: field('percent_points')?.value || '',
@@ -741,7 +763,8 @@
         start_buffer: field('start_buffer')?.value || '',
         end_buffer: field('end_buffer')?.value || '',
         loop_forever: checked('loop_forever'),
-        smooth: checked('smooth')
+        smooth: checked('smooth'),
+        optimize: checked('optimize')
       }
     };
   }
@@ -804,6 +827,29 @@
     localStorage.setItem('testlab_slots', JSON.stringify(testLabSlotIds));
   }
 
+  function loadTestLabPreviewPrefs() {
+    const layout = byId('testLabPreviewLayout');
+    const sizeMode = byId('testLabPreviewSizeMode');
+    if (layout) {
+      const savedLayout = localStorage.getItem('testlab_preview_layout') || 'auto';
+      layout.value = ['auto', 'side', 'stacked'].includes(savedLayout) ? savedLayout : 'auto';
+    }
+    if (sizeMode) {
+      const savedSize = localStorage.getItem('testlab_preview_size') || 'standardized';
+      sizeMode.value = ['standardized', 'full'].includes(savedSize) ? savedSize : 'standardized';
+    }
+  }
+
+  function testLabPreviewLayout() {
+    const value = byId('testLabPreviewLayout')?.value || 'auto';
+    return ['auto', 'side', 'stacked'].includes(value) ? value : 'auto';
+  }
+
+  function testLabPreviewSizeMode() {
+    const value = byId('testLabPreviewSizeMode')?.value || 'standardized';
+    return ['standardized', 'full'].includes(value) ? value : 'standardized';
+  }
+
   function loadTestLabAutoRestart() {
     const checkbox = byId('testLabAutoRestart');
     if (!checkbox) return;
@@ -843,12 +889,12 @@
     return changed;
   }
 
-  function testLabSlotHtml(index) {
+  function testLabSlotHtml(index, compact) {
     const fileId = testLabSlotIds[index] || '';
     const file = fileId ? testLabFilesById.get(fileId) : null;
     const slotLabel = `Slot ${index + 1}`;
     if (!file) {
-      return `<div class="test-slot empty" data-slot-index="${index}" data-slot-drop>` +
+      return `<div class="test-slot empty${compact ? ' compact' : ''}" data-slot-index="${index}" data-slot-drop>` +
         `<div class="test-slot-header"><span>${slotLabel}</span></div>` +
         `<div class="test-slot-empty">Drop GIF here</div>` +
         `</div>`;
@@ -864,7 +910,20 @@
   function renderTestLabSlots() {
     const previews = byId('testLabPreviews');
     if (!previews) return;
-    previews.innerHTML = [0, 1, 2, 3].map(testLabSlotHtml).join('');
+    const occupiedIndexes = [0, 1, 2, 3].filter(index => {
+      const fileId = testLabSlotIds[index] || '';
+      return fileId && testLabFilesById.has(fileId);
+    });
+    const emptyIndexes = [0, 1, 2, 3].filter(index => !occupiedIndexes.includes(index));
+    previews.dataset.count = String(occupiedIndexes.length);
+    previews.dataset.layout = testLabPreviewLayout();
+    previews.dataset.sizeMode = testLabPreviewSizeMode();
+
+    const occupiedHtml = occupiedIndexes.map(index => testLabSlotHtml(index, false)).join('');
+    const emptyHtml = emptyIndexes.map(index => testLabSlotHtml(index, occupiedIndexes.length > 0)).join('');
+    previews.innerHTML =
+      `<div class="test-active-slots">${occupiedHtml || '<div class="text-muted text-center py-4">Saved and generated GIFs can be placed here for comparison.</div>'}</div>` +
+      `<div class="test-empty-slots">${emptyHtml}</div>`;
   }
 
   function fillOpenTestLabSlots(fileIds) {
@@ -907,6 +966,83 @@
     selectAll.indeterminate = selectedCount > 0 && selectedCount < ids.length;
   }
 
+  function activeRenameState() {
+    const active = document.activeElement;
+    if (!active || !active.matches('[data-test-rename-id]')) return null;
+    return {
+      fileId: active.getAttribute('data-test-rename-id'),
+      value: active.value,
+      selectionStart: active.selectionStart,
+      selectionEnd: active.selectionEnd
+    };
+  }
+
+  function restoreRenameFocus(state) {
+    if (!state || !state.fileId) return;
+    const input = document.querySelector(`[data-test-rename-id="${escapeSelector(state.fileId)}"]`);
+    if (!input) return;
+    input.focus();
+    try {
+      input.setSelectionRange(state.selectionStart, state.selectionEnd);
+    } catch (e) {
+      // Some browsers do not expose selection APIs for all input states.
+    }
+  }
+
+  function testLabFileDisplayName(file, activeRename) {
+    if (activeRename && activeRename.fileId === file.id) return activeRename.value;
+    if (testLabRenameDrafts.has(file.id)) return testLabRenameDrafts.get(file.id);
+    return file.name || '';
+  }
+
+  function renameControlHtml(file, activeRename) {
+    const value = testLabFileDisplayName(file, activeRename);
+    const saving = testLabSavingRenameIds.has(file.id);
+    return `<div class="rename-inline">` +
+      `<input class="form-control form-control-sm" data-test-rename-id="${escapeHtml(file.id)}" value="${escapeHtml(value)}" aria-label="Test GIF name"${saving ? ' disabled' : ''}>` +
+      `<button type="button" class="btn btn-outline-secondary btn-icon btn-sm" data-test-rename-save="${escapeHtml(file.id)}" title="Save name"${saving ? ' disabled' : ''}><i class="bi bi-check-lg" aria-hidden="true"></i></button>` +
+      `</div>`;
+  }
+
+  async function renameTestLabFile(fileId) {
+    const file = testLabFilesById.get(fileId);
+    const input = document.querySelector(`[data-test-rename-id="${escapeSelector(fileId)}"]`);
+    const name = (input?.value || '').trim();
+    if (!fileId || !file) return;
+    if (!name) {
+      setTestLabMessage('Name is required', '');
+      return;
+    }
+    if (name === file.name) {
+      testLabRenameDrafts.delete(fileId);
+      renderTestLabFiles({files: Array.from(testLabFilesById.values()), total_size_label: byId('testLabTotalSize')?.textContent || '0 B'});
+      return;
+    }
+    testLabSavingRenameIds.add(fileId);
+    setTestLabMessage('Saving name', '');
+    try {
+      const res = await fetch('/api/test-lab/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file_id: fileId, name})
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTestLabMessage(data.error || 'Rename failed', '');
+        return;
+      }
+      testLabRenameDrafts.delete(fileId);
+      testLabSavingRenameIds.delete(fileId);
+      setTestLabMessage('Name saved', '');
+      renderTestLabFiles(data);
+      renderTestLabRun(data.active_run);
+    } catch (e) {
+      setTestLabMessage('Rename failed', e.message || '');
+    } finally {
+      testLabSavingRenameIds.delete(fileId);
+    }
+  }
+
   function renderTestLabRun(run) {
     const status = byId('testLabRunStatus');
     const variants = byId('testLabRunVariants');
@@ -941,17 +1077,21 @@
     const total = byId('testLabTotalSize');
     if (total) total.textContent = data.total_size_label || '0 B';
     if (!tbody) return;
+    const renameState = activeRenameState();
     const files = data.files || [];
     const availableIds = new Set(files.map(file => file.id));
     testLabSelectedFileIds = new Set(
       Array.from(testLabSelectedFileIds).filter(fileId => availableIds.has(fileId))
+    );
+    testLabRenameDrafts = new Map(
+      Array.from(testLabRenameDrafts.entries()).filter(([fileId]) => availableIds.has(fileId))
     );
     testLabFilesById = new Map(files.map(file => [file.id, file]));
     syncTestLabSlotsToFiles();
     updateTestLabSelectAll(files);
     tbody.innerHTML = files.length ? files.map(file =>
       `<tr draggable="true" data-drag-file-id="${escapeHtml(file.id)}"><td><input class="form-check-input" type="checkbox" data-test-file-id="${escapeHtml(file.id)}" aria-label="Select test GIF"${testLabSelectedFileIds.has(file.id) ? ' checked' : ''}></td>` +
-      `<td>${escapeHtml(file.name)}</td>` +
+      `<td>${renameControlHtml(file, renameState)}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(file.source_name || '')}">${escapeHtml(file.source_name || '')}</code></td>` +
       `<td>${escapeHtml(file.size_label || '')}</td>` +
       `<td>${escapeHtml(file.gif_optimization_label || '')}</td>` +
@@ -959,6 +1099,7 @@
       `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer" title="Open GIF"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a></td></tr>`
     ).join('') : '<tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>';
     renderTestLabSlots();
+    restoreRenameFocus(renameState);
   }
 
   async function refreshTestLab() {
@@ -1129,6 +1270,7 @@
     const pane = byId('pane-test');
     if (!pane) return;
     loadTestLabSlots();
+    loadTestLabPreviewPrefs();
     loadTestLabAutoRestart();
     addTestLabVariant(testLabDefaultVariant(1));
     addTestLabVariant(testLabDefaultVariant(2));
@@ -1162,6 +1304,14 @@
     });
     byId('testLabRunButton')?.addEventListener('click', startTestLabRun);
     byId('testLabRestartPreviews')?.addEventListener('click', restartTestLabPreviews);
+    byId('testLabPreviewLayout')?.addEventListener('change', event => {
+      localStorage.setItem('testlab_preview_layout', event.target.value);
+      renderTestLabSlots();
+    });
+    byId('testLabPreviewSizeMode')?.addEventListener('change', event => {
+      localStorage.setItem('testlab_preview_size', event.target.value);
+      renderTestLabSlots();
+    });
     byId('testLabAutoRestart')?.addEventListener('change', event => {
       localStorage.setItem('testlab_auto_restart', event.target.checked ? '1' : '0');
     });
@@ -1187,6 +1337,29 @@
         testLabSelectedFileIds.delete(fileId);
       }
       updateTestLabSelectAll(Array.from(testLabFilesById.values()));
+    });
+    byId('testLabFilesBody')?.addEventListener('input', event => {
+      const input = event.target.closest('[data-test-rename-id]');
+      if (!input) return;
+      testLabRenameDrafts.set(input.getAttribute('data-test-rename-id'), input.value);
+    });
+    byId('testLabFilesBody')?.addEventListener('keydown', event => {
+      const input = event.target.closest('[data-test-rename-id]');
+      if (!input) return;
+      const fileId = input.getAttribute('data-test-rename-id');
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        renameTestLabFile(fileId);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        testLabRenameDrafts.delete(fileId);
+        renderTestLabFiles({files: Array.from(testLabFilesById.values()), total_size_label: byId('testLabTotalSize')?.textContent || '0 B'});
+      }
+    });
+    byId('testLabFilesBody')?.addEventListener('click', event => {
+      const save = event.target.closest('[data-test-rename-save]');
+      if (!save) return;
+      renameTestLabFile(save.getAttribute('data-test-rename-save'));
     });
     initTestLabDragAndDrop();
     byId('testLabDeleteSelected')?.addEventListener('click', deleteSelectedTestLabFiles);

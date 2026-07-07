@@ -100,6 +100,50 @@ def test_optimize_gif_skips_when_disabled(monkeypatch, tmp_path):
     assert gif.stat().st_size == 100
 
 
+def test_optimize_gif_skips_when_job_disables_optimization(monkeypatch, tmp_path):
+    gif = tmp_path / "poster.gif"
+    _write(gif, 100)
+    job = {"cfg": {"optimize": False}}
+    logger = DummyLogger()
+    _enable_optimizer(monkeypatch)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("optimizer should not run")
+
+    monkeypatch.setattr(gif_optimizer.subprocess, "run", fail_run)
+
+    metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
+
+    assert metrics["gif_optimization_status"] == "disabled"
+    assert job["gif_optimization_label"] == "Disabled"
+    assert gif.stat().st_size == 100
+
+
+def test_optimize_gif_job_can_enable_when_default_is_disabled(monkeypatch, tmp_path):
+    gif = tmp_path / "poster.gif"
+    _write(gif, 100)
+    job = {"cfg": {"optimize": True}}
+    captured = {}
+    monkeypatch.setattr(gif_optimizer, "GIF_OPTIMIZE", False)
+    monkeypatch.setattr(gif_optimizer, "GIF_OPTIMIZE_LEVEL", "2")
+    monkeypatch.setattr(gif_optimizer, "GIF_OPTIMIZE_TIMEOUT", 600)
+    monkeypatch.setattr(gif_optimizer, "GIFSICLE_BIN", "gifsicle")
+    monkeypatch.setattr(gif_optimizer.shutil, "which", lambda cmd: cmd)
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        _write(tmp_path / "poster.gif.optimized", 80)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+
+    metrics = gif_optimizer.optimize_gif(str(gif), job)
+
+    assert captured["args"][1] == "-O2"
+    assert metrics["gif_optimization_status"] == "optimized"
+    assert gif.stat().st_size == 80
+
+
 def test_optimize_gif_skips_when_gifsicle_missing(monkeypatch, tmp_path):
     gif = tmp_path / "poster.gif"
     _write(gif, 100)

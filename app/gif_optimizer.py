@@ -69,11 +69,21 @@ def _log_error(logger, message):
         logger.error(message)
 
 
+def optimization_enabled(job):
+    cfg = (job or {}).get("cfg") or {}
+    if "optimize" in cfg:
+        value = cfg.get("optimize")
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return bool(GIF_OPTIMIZE)
+
+
 def optimize_gif(gif_path, job, logger=None):
     started = time.monotonic()
     before_size = os.path.getsize(gif_path)
 
-    if not GIF_OPTIMIZE:
+    if not optimization_enabled(job):
         metrics = _base_metrics(before_size, "disabled", 0)
         _log(logger, "GIF optimization skipped: disabled")
         return _record(job, metrics)

@@ -43,4 +43,5 @@ DEFAULTS = {
     "end_buffer": 5.0,
     "loop_forever": True,
     "smooth": False,
+    "optimize": GIF_OPTIMIZE,
 }
