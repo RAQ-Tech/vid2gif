@@ -22,44 +22,94 @@ from .jobs import (
     public_job,
     queue_status_payload,
 )
-from .progress import mark_job_finished
+from .progress import format_duration, format_size, mark_job_finished
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
+QUEUE_LIMITS = (10, 25, 50, 100)
+
+
+def _queue_limit(default=10):
+    limit = request.args.get("limit", default, type=int)
+    if limit not in QUEUE_LIMITS:
+        return default
+    return limit
+
+
+def _redirect_to_gifs(anchor, **params):
+    clean_params = {k: v for k, v in params.items() if v is not None}
+    return redirect(url_for("gifs_page", _anchor=anchor, **clean_params))
+
+
+def _gifs_workspace_context(limit):
+    with lock:
+        running_jobs = [
+            public_job(j) for j in jobs.values() if j.get("status") == "running"
+        ]
+
+    with job_queue.mutex:
+        queued_ids = list(job_queue.queue)
+
+    remaining = max(0, limit - len(running_jobs))
+    with lock:
+        queued_jobs = [
+            public_job(jobs[jid]) for jid in queued_ids[:remaining] if jid in jobs
+        ]
+        completed_jobs = [
+            public_job(j)
+            for j in jobs.values()
+            if j.get("status") in ("success", "failed", "stopped")
+        ]
+        all_jobs = [public_job(j) for j in jobs.values()]
+
+    completed_jobs.sort(key=lambda j: j.get("id", ""), reverse=True)
+    all_jobs.sort(key=lambda j: j.get("id", ""), reverse=True)
+    shown = len(running_jobs) + len(queued_jobs)
+    total = len(queued_ids) + len(running_jobs)
+    latest_optimization_label = next(
+        (
+            j.get("gif_optimization_label")
+            for j in completed_jobs
+            if j.get("gif_optimization_label")
+        ),
+        "",
+    )
+
+    return {
+        "defaults": DEFAULTS,
+        "ffmpeg": ffmpeg_version(),
+        "lib_root": LIB_ROOT,
+        "queue_limits": QUEUE_LIMITS,
+        "running_jobs": running_jobs,
+        "queued_jobs": queued_jobs,
+        "completed_jobs": completed_jobs,
+        "all_jobs": all_jobs,
+        "limit": limit,
+        "shown": shown,
+        "total": total,
+        "paused": queue_paused.is_set(),
+        "queue_summary": queue_status_payload(),
+        "latest_optimization_label": latest_optimization_label,
+        "format_duration": format_duration,
+        "format_size": format_size,
+    }
+
 
 @app.route("/")
 def home():
-    return render_template(
-        "index.html", defaults=DEFAULTS, ffmpeg=ffmpeg_version(), lib_root=LIB_ROOT
-    )
+    return _redirect_to_gifs("new")
+
+
+@app.route("/gifs")
+def gifs_page():
+    return render_template("gifs.html", **_gifs_workspace_context(_queue_limit()))
 
 
 @app.route("/queue")
 def queue_page():
-    limit = request.args.get("limit", 10, type=int)
-    if limit not in (10, 25, 50, 100):
-        limit = 10
-    with lock:
-        running_jobs = [j for j in jobs.values() if j.get("status") == "running"]
-    with job_queue.mutex:
-        queued_ids = list(job_queue.queue)
-    # Display running jobs at the top and fill remaining slots with queued ones
-    remaining = max(0, limit - len(running_jobs))
-    with lock:
-        ordered_jobs = [jobs[jid] for jid in queued_ids[:remaining] if jid in jobs]
-    shown = len(running_jobs) + len(ordered_jobs)
-    total = len(queued_ids) + len(running_jobs)
-    return render_template(
-        "queue.html",
-        running_jobs=running_jobs,
-        jobs=ordered_jobs,
-        limit=limit,
-        shown=shown,
-        total=total,
-        paused=queue_paused.is_set(),
-        queue_summary=queue_status_payload(),
-    )
+    limit = _queue_limit() if "limit" in request.args else None
+    return _redirect_to_gifs("queue", limit=limit)
 
 
 @app.route("/api/queue/<action>", methods=["POST"])
@@ -78,14 +128,14 @@ def api_queue_control(action):
                 j = jobs.get(jid)
                 if j and j.get("status") == "queued":
                     mark_job_finished(j, "stopped")
-    return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
+    return _redirect_to_gifs("queue", limit=_queue_limit())
 
 
 @app.route("/api/queue/move/<job_id>/<direction>", methods=["POST"])
 def api_queue_move(job_id, direction):
     with lock:
         if jobs.get(job_id, {}).get("status") == "running":
-            return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
+            return _redirect_to_gifs("queue", limit=_queue_limit())
     with job_queue.mutex:
         q = list(job_queue.queue)
         try:
@@ -99,7 +149,7 @@ def api_queue_move(job_id, direction):
                 q[idx + 1], q[idx] = q[idx], q[idx + 1]
             job_queue.queue.clear()
             job_queue.queue.extend(q)
-    return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
+    return _redirect_to_gifs("queue", limit=_queue_limit())
 
 
 @app.route("/api/queue/status")
@@ -109,17 +159,12 @@ def api_queue_status():
 
 @app.route("/completed")
 def completed_page():
-    with lock:
-        all_jobs = [j for j in jobs.values() if j["status"] in ("success", "failed")]
-    return render_template("completed.html", jobs=[public_job(j) for j in all_jobs])
+    return _redirect_to_gifs("completed")
 
 
 @app.route("/live")
 def live_page():
-    with lock:
-        all_jobs = list(jobs.values())
-    all_jobs.sort(key=lambda j: j.get("id", ""), reverse=True)
-    return render_template("live.html", jobs=all_jobs)
+    return _redirect_to_gifs("logs")
 
 
 @app.route("/logs/<job_id>")
@@ -271,4 +316,4 @@ def api_add():
     else:
         enqueue_job(real_target, cfg, batch_id=batch_id)
 
-    return redirect(url_for("live_page"))
+    return _redirect_to_gifs("logs")

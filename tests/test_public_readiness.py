@@ -214,46 +214,68 @@ def test_api_logs_resets_when_offset_exceeds_file_size(tmp_path):
     _clear_jobs()
 
 
-def test_templates_escape_dynamic_job_tables():
-    queue_template = (ROOT / "app" / "templates" / "queue.html").read_text()
-    completed_template = (ROOT / "app" / "templates" / "completed.html").read_text()
+def test_workspace_escapes_dynamic_job_tables():
+    workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
 
-    assert "escapeHtml(j.video)" in queue_template
-    assert "escapeHtml(j.progress_label" in queue_template
-    assert "escapeHtml(j.video)" in completed_template
-    assert "escapeHtml(j.out_gif)" in completed_template
-    assert "escapeHtml(formatDuration(j.elapsed_seconds))" in completed_template
-    assert "escapeHtml(formatSize(j.output_size_bytes))" in completed_template
-    assert "escapeHtml(j.gif_optimization_label || '')" in completed_template
+    assert "escapeHtml(j.video)" in workspace_script
+    assert "escapeHtml(j.progress_label" in workspace_script
+    assert "escapeHtml(j.out_gif)" in workspace_script
+    assert "escapeHtml(formatDuration(j.elapsed_seconds" in workspace_script
+    assert "escapeHtml(formatSize(j.output_size_bytes" in workspace_script
+    assert "escapeHtml(j.gif_optimization_label || '')" in workspace_script
+    assert "box.textContent +=" in workspace_script
+    assert "opt.textContent =" in workspace_script
 
 
-def test_queue_page_uses_polling_instead_of_socketio():
-    queue_template = (ROOT / "app" / "templates" / "queue.html").read_text()
+def test_gifs_workspace_uses_polling_instead_of_socketio():
+    workspace_template = (ROOT / "app" / "templates" / "gifs.html").read_text()
+    workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
+    combined = workspace_template + workspace_script
 
-    assert "socket.io" not in queue_template
-    assert "const socket = io()" not in queue_template
-    assert "queue_update" not in queue_template
-    assert "fetch('/api/queue/status')" in queue_template
-    assert "setInterval(refreshQueue, 1000)" in queue_template
+    assert "socket.io" not in combined
+    assert "const socket = io()" not in combined
+    assert "queue_update" not in combined
+    assert "EventSource" not in combined
+    assert "/api/stream" not in combined
+    assert "fetch('/api/queue/status')" in workspace_script
+    assert "setInterval(refreshQueue, 1000)" in workspace_script
+    assert "fetch('/api/status')" in workspace_script
+    assert "fetch(`/api/logs/${encodeURIComponent(currentJob)}" in workspace_script
+
+
+def test_gifs_workspace_contains_expected_controls_and_metrics():
+    base_template = (ROOT / "app" / "templates" / "base.html").read_text()
+    workspace_template = (ROOT / "app" / "templates" / "gifs.html").read_text()
+    workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
+
+    assert '>GIFs</a>' in base_template
+    assert 'href="/queue"' not in base_template
+    assert 'href="/completed"' not in base_template
+    assert 'href="/live"' not in base_template
+    assert 'data-tab-hash="new"' in workspace_template
+    assert 'data-tab-hash="queue"' in workspace_template
+    assert 'data-tab-hash="completed"' in workspace_template
+    assert 'data-tab-hash="logs"' in workspace_template
+    assert "localStorage.setItem('gifs_active_tab'" in workspace_script
+    assert "jobProgressBar" in workspace_template
+    assert "queueProgressBar" in workspace_template
+    assert "queue-progress-bar" in workspace_template
+    assert "jobOptimization" in workspace_template
+    assert "gif_optimization_label" in workspace_script
+    assert "topSavings" in workspace_template
+    assert "progressText" in workspace_template
+    assert "speed=" not in workspace_template
+    assert "speed=" not in workspace_script
 
 
 def test_live_logs_tracks_last_job_result_instead_of_forcing_running():
-    live_template = (ROOT / "app" / "templates" / "live.html").read_text()
+    workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
 
-    assert "setStatus('running')" not in live_template
-    assert "EventSource" not in live_template
-    assert "/api/stream" not in live_template
-    assert "pollTimer" in live_template
-    assert "fetch(`/api/logs/${encodeURIComponent(currentJob)}" in live_template
-    assert "let lastJob" in live_template
-    assert "newestFinishedJob(all)" in live_template
-    assert "clearInterval(pollTimer)" in live_template
-    assert 'class="pill idle">idle</span>' in live_template
-    assert "jobProgressBar" in live_template
-    assert "queueProgressBar" in live_template
-    assert "jobOptimization" in live_template
-    assert "gif_optimization_label" in live_template
-    assert "speed=" not in live_template
+    assert "setStatus('running')" not in workspace_script
+    assert "pollTimer" in workspace_script
+    assert "let lastJob" in workspace_script
+    assert "newestFinishedJob(all)" in workspace_script
+    assert "clearInterval(pollTimer)" in workspace_script
 
 
 def test_dockerfile_uses_gunicorn_wsgi_entrypoint():

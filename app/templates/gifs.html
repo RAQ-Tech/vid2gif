@@ -1,0 +1,445 @@
+{% extends 'base.html' %}
+
+{% block title %}vid2gif GIFs{% endblock %}
+
+{% block content %}
+<div class="workspace-shell">
+  <div class="workspace-heading">
+    <div>
+      <h1 class="h3 mb-1">GIFs</h1>
+      <div class="text-muted small">ffmpeg: {{ ffmpeg }}</div>
+    </div>
+    <div class="workspace-actions">
+      <a class="btn btn-primary btn-sm" href="#new" data-tab-shortcut="new">
+        <i class="bi bi-plus-lg" aria-hidden="true"></i>
+        <span>New Job</span>
+      </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#logs" data-tab-shortcut="logs">
+        <i class="bi bi-terminal" aria-hidden="true"></i>
+        <span>Live Logs</span>
+      </a>
+    </div>
+  </div>
+
+  <section class="status-strip" aria-label="GIF workspace status">
+    <div class="status-tile">
+      <div class="metric-label">Queue</div>
+      <div id="topQueueStatus" class="metric-value">
+        {% if paused %}Paused{% elif queue_summary.total_active_items %}Running{% else %}Idle{% endif %}
+      </div>
+    </div>
+    <div class="status-tile status-tile-wide">
+      <div class="d-flex justify-content-between gap-3">
+        <div>
+          <div class="metric-label">Current job</div>
+          <div id="topCurrentJob" class="metric-value">
+            {% if running_jobs %}{{ running_jobs[0].progress_label or running_jobs[0].status }}{% else %}No current job{% endif %}
+          </div>
+        </div>
+        <span id="topCurrentPercent" class="small text-muted">
+          {% if running_jobs %}{{ running_jobs[0].progress_percent or 0 }}%{% else %}0%{% endif %}
+        </span>
+      </div>
+      <div class="progress progress-thin mt-2" role="progressbar" aria-label="Current job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{% if running_jobs %}{{ running_jobs[0].progress_percent or 0 }}{% else %}0{% endif %}">
+        <div id="topCurrentProgressBar" class="progress-bar" style="width: {% if running_jobs %}{{ running_jobs[0].progress_percent or 0 }}{% else %}0{% endif %}%"></div>
+      </div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Completed</div>
+      <div id="topCompletedCount" class="metric-value">{{ completed_jobs|length }}</div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Latest savings</div>
+      <div id="topSavings" class="metric-value text-truncate">{{ latest_optimization_label or 'Pending' }}</div>
+    </div>
+  </section>
+
+  <ul class="nav nav-tabs workspace-tabs" role="tablist" aria-label="GIF workspace sections">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="tab-new" data-bs-toggle="tab" data-bs-target="#pane-new" type="button" role="tab" aria-controls="pane-new" aria-selected="true" data-tab-hash="new">
+        <i class="bi bi-plus-square" aria-hidden="true"></i>
+        <span>New Job</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-queue" data-bs-toggle="tab" data-bs-target="#pane-queue" type="button" role="tab" aria-controls="pane-queue" aria-selected="false" data-tab-hash="queue">
+        <i class="bi bi-list-task" aria-hidden="true"></i>
+        <span>Queue</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-completed" data-bs-toggle="tab" data-bs-target="#pane-completed" type="button" role="tab" aria-controls="pane-completed" aria-selected="false" data-tab-hash="completed">
+        <i class="bi bi-check2-circle" aria-hidden="true"></i>
+        <span>Completed</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-logs" data-bs-toggle="tab" data-bs-target="#pane-logs" type="button" role="tab" aria-controls="pane-logs" aria-selected="false" data-tab-hash="logs">
+        <i class="bi bi-terminal" aria-hidden="true"></i>
+        <span>Live Logs</span>
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content workspace-content">
+    <section class="tab-pane fade show active" id="pane-new" role="tabpanel" aria-labelledby="tab-new" tabindex="0">
+      <div class="workspace-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">New Job</h2>
+            <div class="text-muted small">Choose a video or folder under {{ lib_root }}.</div>
+          </div>
+        </div>
+
+        <form id="newJobForm" method="post" action="/api/add" class="job-form">
+          <div class="settings-panel">
+            <div class="panel-subheading">
+              <i class="bi bi-folder2-open" aria-hidden="true"></i>
+              <span>Source</span>
+            </div>
+            <label class="form-label" for="video">Video path</label>
+            <input id="video" name="video" placeholder="/library/movies/Example.mp4" class="form-control" required>
+            <div id="lib-browser" class="directory-browser"></div>
+          </div>
+
+          <div class="settings-grid">
+            <div class="settings-panel">
+              <div class="panel-subheading">
+                <i class="bi bi-sliders" aria-hidden="true"></i>
+                <span>Output</span>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label" for="height_preset">Height</label>
+                  <select id="height_preset" name="height_preset" class="form-select">
+                    <option value="240">240</option>
+                    <option value="360">360</option>
+                    <option value="480" selected>480</option>
+                    <option value="720">720</option>
+                    <option value="1080">1080</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input id="height_custom" name="height_custom" placeholder="e.g. 500" class="form-control mt-2 d-none">
+                </div>
+
+                <div class="col-md-4">
+                  <label class="form-label" for="fps_preset">FPS</label>
+                  <select id="fps_preset" name="fps_preset" class="form-select">
+                    <option value="10">10</option>
+                    <option value="12">12</option>
+                    <option value="15" selected>15</option>
+                    <option value="20">20</option>
+                    <option value="24">24</option>
+                    <option value="30">30</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input id="fps_custom" name="fps_custom" placeholder="e.g. 17" class="form-control mt-2 d-none">
+                  <div class="form-check mt-2">
+                    <input type="checkbox" id="fps_original" name="fps_original" class="form-check-input">
+                    <label class="form-check-label" for="fps_original">Original</label>
+                  </div>
+                </div>
+
+                <div class="col-md-4">
+                  <label class="form-label" for="clip_len_preset">Clip length</label>
+                  <select id="clip_len_preset" name="clip_len_preset" class="form-select">
+                    <option value="1">1 second</option>
+                    <option value="2" selected>2 seconds</option>
+                    <option value="3">3 seconds</option>
+                    <option value="4">4 seconds</option>
+                    <option value="5">5 seconds</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input id="clip_len_custom" name="clip_len_custom" placeholder="e.g. 2.75" class="form-control mt-2 d-none">
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-panel">
+              <div class="panel-subheading">
+                <i class="bi bi-clock-history" aria-hidden="true"></i>
+                <span>Sampling</span>
+              </div>
+              <div class="row g-3">
+                <div class="col-12">
+                  <label class="form-label" for="percent_points">Percent points</label>
+                  <input id="percent_points" name="percent_points" value="{{ defaults.percent_points }}" class="form-control">
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                  <label class="form-label" for="abs_early">Abs early</label>
+                  <input id="abs_early" name="abs_early" value="{{ defaults.abs_early }}" class="form-control">
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                  <label class="form-label" for="abs_late_from_end">Abs late from end</label>
+                  <input id="abs_late_from_end" name="abs_late_from_end" value="{{ defaults.abs_late_from_end }}" class="form-control">
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                  <label class="form-label" for="start_buffer">Start buffer</label>
+                  <input id="start_buffer" name="start_buffer" value="{{ defaults.start_buffer }}" class="form-control">
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                  <label class="form-label" for="end_buffer">End buffer</label>
+                  <input id="end_buffer" name="end_buffer" value="{{ defaults.end_buffer }}" class="form-control">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-panel settings-panel-actions">
+            <div class="form-check form-switch">
+              <input type="checkbox" name="loop_forever" id="loop_forever" class="form-check-input" checked>
+              <label class="form-check-label" for="loop_forever">Loop forever</label>
+            </div>
+            <div class="form-check form-switch">
+              <input type="checkbox" name="smooth" id="smooth" class="form-check-input" {% if defaults.smooth %}checked{% endif %}>
+              <label class="form-check-label" for="smooth">Smooth motion</label>
+            </div>
+            <button type="submit" class="btn btn-primary ms-md-auto">
+              <i class="bi bi-plus-lg" aria-hidden="true"></i>
+              <span>Add Job</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="tab-pane fade" id="pane-queue" role="tabpanel" aria-labelledby="tab-queue" tabindex="0">
+      <div class="workspace-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Queue</h2>
+            <div class="text-muted small" id="queue-count">{{ shown }} of {{ total }} items in queue displayed</div>
+          </div>
+          <div id="queue-status">
+            {% if paused %}
+              <span class="badge text-bg-secondary">Paused</span>
+            {% else %}
+              <span class="badge text-bg-success">Running</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="metric-band">
+          <div>
+            <div class="metric-label">Overall progress</div>
+            <div id="queue-summary-label" class="metric-value">{{ queue_summary.queue_progress_label }}</div>
+          </div>
+          <div class="metric-progress">
+            <div class="progress" role="progressbar" aria-label="Overall queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ queue_summary.queue_progress_percent }}">
+              <div id="queue-progress-bar" class="progress-bar" style="width: {{ queue_summary.queue_progress_percent }}%">{{ queue_summary.queue_progress_percent }}%</div>
+            </div>
+            <div class="metric-row">
+              <span id="queue-items">{{ queue_summary.completed_active_items }} of {{ queue_summary.total_active_items }} items complete</span>
+              <span id="queue-elapsed">Elapsed: {% if queue_summary.queue_elapsed_seconds is not none %}{{ format_duration(queue_summary.queue_elapsed_seconds) }}{% else %}not started{% endif %}</span>
+              <span id="queue-eta">Remaining: {% if queue_summary.queue_eta_seconds is not none %}{{ format_duration(queue_summary.queue_eta_seconds) }}{% else %}unknown{% endif %}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="toolbar-row">
+          <form method="post" action="/api/queue/start?limit={{ limit }}">
+            <button type="submit" class="btn btn-success btn-sm">
+              <i class="bi bi-play-fill" aria-hidden="true"></i>
+              <span>Start</span>
+            </button>
+          </form>
+          <form method="post" action="/api/queue/pause?limit={{ limit }}">
+            <button type="submit" class="btn btn-warning btn-sm">
+              <i class="bi bi-pause-fill" aria-hidden="true"></i>
+              <span>Pause</span>
+            </button>
+          </form>
+          <form method="post" action="/api/queue/stop?limit={{ limit }}">
+            <button type="submit" class="btn btn-danger btn-sm">
+              <i class="bi bi-stop-fill" aria-hidden="true"></i>
+              <span>Stop</span>
+            </button>
+          </form>
+          <form method="get" action="/gifs" class="limit-form">
+            <label class="form-label mb-0" for="queueLimit">Show</label>
+            <select id="queueLimit" name="limit" class="form-select form-select-sm w-auto">
+              {% for opt in queue_limits %}
+              <option value="{{ opt }}" {% if opt==limit %}selected{% endif %}>{{ opt }}</option>
+              {% endfor %}
+            </select>
+            <span class="small text-muted">items</span>
+          </form>
+        </div>
+
+        <div class="table-responsive workspace-table-wrap">
+          <table class="table table-hover align-middle workspace-table">
+            <thead>
+              <tr><th>Move</th><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
+            </thead>
+            <tbody id="queue-body">
+            {% for j in running_jobs %}
+            <tr>
+              <td class="control-cell">
+                <button class="btn btn-outline-secondary btn-icon btn-sm" disabled title="Move up"><i class="bi bi-arrow-up" aria-hidden="true"></i></button>
+                <button class="btn btn-outline-secondary btn-icon btn-sm" disabled title="Move down"><i class="bi bi-arrow-down" aria-hidden="true"></i></button>
+              </td>
+              <td><code>{{ j.id }}</code></td>
+              <td class="path-cell"><code title="{{ j.video }}">{{ j.video }}</code></td>
+              <td><span class="badge text-bg-primary">{{ j.status }}</span></td>
+              <td class="progress-cell">
+                <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
+                  <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%">{{ j.progress_percent or 0 }}%</div>
+                </div>
+                <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Starting' }}</div>
+              </td>
+              <td><a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td>
+            </tr>
+            {% endfor %}
+            {% for j in queued_jobs %}
+            <tr>
+              <td class="control-cell">
+                <form method="post" action="/api/queue/move/{{ j.id }}/up?limit={{ limit }}" class="d-inline">
+                  <button class="btn btn-outline-secondary btn-icon btn-sm" title="Move up"><i class="bi bi-arrow-up" aria-hidden="true"></i></button>
+                </form>
+                <form method="post" action="/api/queue/move/{{ j.id }}/down?limit={{ limit }}" class="d-inline">
+                  <button class="btn btn-outline-secondary btn-icon btn-sm" title="Move down"><i class="bi bi-arrow-down" aria-hidden="true"></i></button>
+                </form>
+              </td>
+              <td><code>{{ j.id }}</code></td>
+              <td class="path-cell"><code title="{{ j.video }}">{{ j.video }}</code></td>
+              <td><span class="badge text-bg-secondary">{{ j.status }}</span></td>
+              <td class="progress-cell">
+                <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
+                  <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%">{{ j.progress_percent or 0 }}%</div>
+                </div>
+                <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Waiting' }}</div>
+              </td>
+              <td><a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-pane fade" id="pane-completed" role="tabpanel" aria-labelledby="tab-completed" tabindex="0">
+      <div class="workspace-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Completed</h2>
+            <div class="text-muted small">Final duration, file size, optimization, output path, and log links.</div>
+          </div>
+        </div>
+        <div class="table-responsive workspace-table-wrap">
+          <table class="table table-hover align-middle workspace-table">
+            <thead>
+              <tr><th>ID</th><th>Video</th><th>Status</th><th>Duration</th><th>Size</th><th>Optimization</th><th>Output</th><th>Log</th></tr>
+            </thead>
+            <tbody id="completed-body">
+            {% for j in completed_jobs %}
+            <tr>
+              <td><code>{{ j.id }}</code></td>
+              <td class="path-cell"><code title="{{ j.video }}">{{ j.video }}</code></td>
+              <td><span class="badge {% if j.status == 'success' %}text-bg-success{% elif j.status == 'failed' %}text-bg-danger{% else %}text-bg-secondary{% endif %}">{{ j.status }}</span></td>
+              <td>{{ format_duration(j.elapsed_seconds) if j.elapsed_seconds is not none else '' }}</td>
+              <td>{{ format_size(j.output_size_bytes) if j.output_size_bytes is not none else '' }}</td>
+              <td>{{ j.gif_optimization_label }}</td>
+              <td class="path-cell"><code title="{{ j.out_gif }}">{{ j.out_gif }}</code></td>
+              <td><a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-pane fade" id="pane-logs" role="tabpanel" aria-labelledby="tab-logs" tabindex="0">
+      <div class="workspace-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Live Logs</h2>
+            <div class="text-muted small">Clean processing logs and current queue metrics.</div>
+          </div>
+        </div>
+
+        <div class="toolbar-row">
+          <label for="jobSel" class="form-label mb-0">Job</label>
+          <select id="jobSel" class="form-select form-select-sm live-job-select">
+            <option value="live" selected>Live</option>
+            {% for j in all_jobs %}
+              <option value="{{ j.id }}">{{ j.id }} | {{ j.status }} | {{ j.video }}</option>
+            {% endfor %}
+          </select>
+          <button id="startLogBtn" class="btn btn-primary btn-sm" type="button">
+            <i class="bi bi-play-fill" aria-hidden="true"></i>
+            <span>Start</span>
+          </button>
+          <button id="stopLogBtn" class="btn btn-secondary btn-sm" type="button">
+            <i class="bi bi-stop-fill" aria-hidden="true"></i>
+            <span>Stop</span>
+          </button>
+          <button id="clearLogBtn" class="btn btn-outline-secondary btn-sm" type="button">
+            <i class="bi bi-eraser" aria-hidden="true"></i>
+            <span>Clear</span>
+          </button>
+          <div class="form-check form-switch ms-md-auto">
+            <input class="form-check-input" type="checkbox" id="autoscroll" checked>
+            <label class="form-check-label" for="autoscroll">Autoscroll</label>
+          </div>
+        </div>
+
+        <div class="log-metrics">
+          <div class="settings-panel">
+            <div class="d-flex justify-content-between align-items-center gap-3 mb-2">
+              <div>
+                <div class="metric-label">Current job</div>
+                <div id="jobProgressLabel" class="metric-value">Idle</div>
+              </div>
+              <span id="jobStatus" class="status-pill idle">idle</span>
+            </div>
+            <div class="progress" role="progressbar" aria-label="Current job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="jobProgressBar" class="progress-bar" style="width: 0%">0%</div>
+            </div>
+            <div class="metric-row">
+              <span id="jobElapsed">Elapsed: not started</span>
+              <span id="jobEta">Remaining: unknown</span>
+              <span id="jobSize">Size: pending</span>
+              <span id="jobOptimization">Optimization: pending</span>
+            </div>
+          </div>
+
+          <div class="settings-panel">
+            <div class="d-flex justify-content-between align-items-center gap-3 mb-2">
+              <div>
+                <div class="metric-label">Queue</div>
+                <div id="queueProgressLabel" class="metric-value">No active queue</div>
+              </div>
+              <span id="queueItems" class="small text-muted">0 of 0 items</span>
+            </div>
+            <div class="progress" role="progressbar" aria-label="Queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="queueProgressBar" class="progress-bar" style="width: 0%">0%</div>
+            </div>
+            <div class="metric-row">
+              <span id="queueElapsed">Elapsed: not started</span>
+              <span id="queueEta">Remaining: unknown</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="logbox" class="logbox" aria-live="polite"></div>
+        <div class="statusbar">
+          <span id="progressText"></span>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  window.vid2gifConfig = {
+    libRoot: {{ lib_root|tojson }},
+    queueLimit: {{ limit|tojson }}
+  };
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='gifs.js') }}"></script>
+{% endblock %}

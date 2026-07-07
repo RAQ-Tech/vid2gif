@@ -24,8 +24,15 @@ def _make_job(job_id: str, status: str):
 
 def _clear_jobs():
     jobs.jobs.clear()
+    jobs.queue_paused.clear()
     with jobs.job_queue.mutex:
         jobs.job_queue.queue.clear()
+
+
+def _queue_body(html: str) -> str:
+    start = html.index('id="queue-body"')
+    end = html.index("</tbody>", start)
+    return html[start:end]
 
 
 def test_running_job_display_and_lock():
@@ -37,16 +44,15 @@ def test_running_job_display_and_lock():
     jobs.job_queue.put(queued["id"])
 
     client = app.test_client()
-    res = client.get("/queue")
+    res = client.get("/gifs?limit=10")
     html = res.get_data(as_text=True)
     assert html.find(running["id"]) < html.find(queued["id"])
     assert f"/api/queue/move/{running['id']}/up" not in html
     assert f"/api/queue/move/{running['id']}/down" not in html
 
     jobs.jobs[running["id"]]["status"] = "success"
-    res = client.get("/queue")
-    html = res.get_data(as_text=True)
+    res = client.get("/gifs?limit=10")
+    html = _queue_body(res.get_data(as_text=True))
     assert running["id"] not in html
 
     _clear_jobs()
-

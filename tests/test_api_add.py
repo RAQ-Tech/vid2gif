@@ -35,5 +35,6 @@ def test_api_add_accepts_original_fps(monkeypatch):
 
     res = client.post("/api/add", data=data)
     assert res.status_code == 302
+    assert res.headers["Location"].endswith("/gifs#logs")
     assert captured["cfg"]["fps"] == "original"
     assert captured["batch_id"]
