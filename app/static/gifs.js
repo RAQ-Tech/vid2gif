@@ -10,6 +10,9 @@
   let autoMode = true;
   let pollTimer = null;
   let polling = false;
+  let scanEstimateTimer = null;
+  let scanEstimateToken = 0;
+  let scanEstimateController = null;
 
   function byId(id) {
     return document.getElementById(id);
@@ -439,6 +442,81 @@
     return res.json();
   }
 
+  function setScanEstimate(message, detail) {
+    const messageEl = byId('scanEstimateMessage');
+    const detailEl = byId('scanEstimateDetail');
+    if (messageEl) messageEl.textContent = message || 'Choose a folder';
+    if (detailEl) detailEl.textContent = detail || '';
+  }
+
+  function scanEstimateParams() {
+    const form = byId('newJobForm');
+    const params = new URLSearchParams();
+    if (!form) return params;
+    const formData = new FormData(form);
+    formData.forEach((value, key) => {
+      params.set(key, value);
+    });
+    const video = byId('video');
+    params.set('path', video ? video.value.trim() : '');
+    if (byId('fps_original')?.checked) {
+      params.set('fps_original', 'on');
+    } else {
+      params.delete('fps_original');
+    }
+    return params;
+  }
+
+  async function refreshScanEstimate() {
+    const params = scanEstimateParams();
+    const path = params.get('path') || '';
+    if (!path) {
+      setScanEstimate('Choose a folder', '');
+      return;
+    }
+
+    scanEstimateToken += 1;
+    const token = scanEstimateToken;
+    if (scanEstimateController) {
+      scanEstimateController.abort();
+    }
+    scanEstimateController = new AbortController();
+    setScanEstimate('Scanning', '');
+    try {
+      const res = await fetch(`/api/scan-estimate?${params.toString()}`, {
+        signal: scanEstimateController.signal
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = {};
+      }
+      if (token !== scanEstimateToken) return;
+      if (!res.ok) {
+        setScanEstimate(data.message || 'Choose a folder', data.detail || '');
+        return;
+      }
+      setScanEstimate(data.message || 'Choose a folder', data.detail || '');
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      if (token === scanEstimateToken) {
+        setScanEstimate('Scan unavailable', '');
+      }
+    }
+  }
+
+  function scheduleScanEstimate(delayMs) {
+    clearTimeout(scanEstimateTimer);
+    const path = (byId('video')?.value || '').trim();
+    if (!path) {
+      setScanEstimate('Choose a folder', '');
+      return;
+    }
+    setScanEstimate('Scanning', '');
+    scanEstimateTimer = setTimeout(refreshScanEstimate, delayMs ?? 350);
+  }
+
   async function addSelect(basePath) {
     const dirs = await fetchDirs(basePath);
     if (!dirs.length) return;
@@ -455,6 +533,7 @@
       const newPath = choice ? `${basePath}/${choice}` : basePath;
       if (vid) vid.value = newPath;
       if (choice) addSelect(newPath);
+      scheduleScanEstimate(150);
     });
     container.appendChild(sel);
   }
@@ -492,6 +571,7 @@
   function initNewJob() {
     const form = byId('newJobForm');
     if (!form) return;
+    const hadSavedPath = localStorage.getItem('newjob_video') !== null;
     loadForm();
     toggleCustom('height_preset', 'height_custom');
     toggleCustom('fps_preset', 'fps_custom', 'fps_original');
@@ -499,12 +579,23 @@
     const vid = byId('video');
     if (vid && !vid.value) vid.value = config.libRoot || '/library';
     addSelect(config.libRoot || '/library');
-    form.addEventListener('input', saveForm);
-    form.addEventListener('change', saveForm);
+    form.addEventListener('input', () => {
+      saveForm();
+      scheduleScanEstimate();
+    });
+    form.addEventListener('change', () => {
+      saveForm();
+      scheduleScanEstimate();
+    });
     byId('height_preset').addEventListener('change', () => toggleCustom('height_preset', 'height_custom'));
     byId('fps_preset').addEventListener('change', () => toggleCustom('fps_preset', 'fps_custom', 'fps_original'));
     byId('fps_original').addEventListener('change', () => toggleCustom('fps_preset', 'fps_custom', 'fps_original'));
     byId('clip_len_preset').addEventListener('change', () => toggleCustom('clip_len_preset', 'clip_len_custom'));
+    if (hadSavedPath && vid && vid.value.trim()) {
+      scheduleScanEstimate(150);
+    } else {
+      setScanEstimate('Choose a folder', '');
+    }
   }
 
   function activateTab(hash, updateUrl) {

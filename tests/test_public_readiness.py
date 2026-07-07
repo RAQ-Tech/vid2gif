@@ -241,6 +241,7 @@ def test_gifs_workspace_uses_polling_instead_of_socketio():
     assert "setInterval(refreshQueue, 1000)" in workspace_script
     assert "fetch('/api/status')" in workspace_script
     assert "fetch(`/api/logs/${encodeURIComponent(currentJob)}" in workspace_script
+    assert "fetch(`/api/scan-estimate?${params.toString()}`" in workspace_script
 
 
 def test_gifs_workspace_contains_expected_controls_and_metrics():
@@ -264,6 +265,14 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "gif_optimization_label" in workspace_script
     assert "topSavings" in workspace_template
     assert "progressText" in workspace_template
+    assert "scanEstimateMessage" in workspace_template
+    assert "scanEstimateDetail" in workspace_template
+    assert "Choose a folder" in workspace_template
+    assert "AbortController" in workspace_script
+    assert "scanEstimateToken" in workspace_script
+    assert "setScanEstimate(data.message" in workspace_script
+    assert "messageEl.textContent" in workspace_script
+    assert "detailEl.textContent" in workspace_script
     assert "speed=" not in workspace_template
     assert "speed=" not in workspace_script
 

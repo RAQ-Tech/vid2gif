@@ -100,6 +100,13 @@
             <label class="form-label" for="video">Video path</label>
             <input id="video" name="video" placeholder="/library/movies/Example.mp4" class="form-control" required>
             <div id="lib-browser" class="directory-browser"></div>
+            <div class="scan-estimate" aria-live="polite">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <div>
+                <div id="scanEstimateMessage">Choose a folder</div>
+                <div id="scanEstimateDetail" class="scan-estimate-detail"></div>
+              </div>
+            </div>
           </div>
 
           <div class="settings-grid">

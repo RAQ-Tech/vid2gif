@@ -63,6 +63,8 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(jobs, 'make_gif_multi_inputs', fake_make_gif)
     monkeypatch.setattr(jobs, 'optimize_gif', fake_optimize_gif)
+    recorded = []
+    monkeypatch.setattr(jobs, 'record_successful_job', lambda job: recorded.append(job['id']) or True)
     t = threading.Thread(target=jobs.worker)
     t.start()
     jobs.job_queue.put(job_id)
@@ -72,6 +74,7 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
     assert os.path.isfile(job['out_gif'])
     assert out_gif.read_bytes() == b'optimized'
     assert events == ['make', 'optimize']
+    assert recorded == [job_id]
     assert job['gif_optimization_status'] == 'optimized'
     assert not os.path.exists(job['tmp_dir'])
     _clear_jobs_and_queue()
@@ -115,6 +118,13 @@ def test_worker_failure_leaves_existing_output_and_cleans_tmp_dir(tmp_path, monk
         'optimize_gif',
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError('optimizer should not run after ffmpeg failure')
+        ),
+    )
+    monkeypatch.setattr(
+        jobs,
+        'record_successful_job',
+        lambda job: (_ for _ in ()).throw(
+            AssertionError('estimate history should not update after failure')
         ),
     )
     t = threading.Thread(target=jobs.worker)

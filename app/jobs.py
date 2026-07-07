@@ -7,6 +7,7 @@ import time
 import shutil
 
 from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
+from .estimate_history import record_successful_job
 from .gif_optimizer import optimize_gif
 from .ffmpeg_utils import (
     get_duration,
@@ -309,6 +310,7 @@ def worker():
                     else:
                         if os.path.isfile(job["out_gif"]):
                             mark_job_finished(job, "success", job["out_gif"])
+                            record_successful_job(job)
                             size = format_size(job.get("output_size_bytes"))
                             elapsed = format_duration(job.get("elapsed_seconds"))
                             job["logger"].info(

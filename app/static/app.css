@@ -137,6 +137,30 @@ body {
   max-width: min(100%, 320px);
 }
 
+.scan-estimate {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-body-color);
+  font-size: 0.925rem;
+}
+
+.scan-estimate i {
+  color: var(--bs-secondary-color);
+  margin-top: 1px;
+}
+
+.scan-estimate-detail {
+  margin-top: 2px;
+  color: var(--bs-secondary-color);
+  font-size: 0.8125rem;
+}
+
 .metric-label {
   color: var(--bs-secondary-color);
   font-size: 0.75rem;
