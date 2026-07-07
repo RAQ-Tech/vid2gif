@@ -226,7 +226,9 @@ def test_workspace_escapes_dynamic_job_tables():
     assert "escapeHtml(variant.name)" in workspace_script
     assert "escapeHtml(variant.settings_label)" in workspace_script
     assert "escapeHtml(file.source_name || '')" in workspace_script
-    assert "escapeHtml(file.url)" in workspace_script
+    assert "escapeHtml(displayUrl)" in workspace_script
+    assert "escapeHtml(file.original_url || file.url)" in workspace_script
+    assert "escapeHtml(file.download_url || file.url)" in workspace_script
     assert "box.textContent +=" in workspace_script
     assert "opt.textContent =" in workspace_script
 
@@ -249,6 +251,7 @@ def test_gifs_workspace_uses_polling_instead_of_socketio():
     assert "fetch('/api/test-lab/status')" in workspace_script
     assert "fetch('/api/test-lab/run'" in workspace_script
     assert "fetch('/api/test-lab/delete'" in workspace_script
+    assert "fetch('/api/test-lab/preview'" in workspace_script
     assert "fetch(`/api/media-browser?path=${encodeURIComponent" in workspace_script
 
 
@@ -258,6 +261,7 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
 
     assert '>GIFs</a>' in base_template
+    assert '>Settings</a>' in base_template
     assert 'href="/queue"' not in base_template
     assert 'href="/completed"' not in base_template
     assert 'href="/live"' not in base_template
@@ -290,6 +294,7 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "testLabAutoRestart" in workspace_template
     assert "testLabPreviewLayout" in workspace_template
     assert "testLabPreviewSizeMode" in workspace_template
+    assert "Natural preview" in workspace_template
     assert "Optimize GIF" in workspace_template
     assert ">Restart</span>" in workspace_template
     assert "data-test-preview" in workspace_script
@@ -304,6 +309,14 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "testlab_preview_size" in workspace_script
     assert "data-test-rename-id" in workspace_script
     assert "/api/test-lab/rename" in workspace_script
+    assert "/api/test-lab/preview" in workspace_script
+    assert "data-base-src" in workspace_script
+    assert "display_url" in workspace_script
+    assert "preview_status" in workspace_script
+    assert "preview_label" in workspace_script
+    assert "preview-badge" in workspace_script
+    assert "testLabSlotRenderSignature" in workspace_script
+    assert "bi-download" in workspace_script
     assert "test-empty-slots" in workspace_script
     assert "data-slot-drop" in workspace_script
     assert "data-drag-file-id" in workspace_script
@@ -318,6 +331,15 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "fps_original" not in workspace_script
     assert "speed=" not in workspace_template
     assert "speed=" not in workspace_script
+
+
+def test_settings_template_contains_preview_controls():
+    settings_template = (ROOT / "app" / "templates" / "settings.html").read_text()
+
+    assert "Test Lab preview height" in settings_template
+    assert "Original / no scaled preview" in settings_template
+    assert "preview_height_preset" in settings_template
+    assert "preview_height_custom" in settings_template
 
 
 def test_live_logs_tracks_last_job_result_instead_of_forcing_running():

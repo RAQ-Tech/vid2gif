@@ -36,6 +36,17 @@ def test_gifs_workspace_renders_sections():
     assert 'src="/static/gifs.js"' in html
 
 
+def test_settings_page_renders():
+    client = app.test_client()
+
+    res = client.get("/settings")
+    html = res.get_data(as_text=True)
+
+    assert res.status_code == 200
+    assert "Test Lab preview height" in html
+    assert "Original / no scaled preview" in html
+
+
 def test_legacy_page_routes_redirect_to_workspace_tabs():
     client = app.test_client()
 

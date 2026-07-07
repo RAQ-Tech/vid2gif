@@ -2,6 +2,7 @@ import os
 import time
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_file
 
+from . import app_settings
 from . import estimate_history
 from . import test_lab
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
@@ -206,6 +207,69 @@ def home():
 @app.route("/gifs")
 def gifs_page():
     return render_template("gifs.html", **_gifs_workspace_context(_queue_limit()))
+
+
+def _settings_context(error="", saved=False, form_values=None):
+    settings = app_settings.load_settings()
+    preview_height = settings["test_lab_preview_height"]
+    selected = "original" if preview_height is None else str(preview_height)
+    custom = ""
+    presets = [str(value) for value in app_settings.PREVIEW_HEIGHT_PRESETS]
+    if selected not in presets and selected != "original":
+        custom = selected
+        selected = "custom"
+    if form_values:
+        selected = form_values.get("preview_height_preset", selected)
+        custom = form_values.get("preview_height_custom", custom)
+    return {
+        "settings": settings,
+        "preview_height_presets": app_settings.PREVIEW_HEIGHT_PRESETS,
+        "preview_height_selected": selected,
+        "preview_height_custom": custom,
+        "preview_height_label": app_settings.preview_height_label(preview_height),
+        "preview_height_warning": app_settings.warning_for_preview_height(
+            preview_height
+        ),
+        "error": error,
+        "saved": saved,
+    }
+
+
+@app.route("/settings", methods=["GET", "POST"])
+def settings_page():
+    if request.method == "POST":
+        preset = (request.form.get("preview_height_preset") or "").strip().lower()
+        raw_height = (
+            request.form.get("preview_height_custom")
+            if preset == "custom"
+            else preset
+        )
+        height, err = app_settings.parse_preview_height(raw_height)
+        if err:
+            return (
+                render_template(
+                    "settings.html",
+                    **_settings_context(error=err, form_values=request.form),
+                ),
+                400,
+            )
+        if not app_settings.save_settings({"test_lab_preview_height": height}):
+            return (
+                render_template(
+                    "settings.html",
+                    **_settings_context(
+                        error="Settings could not be saved.",
+                        form_values=request.form,
+                    ),
+                ),
+                500,
+            )
+        return redirect(url_for("settings_page", saved="1"))
+
+    return render_template(
+        "settings.html",
+        **_settings_context(saved=request.args.get("saved") == "1"),
+    )
 
 
 @app.route("/queue")
@@ -537,9 +601,40 @@ def api_test_lab_rename():
     return jsonify(payload)
 
 
+@app.route("/api/test-lab/preview", methods=["POST"])
+def api_test_lab_preview():
+    data = request.get_json(silent=True) or {}
+    payload, err = test_lab.request_preview(data.get("file_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify(payload)
+
+
 @app.route("/test-lab/files/<run_id>/<filename>")
 def test_lab_file(run_id, filename):
     path = test_lab.test_lab_file_path(run_id, filename)
+    if not path:
+        return "Not found", 404
+    return send_file(path, mimetype="image/gif", conditional=True)
+
+
+@app.route("/test-lab/download/<run_id>/<filename>")
+def test_lab_download(run_id, filename):
+    path = test_lab.test_lab_file_path(run_id, filename)
+    if not path:
+        return "Not found", 404
+    return send_file(
+        path,
+        mimetype="image/gif",
+        conditional=True,
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.route("/test-lab/previews/<run_id>/<filename>")
+def test_lab_preview_file(run_id, filename):
+    path = test_lab.test_lab_preview_file_path(run_id, filename)
     if not path:
         return "Not found", 404
     return send_file(path, mimetype="image/gif", conditional=True)

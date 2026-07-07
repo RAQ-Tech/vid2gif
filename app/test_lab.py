@@ -5,12 +5,16 @@ import os
 import queue
 import re
 import shutil
+import subprocess
 import threading
 import time
 
+from . import app_settings
 from .config import (
     GIF_OPTIMIZE,
     GIF_OPTIMIZE_LEVEL,
+    GIF_OPTIMIZE_TIMEOUT,
+    GIFSICLE_BIN,
     LIB_ROOT,
     LOG_DIR,
     PROCESS_TMP_ROOT,
@@ -47,6 +51,7 @@ SCHEMA_VERSION = 1
 MIN_VARIANTS = 2
 MAX_VARIANTS = 4
 MAX_DISPLAY_NAME_LENGTH = 80
+PREVIEW_DIR_NAME = "_previews"
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 LAB_TERMINAL_STATUSES = TERMINAL_STATUSES | {"partial"}
 __test__ = False
@@ -54,6 +59,8 @@ __test__ = False
 test_lab_runs = {}
 test_lab_queue = queue.Queue()
 test_lab_lock = threading.Lock()
+preview_lock = threading.Lock()
+preview_jobs = {}
 _worker_start_lock = threading.Lock()
 _worker_started = False
 
@@ -70,8 +77,20 @@ def _manifest_path(run_id):
     return os.path.join(_run_dir(run_id), "manifest.json")
 
 
+def _preview_dir(run_id):
+    return os.path.join(_run_dir(run_id), PREVIEW_DIR_NAME)
+
+
 def _file_url(run_id, filename):
     return f"/test-lab/files/{run_id}/{filename}"
+
+
+def _file_download_url(run_id, filename):
+    return f"/test-lab/download/{run_id}/{filename}"
+
+
+def _preview_url(run_id, filename):
+    return f"/test-lab/previews/{run_id}/{filename}"
 
 
 def _safe_name(value):
@@ -99,6 +118,22 @@ def _safe_file_path(run_id, filename):
     return path
 
 
+def _safe_preview_path(run_id, filename):
+    run_id = _safe_name(run_id)
+    filename = _safe_name(filename)
+    if (
+        not run_id
+        or not filename
+        or not filename.lower().endswith(".gif")
+        or PREVIEW_DIR_NAME in {run_id, filename}
+    ):
+        return None
+    path = os.path.realpath(os.path.join(_preview_dir(run_id), filename))
+    if not path_is_under(path, TEST_LAB_ROOT):
+        return None
+    return path
+
+
 def _file_id(run_id, filename):
     if not run_id or not filename:
         return ""
@@ -114,8 +149,37 @@ def _url_for_file_id(file_id):
     return _file_url(run_id, filename)
 
 
+def _preview_filename(filename, height):
+    stem = os.path.splitext(filename)[0]
+    return f"{stem}.preview-h{int(height)}.gif"
+
+
+def _preview_key(file_id, height):
+    return f"{file_id}|h{height}"
+
+
+def _gif_dimensions(path):
+    try:
+        with open(path, "rb") as f:
+            header = f.read(10)
+    except OSError:
+        return None, None
+    if len(header) < 10 or header[:6] not in (b"GIF87a", b"GIF89a"):
+        return None, None
+    width = int.from_bytes(header[6:8], "little")
+    height = int.from_bytes(header[8:10], "little")
+    return width or None, height or None
+
+
 def test_lab_file_path(run_id, filename):
     path = _safe_file_path(run_id, filename)
+    if not path or not os.path.isfile(path):
+        return None
+    return path
+
+
+def test_lab_preview_file_path(run_id, filename):
+    path = _safe_preview_path(run_id, filename)
     if not path or not os.path.isfile(path):
         return None
     return path
@@ -370,6 +434,207 @@ def _variant_public_file_id(variant):
     if _path_for_file_id(reused_file_id):
         return reused_file_id
     return ""
+
+
+def _preview_status_for(file_id, height):
+    key = _preview_key(file_id, height)
+    with preview_lock:
+        return dict(preview_jobs.get(key) or {})
+
+
+def _display_metadata(run_id, filename, path):
+    file_id = _file_id(run_id, filename)
+    original_url = _file_url(run_id, filename)
+    settings = app_settings.load_settings()
+    configured_height = settings["test_lab_preview_height"]
+    width, height = _gif_dimensions(path)
+    base = {
+        "url": original_url,
+        "original_url": original_url,
+        "download_url": _file_download_url(run_id, filename),
+        "display_url": original_url,
+        "display_is_scaled": False,
+        "preview_status": "original",
+        "preview_url": "",
+        "preview_key": "",
+        "preview_error": "",
+        "preview_label": "Original",
+        "preview_target_height": configured_height,
+        "preview_height_label": app_settings.preview_height_label(configured_height),
+        "original_width": width,
+        "original_height": height,
+        "preview_width": None,
+        "preview_height": None,
+    }
+
+    if configured_height is None:
+        base["preview_status"] = "disabled"
+        return base
+    if not height or height <= configured_height:
+        return base
+
+    preview_filename = _preview_filename(filename, configured_height)
+    preview_path = _safe_preview_path(run_id, preview_filename)
+    preview_key = _preview_key(file_id, configured_height)
+    base.update(
+        {
+            "display_url": "",
+            "display_is_scaled": True,
+            "preview_status": "needed",
+            "preview_url": _preview_url(run_id, preview_filename),
+            "preview_key": preview_key,
+            "preview_label": (
+                "Preview needed · "
+                f"{app_settings.preview_height_label(configured_height)}"
+            ),
+        }
+    )
+
+    if preview_path and os.path.isfile(preview_path):
+        preview_width, preview_height = _gif_dimensions(preview_path)
+        base.update(
+            {
+                "display_url": _preview_url(run_id, preview_filename),
+                "preview_status": "ready",
+                "preview_label": (
+                    "Scaled preview · "
+                    f"{app_settings.preview_height_label(preview_height or configured_height)}"
+                ),
+                "preview_width": preview_width,
+                "preview_height": preview_height or configured_height,
+            }
+        )
+        return base
+
+    state = _preview_status_for(file_id, configured_height)
+    if state.get("status") == "generating":
+        base.update(
+            {
+                "preview_status": "generating",
+                "preview_label": (
+                    "Preparing preview · "
+                    f"{app_settings.preview_height_label(configured_height)}"
+                ),
+            }
+        )
+    elif state.get("status") == "failed":
+        base.update(
+            {
+                "preview_status": "failed",
+                "preview_error": state.get("error", "Preview unavailable"),
+                "preview_label": (
+                    "Preview unavailable · "
+                    f"{app_settings.preview_height_label(configured_height)}"
+                ),
+            }
+        )
+    return base
+
+
+def _command_available(command):
+    if os.path.isabs(command) or os.sep in command:
+        return os.path.isfile(command)
+    return shutil.which(command) is not None
+
+
+def _mark_preview(file_id, height, **values):
+    key = _preview_key(file_id, height)
+    with preview_lock:
+        state = dict(preview_jobs.get(key) or {})
+        state.update(values)
+        preview_jobs[key] = state
+
+
+def _preview_worker(file_id, target_height):
+    run_id, filename = file_id.split("/", 1)
+    preview_filename = _preview_filename(filename, target_height)
+    preview_path = _safe_preview_path(run_id, preview_filename)
+    tmp_path = f"{preview_path}.{os.getpid()}.tmp" if preview_path else ""
+    try:
+        source_path = _path_for_file_id(file_id)
+        if not source_path or not os.path.isfile(source_path) or not preview_path:
+            raise RuntimeError("Test GIF not found")
+        if os.path.isfile(preview_path):
+            _mark_preview(file_id, target_height, status="ready", error="")
+            return
+        if not _command_available(GIFSICLE_BIN):
+            raise RuntimeError("Gifsicle not found")
+        os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        args = [
+            GIFSICLE_BIN,
+            "--resize-fit-height",
+            str(target_height),
+            "--output",
+            tmp_path,
+            source_path,
+        ]
+        with conversion_lock:
+            proc = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=GIF_OPTIMIZE_TIMEOUT,
+            )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(detail or "Preview generation failed")
+        if not os.path.isfile(tmp_path):
+            raise RuntimeError("Preview file was not created")
+        os.replace(tmp_path, preview_path)
+        _mark_preview(file_id, target_height, status="ready", error="")
+    except subprocess.TimeoutExpired:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        _mark_preview(
+            file_id,
+            target_height,
+            status="failed",
+            error="Preview generation timed out",
+        )
+    except Exception as e:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        _mark_preview(file_id, target_height, status="failed", error=str(e))
+
+
+def request_preview(file_id):
+    file_id = str(file_id or "")
+    if "/" not in file_id:
+        return None, "Test GIF not found"
+    run_id, filename = file_id.split("/", 1)
+    path = test_lab_file_path(run_id, filename)
+    if not path:
+        return None, "Test GIF not found"
+
+    metadata = _display_metadata(run_id, filename, path)
+    target_height = metadata.get("preview_target_height")
+    if (
+        target_height is None
+        or metadata.get("preview_status")
+        in {"original", "disabled", "ready", "generating", "failed"}
+    ):
+        return status_payload(), None
+
+    key = _preview_key(file_id, target_height)
+    with preview_lock:
+        state = preview_jobs.get(key) or {}
+        if state.get("status") != "generating":
+            preview_jobs[key] = {
+                "status": "generating",
+                "file_id": file_id,
+                "target_height": target_height,
+                "started_at": time.time(),
+                "error": "",
+            }
+            threading.Thread(
+                target=_preview_worker,
+                args=(file_id, target_height),
+                daemon=True,
+                name="vid2gif-test-lab-preview",
+            ).start()
+    return status_payload(), None
 
 
 def _run_progress(run, now=None):
@@ -793,6 +1058,7 @@ def _inventory_items():
             size = stat.st_size
             total_size += size
             meta = variants.get(filename) or {}
+            display = _display_metadata(run_id, filename, path)
             items.append(
                 {
                     "id": f"{run_id}/{filename}",
@@ -805,8 +1071,8 @@ def _inventory_items():
                     "size_bytes": size,
                     "size_label": format_size(size),
                     "modified_at": utc_iso(stat.st_mtime),
-                    "url": _file_url(run_id, filename),
                     "gif_optimization_label": meta.get("gif_optimization_label", ""),
+                    **display,
                 }
             )
     return items, total_size
@@ -847,7 +1113,32 @@ def _active_file_ids():
                 reused_file_id = variant.get("reused_file_id", "")
                 if reused_file_id:
                     active.add(reused_file_id)
+    with preview_lock:
+        for state in preview_jobs.values():
+            if state.get("status") == "generating" and state.get("file_id"):
+                active.add(state["file_id"])
     return active
+
+
+def _delete_preview_files(run_id, filename):
+    preview_dir = _preview_dir(run_id)
+    if not os.path.isdir(preview_dir):
+        return
+    stem = f"{os.path.splitext(filename)[0]}.preview-"
+    try:
+        for preview_name in os.listdir(preview_dir):
+            if not preview_name.startswith(stem) or not preview_name.lower().endswith(".gif"):
+                continue
+            path = _safe_preview_path(run_id, preview_name)
+            if path and os.path.isfile(path):
+                os.remove(path)
+    except OSError:
+        return
+    with preview_lock:
+        prefix = f"{_file_id(run_id, filename)}|"
+        for key in list(preview_jobs):
+            if key.startswith(prefix):
+                preview_jobs.pop(key, None)
 
 
 def _cleanup_run_dir(run_id):
@@ -892,6 +1183,7 @@ def delete_files(file_ids):
             os.remove(path)
             deleted.append(file_id)
             touched_runs.add(run_id)
+            _delete_preview_files(run_id, filename)
         except Exception:
             refused.append(file_id)
 

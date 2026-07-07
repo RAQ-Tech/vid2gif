@@ -1,0 +1,84 @@
+{% extends 'base.html' %}
+
+{% block title %}vid2gif Settings{% endblock %}
+
+{% block content %}
+<div class="workspace-shell">
+  <div class="workspace-heading">
+    <div>
+      <h1 class="h3 mb-1">Settings</h1>
+      <div class="text-muted small">Container-wide preferences for this vid2gif install.</div>
+    </div>
+    <div class="workspace-actions">
+      <a class="btn btn-outline-secondary btn-sm" href="/gifs#test">
+        <i class="bi bi-columns-gap" aria-hidden="true"></i>
+        <span>Test Lab</span>
+      </a>
+    </div>
+  </div>
+
+  <section class="workspace-panel">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">Test Lab Previews</h2>
+        <div class="text-muted small">Control how large animated GIFs are displayed in comparison slots.</div>
+      </div>
+    </div>
+
+    {% if saved %}
+      <div class="alert alert-success" role="status">Settings saved.</div>
+    {% endif %}
+    {% if error %}
+      <div class="alert alert-danger" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/settings" class="settings-form">
+      <div class="settings-panel">
+        <label class="form-label" for="preview_height_preset">Test Lab preview height</label>
+        <div class="row g-3">
+          <div class="col-md-5 col-xl-4">
+            <select id="preview_height_preset" name="preview_height_preset" class="form-select">
+              {% for height in preview_height_presets %}
+                <option value="{{ height }}" {% if preview_height_selected == height|string %}selected{% endif %}>{{ height }}px</option>
+              {% endfor %}
+              <option value="custom" {% if preview_height_selected == 'custom' %}selected{% endif %}>Custom</option>
+              <option value="original" {% if preview_height_selected == 'original' %}selected{% endif %}>Original / no scaled preview</option>
+            </select>
+          </div>
+          <div class="col-md-5 col-xl-4">
+            <input id="preview_height_custom" name="preview_height_custom" class="form-control {% if preview_height_selected != 'custom' %}d-none{% endif %}" value="{{ preview_height_custom }}" inputmode="numeric" placeholder="e.g. 900">
+          </div>
+        </div>
+        <div class="form-text mt-2">
+          Current display preference: {{ preview_height_label }}{% if preview_height_warning %}. {{ preview_height_warning }}{% endif %}
+        </div>
+      </div>
+
+      <div class="settings-panel settings-panel-actions">
+        <button type="submit" class="btn btn-primary ms-md-auto">
+          <i class="bi bi-save" aria-hidden="true"></i>
+          <span>Save Settings</span>
+        </button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const preset = document.getElementById('preview_height_preset');
+    const custom = document.getElementById('preview_height_custom');
+    if (!preset || !custom) return;
+    function syncCustom() {
+      const show = preset.value === 'custom';
+      custom.classList.toggle('d-none', !show);
+      custom.disabled = !show;
+      if (!show) custom.value = '';
+    }
+    preset.addEventListener('change', syncCustom);
+    syncCustom();
+  })();
+</script>
+{% endblock %}

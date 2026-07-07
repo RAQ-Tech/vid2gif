@@ -22,6 +22,9 @@
   let testLabSeenRunFileIds = new Set();
   let testLabRenameDrafts = new Map();
   let testLabSavingRenameIds = new Set();
+  let testLabPreviewRequestKeys = new Set();
+  let testLabSlotRenderSignature = '';
+  let testLabLastDisplayedUrls = new Map();
 
   function byId(id) {
     return document.getElementById(id);
@@ -899,12 +902,50 @@
         `<div class="test-slot-empty">Drop GIF here</div>` +
         `</div>`;
     }
+    const displayUrl = file.display_url || '';
+    const previewLabel = file.preview_label || '';
+    const showPreviewBadge = file.display_is_scaled || ['needed', 'generating', 'failed'].includes(file.preview_status);
+    const previewBadge = showPreviewBadge ? `<span class="preview-badge">${escapeHtml(previewLabel)}</span>` : '';
+    const media = displayUrl
+      ? `<img data-test-preview data-base-src="${escapeHtml(displayUrl)}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(file.name)} preview">`
+      : `<div class="test-slot-preview-placeholder"><i class="bi bi-hourglass-split" aria-hidden="true"></i><span>${escapeHtml(previewLabel || 'Preparing preview')}</span></div>`;
     return `<figure class="test-slot occupied" data-slot-index="${index}" data-slot-drop draggable="true">` +
-      `<div class="test-slot-header"><span>${slotLabel}</span>` +
-      `<button type="button" class="btn btn-outline-secondary btn-icon btn-sm" data-clear-slot="${index}" title="Clear slot"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div>` +
-      `<img data-test-preview data-base-src="${escapeHtml(file.url)}" src="${escapeHtml(file.url)}" alt="${escapeHtml(file.name)} preview">` +
-      `<figcaption><strong>${escapeHtml(file.name)}</strong><span>${escapeHtml(file.size_label || '')}</span><span>${escapeHtml(file.settings_label || '')}</span></figcaption>` +
+      `<div class="test-slot-header"><span>${slotLabel}</span><div class="test-slot-actions">` +
+      `<a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.original_url || file.url)}" target="_blank" rel="noreferrer" title="Open original"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a>` +
+      `<a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.download_url || file.url)}" title="Download original"><i class="bi bi-download" aria-hidden="true"></i></a>` +
+      `<button type="button" class="btn btn-outline-secondary btn-icon btn-sm" data-clear-slot="${index}" title="Clear slot"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div></div>` +
+      media +
+      `<figcaption><strong>${escapeHtml(file.name)}</strong>${previewBadge}<span>${escapeHtml(file.size_label || '')}</span><span>${escapeHtml(file.settings_label || '')}</span></figcaption>` +
       `</figure>`;
+  }
+
+  function slotRenderSignature(occupiedIndexes, emptyIndexes) {
+    return JSON.stringify({
+      slots: testLabSlotIds,
+      occupied: occupiedIndexes.map(index => {
+        const file = testLabFilesById.get(testLabSlotIds[index]);
+        return file ? {
+          id: file.id,
+          name: file.name,
+          display_url: file.display_url || '',
+          preview_status: file.preview_status || '',
+          preview_label: file.preview_label || '',
+          size_label: file.size_label || '',
+          settings_label: file.settings_label || ''
+        } : null;
+      }),
+      empty: emptyIndexes,
+      layout: testLabPreviewLayout(),
+      sizeMode: testLabPreviewSizeMode()
+    });
+  }
+
+  function requestPreviewsForSlots() {
+    [0, 1, 2, 3].forEach(index => {
+      const file = testLabFilesById.get(testLabSlotIds[index]);
+      if (!file || file.preview_status !== 'needed' || !file.preview_key) return;
+      requestTestLabPreview(file);
+    });
   }
 
   function renderTestLabSlots() {
@@ -915,6 +956,12 @@
       return fileId && testLabFilesById.has(fileId);
     });
     const emptyIndexes = [0, 1, 2, 3].filter(index => !occupiedIndexes.includes(index));
+    const signature = slotRenderSignature(occupiedIndexes, emptyIndexes);
+    if (signature === testLabSlotRenderSignature) {
+      requestPreviewsForSlots();
+      return;
+    }
+    const previousDisplayedUrls = new Map(testLabLastDisplayedUrls);
     previews.dataset.count = String(occupiedIndexes.length);
     previews.dataset.layout = testLabPreviewLayout();
     previews.dataset.sizeMode = testLabPreviewSizeMode();
@@ -924,6 +971,19 @@
     previews.innerHTML =
       `<div class="test-active-slots">${occupiedHtml || '<div class="text-muted text-center py-4">Saved and generated GIFs can be placed here for comparison.</div>'}</div>` +
       `<div class="test-empty-slots">${emptyHtml}</div>`;
+    testLabSlotRenderSignature = signature;
+    testLabLastDisplayedUrls = new Map();
+    let newlyDisplayed = false;
+    occupiedIndexes.forEach(index => {
+      const file = testLabFilesById.get(testLabSlotIds[index]);
+      const displayUrl = file?.display_url || '';
+      if (displayUrl) {
+        testLabLastDisplayedUrls.set(index, displayUrl);
+        if (displayUrl !== previousDisplayedUrls.get(index)) newlyDisplayed = true;
+      }
+    });
+    requestPreviewsForSlots();
+    if (newlyDisplayed && testLabAutoRestartEnabled()) restartTestLabPreviews();
   }
 
   function fillOpenTestLabSlots(fileIds) {
@@ -1096,7 +1156,10 @@
       `<td>${escapeHtml(file.size_label || '')}</td>` +
       `<td>${escapeHtml(file.gif_optimization_label || '')}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(file.settings_label || '')}">${escapeHtml(file.settings_label || '')}</code></td>` +
-      `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer" title="Open GIF"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a></td></tr>`
+      `<td><div class="table-actions">` +
+      `<a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.original_url || file.url)}" target="_blank" rel="noreferrer" title="Open original"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a>` +
+      `<a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.download_url || file.url)}" title="Download original"><i class="bi bi-download" aria-hidden="true"></i></a>` +
+      `</div></td></tr>`
     ).join('') : '<tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>';
     renderTestLabSlots();
     restoreRenameFocus(renameState);
@@ -1111,6 +1174,30 @@
       renderTestLabRun(data.active_run);
     } catch (e) {
       // Ignore transient polling failures.
+    }
+  }
+
+  async function requestTestLabPreview(file) {
+    if (!file || !file.id || !file.preview_key) return;
+    if (testLabPreviewRequestKeys.has(file.preview_key)) return;
+    testLabPreviewRequestKeys.add(file.preview_key);
+    try {
+      const res = await fetch('/api/test-lab/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file_id: file.id})
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTestLabMessage(data.error || 'Preview unavailable', '');
+        testLabPreviewRequestKeys.delete(file.preview_key);
+        return;
+      }
+      renderTestLabFiles(data);
+      renderTestLabRun(data.active_run);
+    } catch (e) {
+      setTestLabMessage('Preview unavailable', e.message || '');
+      testLabPreviewRequestKeys.delete(file.preview_key);
     }
   }
 

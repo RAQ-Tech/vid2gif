@@ -493,6 +493,13 @@ body {
   font-weight: 600;
 }
 
+.test-slot-actions,
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .test-slot-empty {
   display: grid;
   min-height: 132px;
@@ -511,6 +518,22 @@ body {
 .test-slot img {
   display: block;
   background: #000;
+}
+
+.test-slot-preview-placeholder {
+  display: grid;
+  min-height: min(48vh, 460px);
+  place-items: center;
+  gap: 8px;
+  padding: 24px;
+  background: #000;
+  color: #fff;
+  text-align: center;
+}
+
+.test-slot-preview-placeholder i {
+  font-size: 1.4rem;
+  opacity: 0.8;
 }
 
 .test-preview-grid[data-size-mode="standardized"] .test-slot.occupied img {
@@ -539,6 +562,17 @@ body {
 
 .test-slot figcaption span {
   color: var(--bs-secondary-color);
+}
+
+.preview-badge {
+  width: fit-content;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .rename-inline {

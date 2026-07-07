@@ -17,6 +17,7 @@ def _reset_lab_roots(monkeypatch, tmp_path):
     monkeypatch.setattr(test_lab, "LOG_DIR", str(logs))
     monkeypatch.setattr(test_lab, "PROCESS_TMP_ROOT", str(proc))
     test_lab.test_lab_runs.clear()
+    test_lab.preview_jobs.clear()
     with test_lab.test_lab_queue.mutex:
         test_lab.test_lab_queue.queue.clear()
     return lab_root
@@ -44,6 +45,15 @@ def _run_payload(video, variants=2):
             for index in range(1, variants + 1)
         ],
     }
+
+
+def _gif_bytes(width=320, height=180, payload=b"GIF89a"):
+    return (
+        b"GIF89a"
+        + int(width).to_bytes(2, "little")
+        + int(height).to_bytes(2, "little")
+        + payload
+    )
 
 
 def test_media_browser_lists_compatible_files_and_skips_symlinks(monkeypatch, tmp_path):
@@ -233,6 +243,209 @@ def test_test_lab_rename_rejects_missing_or_invalid_file(monkeypatch, tmp_path):
     res = routes.app.test_client().post(
         "/api/test-lab/rename",
         json={"file_id": "../outside.gif", "name": "Nope"},
+    )
+
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "Test GIF not found"
+
+
+def test_test_lab_inventory_marks_large_gif_for_preview_without_generating(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    run_dir.mkdir()
+    (run_dir / "variant-1.gif").write_bytes(_gif_bytes(height=2160))
+    manifest = {
+        "schema_version": 1,
+        "run_id": "run1",
+        "source_name": "movie.mp4",
+        "variants": [{"id": "variant-1", "name": "Large", "filename": "variant-1.gif"}],
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        test_lab.app_settings,
+        "load_settings",
+        lambda: {"schema_version": 1, "test_lab_preview_height": 720},
+    )
+
+    payload = test_lab.status_payload()
+
+    item = payload["files"][0]
+    assert item["preview_status"] == "needed"
+    assert item["display_url"] == ""
+    assert item["original_url"] == "/test-lab/files/run1/variant-1.gif"
+    assert item["download_url"] == "/test-lab/download/run1/variant-1.gif"
+    assert not (run_dir / "_previews").exists()
+
+
+def test_test_lab_inventory_uses_original_when_preview_disabled(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    run_dir.mkdir()
+    (run_dir / "variant-1.gif").write_bytes(_gif_bytes(height=2160))
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run1",
+                "variants": [{"id": "variant-1", "filename": "variant-1.gif"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        test_lab.app_settings,
+        "load_settings",
+        lambda: {"schema_version": 1, "test_lab_preview_height": None},
+    )
+
+    item = test_lab.status_payload()["files"][0]
+
+    assert item["preview_status"] == "disabled"
+    assert item["display_url"] == item["original_url"]
+    assert item["display_is_scaled"] is False
+
+
+def test_test_lab_preview_request_enqueues_generation(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    run_dir.mkdir()
+    (run_dir / "variant-1.gif").write_bytes(_gif_bytes(height=2160))
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run1",
+                "variants": [{"id": "variant-1", "filename": "variant-1.gif"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        test_lab.app_settings,
+        "load_settings",
+        lambda: {"schema_version": 1, "test_lab_preview_height": 720},
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(test_lab.threading, "Thread", FakeThread)
+
+    res = routes.app.test_client().post(
+        "/api/test-lab/preview",
+        json={"file_id": "run1/variant-1.gif"},
+    )
+
+    assert res.status_code == 200
+    item = res.get_json()["files"][0]
+    assert item["preview_status"] == "generating"
+    assert item["display_url"] == ""
+
+
+def test_test_lab_preview_worker_creates_scaled_preview(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    run_dir.mkdir()
+    (run_dir / "variant-1.gif").write_bytes(_gif_bytes(height=2160))
+    captured = {}
+    monkeypatch.setattr(test_lab, "_command_available", lambda command: True)
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        output = args[args.index("--output") + 1]
+        with open(output, "wb") as f:
+            f.write(_gif_bytes(height=720))
+        return __import__("subprocess").CompletedProcess(args, 0)
+
+    monkeypatch.setattr(test_lab.subprocess, "run", fake_run)
+
+    test_lab._preview_worker("run1/variant-1.gif", 720)
+
+    preview = lab_root / "run1" / "_previews" / "variant-1.preview-h720.gif"
+    assert preview.is_file()
+    assert captured["args"][1:3] == ["--resize-fit-height", "720"]
+    state = test_lab._preview_status_for("run1/variant-1.gif", 720)
+    assert state["status"] == "ready"
+
+
+def test_test_lab_inventory_uses_ready_preview_and_excludes_it_from_total(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    preview_dir = run_dir / "_previews"
+    preview_dir.mkdir(parents=True)
+    original = _gif_bytes(height=2160, payload=b"x" * 90)
+    preview = _gif_bytes(height=720, payload=b"p" * 20)
+    (run_dir / "variant-1.gif").write_bytes(original)
+    (preview_dir / "variant-1.preview-h720.gif").write_bytes(preview)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run1",
+                "variants": [{"id": "variant-1", "filename": "variant-1.gif"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        test_lab.app_settings,
+        "load_settings",
+        lambda: {"schema_version": 1, "test_lab_preview_height": 720},
+    )
+
+    payload = test_lab.status_payload()
+    item = payload["files"][0]
+
+    assert payload["total_size_bytes"] == len(original)
+    assert item["preview_status"] == "ready"
+    assert item["display_url"] == "/test-lab/previews/run1/variant-1.preview-h720.gif"
+    assert item["display_is_scaled"] is True
+    assert item["preview_height"] == 720
+
+
+def test_test_lab_delete_removes_associated_previews(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    preview_dir = run_dir / "_previews"
+    preview_dir.mkdir(parents=True)
+    original = run_dir / "variant-1.gif"
+    preview = preview_dir / "variant-1.preview-h720.gif"
+    original.write_bytes(_gif_bytes(height=2160))
+    preview.write_bytes(_gif_bytes(height=720))
+
+    payload = test_lab.delete_files(["run1/variant-1.gif"])
+
+    assert payload["deleted"] == ["run1/variant-1.gif"]
+    assert not original.exists()
+    assert not preview.exists()
+
+
+def test_test_lab_preview_and_download_serving_are_confined(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    run_dir = lab_root / "run1"
+    preview_dir = run_dir / "_previews"
+    preview_dir.mkdir(parents=True)
+    (run_dir / "variant-1.gif").write_bytes(_gif_bytes())
+    (preview_dir / "variant-1.preview-h720.gif").write_bytes(_gif_bytes(height=720))
+
+    client = routes.app.test_client()
+
+    assert client.get("/test-lab/download/run1/variant-1.gif").status_code == 200
+    assert client.get("/test-lab/previews/run1/variant-1.preview-h720.gif").status_code == 200
+    assert client.get("/test-lab/previews/..%2Foutside/variant-1.gif").status_code == 404
+
+
+def test_test_lab_preview_request_rejects_missing_file(monkeypatch, tmp_path):
+    _reset_lab_roots(monkeypatch, tmp_path)
+
+    res = routes.app.test_client().post(
+        "/api/test-lab/preview",
+        json={"file_id": "missing/variant-1.gif"},
     )
 
     assert res.status_code == 400

@@ -17,6 +17,7 @@ def _reset_lab(monkeypatch, tmp_path):
     monkeypatch.setattr(test_lab, "_worker_started", False)
     monkeypatch.setattr(test_lab, "start_test_lab_worker", lambda: None)
     test_lab.test_lab_runs.clear()
+    test_lab.preview_jobs.clear()
     with test_lab.test_lab_queue.mutex:
         test_lab.test_lab_queue.queue.clear()
     return lab_root
