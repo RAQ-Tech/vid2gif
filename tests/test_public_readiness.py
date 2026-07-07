@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from app import jobs, routes, sockets
+from app import jobs, routes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,30 +51,18 @@ def test_api_status_returns_public_job_payload_only():
     _clear_jobs()
 
 
-def test_queue_status_and_socketio_emit_public_payloads(monkeypatch):
+def test_queue_status_returns_public_payloads():
     _clear_jobs()
     jobs.jobs["job1"] = _make_job(status="queued")
     jobs.job_queue.put("job1")
-    emitted = {}
-
-    class DummySocketIO:
-        server = True
-
-        def emit(self, event, payload):
-            emitted["event"] = event
-            emitted["payload"] = payload
-
-    monkeypatch.setattr(jobs, "socketio", DummySocketIO())
 
     client = routes.app.test_client()
     res = client.get("/api/queue/status")
-    jobs.emit_queue_status()
 
     payload = res.get_json()
     assert payload["queued"][0]["id"] == "job1"
     assert "logger" not in payload["queued"][0]
-    assert emitted["event"] == "queue_update"
-    assert emitted["payload"]["queued"][0] == payload["queued"][0]
+    assert jobs.emit_queue_status() == payload
     _clear_jobs()
 
 
@@ -122,20 +110,56 @@ def test_logs_route_serves_plain_text(tmp_path):
     _clear_jobs()
 
 
-def test_socketio_cors_defaults_to_same_origin(monkeypatch):
-    monkeypatch.delenv("SOCKETIO_CORS_ALLOWED_ORIGINS", raising=False)
-    assert sockets._cors_allowed_origins() is None
+def test_api_logs_returns_initial_and_offset_chunks(tmp_path):
+    _clear_jobs()
+    log_path = tmp_path / "job.txt"
+    log_path.write_text("first\nsecond\n", encoding="utf-8")
+    jobs.jobs["job1"] = _make_job(log_path=str(log_path))
+
+    client = routes.app.test_client()
+    res = client.get("/api/logs/job1")
+
+    assert res.status_code == 200
+    payload = res.get_json()
+    assert payload["lines"] == ["first", "second"]
+    assert payload["reset"] is False
+    assert payload["job"]["id"] == "job1"
+    offset = payload["offset"]
+
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write("third\n")
+
+    res = client.get("/api/logs/job1", query_string={"offset": offset})
+    payload = res.get_json()
+    assert payload["lines"] == ["third"]
+    assert payload["offset"] > offset
+    _clear_jobs()
 
 
-def test_socketio_cors_allowlist_from_env(monkeypatch):
-    monkeypatch.setenv(
-        "SOCKETIO_CORS_ALLOWED_ORIGINS",
-        "https://example.test, https://internal.test",
-    )
-    assert sockets._cors_allowed_origins() == [
-        "https://example.test",
-        "https://internal.test",
-    ]
+def test_api_logs_missing_job_returns_404():
+    _clear_jobs()
+
+    client = routes.app.test_client()
+    res = client.get("/api/logs/missing")
+
+    assert res.status_code == 404
+    assert res.get_json()["error"] == "Not found"
+
+
+def test_api_logs_resets_when_offset_exceeds_file_size(tmp_path):
+    _clear_jobs()
+    log_path = tmp_path / "job.txt"
+    log_path.write_text("after-rotate\n", encoding="utf-8")
+    jobs.jobs["job1"] = _make_job(log_path=str(log_path))
+
+    client = routes.app.test_client()
+    res = client.get("/api/logs/job1", query_string={"offset": 9999})
+
+    payload = res.get_json()
+    assert payload["lines"] == ["after-rotate"]
+    assert payload["reset"] is True
+    assert payload["offset"] == log_path.stat().st_size
+    _clear_jobs()
 
 
 def test_templates_escape_dynamic_job_tables():
@@ -148,23 +172,48 @@ def test_templates_escape_dynamic_job_tables():
     assert "escapeHtml(j.out_gif)" in completed_template
 
 
+def test_queue_page_uses_polling_instead_of_socketio():
+    queue_template = (ROOT / "app" / "templates" / "queue.html").read_text()
+
+    assert "socket.io" not in queue_template
+    assert "const socket = io()" not in queue_template
+    assert "queue_update" not in queue_template
+    assert "fetch('/api/queue/status')" in queue_template
+    assert "setInterval(refreshQueue, 1000)" in queue_template
+
+
 def test_live_logs_tracks_last_job_result_instead_of_forcing_running():
     live_template = (ROOT / "app" / "templates" / "live.html").read_text()
 
     assert "setStatus('running')" not in live_template
-    assert "refreshStatus();" in live_template
+    assert "EventSource" not in live_template
+    assert "/api/stream" not in live_template
+    assert "pollTimer" in live_template
+    assert "fetch(`/api/logs/${encodeURIComponent(currentJob)}" in live_template
     assert "let lastJob" in live_template
-    assert "rememberStreamJob(e.data)" in live_template
     assert "newestFinishedJob(all)" in live_template
+    assert "clearInterval(pollTimer)" in live_template
     assert 'class="pill idle">idle</span>' in live_template
 
 
-def test_dockerfile_uses_package_module_entrypoint():
+def test_dockerfile_uses_gunicorn_wsgi_entrypoint():
     dockerfile = (ROOT / "Dockerfile").read_text()
 
     assert "COPY app ./app" in dockerfile
-    assert 'CMD ["python", "-u", "-m", "app.main"]' in dockerfile
+    assert '"gunicorn"' in dockerfile
+    assert '"--threads", "8"' in dockerfile
+    assert '"--graceful-timeout", "10"' in dockerfile
+    assert '"app.wsgi:app"' in dockerfile
     assert "/app/main.py" not in dockerfile
+
+
+def test_entrypoint_chowns_library_only_when_requested():
+    entrypoint = (ROOT / "docker-entrypoint.sh").read_text()
+
+    assert "CHOWN_LIBRARY" in entrypoint
+    assert 'chown -R app:app /state' in entrypoint
+    assert '[ "${CHOWN_LIBRARY:-0}" = "1" ]' in entrypoint
+    assert "for dir in /library /state" not in entrypoint
 
 
 def test_runtime_requirements_exclude_dev_tools():
@@ -174,6 +223,9 @@ def test_runtime_requirements_exclude_dev_tools():
 
     assert "pytest" not in requirements
     assert "pip-audit" not in requirements
+    assert "eventlet" not in requirements
+    assert "flask-socketio" not in requirements
+    assert "gunicorn==26.0.0" in requirements
     assert "werkzeug==3.1.8" in requirements
     assert "pytest==8.1.1" in dev_requirements
     assert "pip-audit==2.10.1" in dev_requirements

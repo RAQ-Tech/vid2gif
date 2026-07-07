@@ -21,7 +21,6 @@ def test_start_worker_is_idempotent(monkeypatch):
 
     assert started == [
         (jobs.worker, True, "vid2gif-worker"),
-        (jobs._broadcast_loop, True, "vid2gif-queue-broadcast"),
     ]
 
 

@@ -25,4 +25,4 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 904
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["python", "-u", "-m", "app.main"]
+CMD ["gunicorn", "--bind", "0.0.0.0:904", "--workers", "1", "--threads", "8", "--graceful-timeout", "10", "--timeout", "60", "app.wsgi:app"]

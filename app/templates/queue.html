@@ -87,7 +87,6 @@
 {% endblock %}
 
 {% block scripts %}
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
     const limit = {{ limit }};
     function escapeHtml(value) {
@@ -136,10 +135,19 @@
       document.getElementById('queue-count').textContent = `${shown} of ${total} items in queue displayed`;
     }
 
-    const socket = io();
-    socket.on('queue_update', data => {
-      updateQueue(data);
+    async function refreshQueue() {
+      try {
+        const res = await fetch('/api/queue/status');
+        if (!res.ok) return;
+        updateQueue(await res.json());
+      } catch (e) {
+        // ignore transient polling failures
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      refreshQueue();
+      setInterval(refreshQueue, 1000);
     });
   </script>
 {% endblock %}
-

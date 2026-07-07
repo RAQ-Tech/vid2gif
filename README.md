@@ -77,10 +77,14 @@ python -m pytest
 | `LOG_DIR` | `/state/logs` | Job log directory |
 | `TMP_ROOT` | `/state/tmp` | General temporary directory |
 | `PROCESS_TMP_ROOT` | `/state/processing/tmp` | Per-job processing directory |
-| `SOCKETIO_CORS_ALLOWED_ORIGINS` | same-origin only | Optional comma-separated Socket.IO CORS allowlist; use `*` only on trusted networks |
+| `CHOWN_LIBRARY` | `0` | Set to `1` only if the container should recursively take ownership of `/library` at startup |
 
 These can be overridden when invoking `python -m app.main` or the Docker
 container, for example `docker run -e LIB_ROOT=/media/videos ...`.
+
+The Docker entrypoint always ensures `/state` is writable for logs and
+temporary files. It does not scan and chown `/library` by default, which avoids
+slow startup on large mounted media libraries.
 
 ## Example Workflow
 

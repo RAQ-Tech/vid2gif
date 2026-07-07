@@ -14,11 +14,13 @@ if [ "$(id -u app)" != "$PUID" ]; then
     usermod -o -u "$PUID" -g "$PGID" app
 fi
 
-# Ensure ownership of library and state directories
-for dir in /library /state; do
-    if [ -d "$dir" ]; then
-        chown -R app:app "$dir"
-    fi
-done
+# Ensure state remains writable without scanning large media libraries.
+if [ -d /state ]; then
+    chown -R app:app /state
+fi
+
+if [ "${CHOWN_LIBRARY:-0}" = "1" ] && [ -d /library ]; then
+    chown -R app:app /library
+fi
 
 exec gosu app "$@"

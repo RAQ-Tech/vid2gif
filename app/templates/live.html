@@ -51,10 +51,13 @@
   </div>
 
   <script>
-    let es = null;
     let currentJob = "";
     let lastJob = "";
+    let logJob = "";
+    let logOffset = 0;
     let autoMode = true;
+    let pollTimer = null;
+    let polling = false;
 
     function append(line) {
       const box = document.getElementById('logbox');
@@ -67,7 +70,11 @@
       document.getElementById('logbox').textContent = "";
     }
     function stopStream() {
-      if (es) { es.close(); es = null; }
+      polling = false;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     }
     function setStatus(text) {
       const pill = document.getElementById('jobStatus');
@@ -78,36 +85,37 @@
     function setProgress(text) {
       document.getElementById('progressText').textContent = text || "";
     }
-    function rememberStreamJob(line) {
-      const match = line.match(/^\[job ([^\]]+)\]$/);
-      if (!match) return;
-      lastJob = match[1];
-      if (autoMode) {
-        currentJob = lastJob;
-      }
-    }
     function newestFinishedJob(all) {
       return all
         .filter(x => x.status === 'success' || x.status === 'failed')
         .sort((a, b) => (b.id || '').localeCompare(a.id || ''))[0];
     }
+    function setCurrentJob(jobId) {
+      if (!jobId) return;
+      currentJob = jobId;
+      lastJob = jobId;
+      if (logJob !== jobId) {
+        logJob = jobId;
+        logOffset = 0;
+        clearLog();
+      }
+    }
     async function refreshStatus() {
       try {
         const res = await fetch('/api/status');
+        if (!res.ok) return;
         const all = await res.json();
         if (autoMode) {
           const running = all.find(x => x.status === 'running');
           if (running) {
-            currentJob = running.id;
-            lastJob = running.id;
+            setCurrentJob(running.id);
             setProgress(running.progress_text);
             setStatus(running.status);
             return;
           }
           const last = all.find(x => x.id === lastJob || x.id === currentJob) || newestFinishedJob(all);
           if (last) {
-            lastJob = last.id;
-            currentJob = last.id;
+            setCurrentJob(last.id);
             setProgress(last.progress_text);
             setStatus(last.status);
           } else {
@@ -118,7 +126,7 @@
         } else if (currentJob) {
           const j = all.find(x => x.id === currentJob);
           if (!j) return;
-          lastJob = j.id;
+          setCurrentJob(j.id);
           setProgress(j.progress_text);
           setStatus(j.status);
         }
@@ -127,27 +135,43 @@
       }
     }
 
+    async function refreshLog() {
+      if (!polling || !currentJob) return;
+      try {
+        const res = await fetch(`/api/logs/${encodeURIComponent(currentJob)}?offset=${encodeURIComponent(logOffset)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.reset) clearLog();
+        logOffset = data.offset || 0;
+        (data.lines || []).forEach(append);
+        if (data.job) {
+          setProgress(data.job.progress_text);
+          setStatus(data.job.status);
+        }
+      } catch (e) {
+        // ignore transient polling failures
+      }
+    }
+
+    async function poll() {
+      await refreshStatus();
+      await refreshLog();
+    }
+
     function startStream() {
       stopStream();
       const sel = document.getElementById('jobSel');
       const job = sel.value || 'live';
       autoMode = job === 'live';
       currentJob = autoMode ? '' : job;
+      logJob = "";
+      logOffset = 0;
       clearLog();
-      refreshStatus();
-      const url = job === 'live' ? '/api/stream/live' : `/api/stream/${encodeURIComponent(job)}`;
-      es = new EventSource(url);
-      es.onmessage = (e) => {
-        rememberStreamJob(e.data);
-        append(e.data);
-      };
-      es.onerror = () => {
-        append("[SSE error or ended]");
-      };
+      polling = true;
+      poll();
+      pollTimer = setInterval(poll, 1000);
     }
 
-    // Light polling to update status/progress while SSE streams logs
-    setInterval(refreshStatus, 1000);
     document.addEventListener('DOMContentLoaded', () => {
       const jobSel = document.getElementById('jobSel');
       const auto = document.getElementById('autoscroll');

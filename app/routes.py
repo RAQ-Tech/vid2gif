@@ -1,7 +1,5 @@
 import os
-import time
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
-from .sockets import socketio
 
 from .config import DEFAULTS, LIB_ROOT
 from .utils import (
@@ -21,16 +19,11 @@ from .jobs import (
     find_videos,
     emit_queue_status,
     public_job,
+    queue_status_payload,
 )
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
-socketio.init_app(app)
-
-
-@socketio.on("connect")
-def _on_connect():
-    emit_queue_status()
 
 
 @app.route("/")
@@ -108,17 +101,7 @@ def api_queue_move(job_id, direction):
 
 @app.route("/api/queue/status")
 def api_queue_status():
-    with lock:
-        running = [
-            public_job(j) for j in jobs.values() if j.get("status") == "running"
-        ]
-    with job_queue.mutex:
-        queued_ids = list(job_queue.queue)
-    with lock:
-        queued = [public_job(jobs[jid]) for jid in queued_ids if jid in jobs]
-    return jsonify(
-        {"running": running, "queued": queued, "paused": queue_paused.is_set()}
-    )
+    return jsonify(queue_status_payload())
 
 
 @app.route("/completed")
@@ -148,88 +131,56 @@ def logs(job_id):
     return Response(text, mimetype="text/plain; charset=utf-8")
 
 
-def _sse_format(line: str) -> str:
-    return "data: " + line.replace("\r", "") + "\n\n"
-
-
-@app.route("/api/stream/<job_id>")
-def api_stream(job_id):
+@app.route("/api/logs/<job_id>")
+def api_logs(job_id):
     j = jobs.get(job_id)
-    if not j or not os.path.isfile(j["log_path"]):
-        def not_found():
-            yield _sse_format("No log yet for this job.")
+    if not j:
+        return jsonify({"error": "Not found"}), 404
 
-        return Response(not_found(), mimetype="text/event-stream")
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
 
-    def tail():
-        path = j["log_path"]
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-        except Exception:
-            lines = []
-        for line in lines[-200:]:
-            yield _sse_format(line.rstrip("\n"))
+    path = j["log_path"]
+    if not os.path.isfile(path):
+        return jsonify(
+            {"job": public_job(j), "lines": [], "offset": 0, "reset": offset > 0}
+        )
 
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(0, os.SEEK_END)
-            idle_ticks = 0
-            while True:
-                chunk = f.readline()
-                if chunk:
-                    idle_ticks = 0
-                    yield _sse_format(chunk.rstrip("\n"))
-                else:
-                    idle_ticks += 1
-                    if idle_ticks % 10 == 0:
-                        yield _sse_format("[heartbeat]")
-                    time.sleep(0.2)
-                    if j.get("status") in ("success", "failed") and idle_ticks > 50:
-                        time.sleep(0.5)
+    try:
+        size = os.path.getsize(path)
+        reset = offset > size
+        if reset:
+            offset = 0
+        with open(path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read()
+            next_offset = f.tell()
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "error": str(e),
+                    "job": public_job(j),
+                    "lines": [],
+                    "offset": offset,
+                    "reset": False,
+                }
+            ),
+            500,
+        )
 
-    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    return Response(tail(), headers=headers, mimetype="text/event-stream")
-
-
-@app.route("/api/stream/live")
-def api_stream_live():
-    def tail_live():
-        last_id = None
-        f = None
-        idle_ticks = 0
-        while True:
-            with lock:
-                running = [j for j in jobs.values() if j.get("status") == "running"]
-            running.sort(key=lambda j: j.get("id", ""))
-            cur = running[0] if running else None
-            if cur and cur.get("id") != last_id:
-                if f:
-                    f.close()
-                last_id = cur.get("id")
-                yield _sse_format(f"[job {last_id}]")
-                try:
-                    f = open(cur["log_path"], "r", encoding="utf-8", errors="replace")
-                    lines = f.readlines()
-                except Exception:
-                    f = None
-                    lines = []
-                for line in lines[-200:]:
-                    yield _sse_format(line.rstrip("\n"))
-                if f:
-                    f.seek(0, os.SEEK_END)
-            if f:
-                chunk = f.readline()
-                if chunk:
-                    idle_ticks = 0
-                    yield _sse_format(chunk.rstrip("\n"))
-                    continue
-            idle_ticks += 1
-            if idle_ticks % 10 == 0:
-                yield _sse_format("[heartbeat]")
-            time.sleep(0.2)
-
-    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    return Response(tail_live(), headers=headers, mimetype="text/event-stream")
+    text = chunk.decode("utf-8", errors="replace")
+    return jsonify(
+        {
+            "job": public_job(j),
+            "lines": text.splitlines(),
+            "offset": next_offset,
+            "reset": reset,
+        }
+    )
 
 
 @app.route("/api/status")
@@ -317,4 +268,3 @@ def api_add():
         enqueue_job(real_target, cfg)
 
     return redirect(url_for("live_page"))
-

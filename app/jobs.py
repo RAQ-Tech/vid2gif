@@ -13,7 +13,6 @@ from .ffmpeg_utils import (
     build_segments,
     make_gif_multi_inputs,
 )
-from .sockets import socketio
 from .utils import find_background_image, path_is_under
 
 
@@ -35,9 +34,7 @@ def public_job(job):
     }
 
 
-def emit_queue_status():
-    if not socketio.server:
-        return
+def queue_status_payload():
     with lock:
         running = [
             public_job(j) for j in jobs.values() if j.get("status") == "running"
@@ -46,10 +43,11 @@ def emit_queue_status():
         queued_ids = list(job_queue.queue)
     with lock:
         queued = [public_job(jobs[jid]) for jid in queued_ids if jid in jobs]
-    socketio.emit(
-        "queue_update",
-        {"running": running, "queued": queued, "paused": queue_paused.is_set()},
-    )
+    return {"running": running, "queued": queued, "paused": queue_paused.is_set()}
+
+
+def emit_queue_status():
+    return queue_status_payload()
 
 
 class JobFileHandler(logging.FileHandler):
@@ -216,15 +214,4 @@ def start_worker():
         if _worker_started:
             return
         threading.Thread(target=worker, daemon=True, name="vid2gif-worker").start()
-        threading.Thread(
-            target=_broadcast_loop,
-            daemon=True,
-            name="vid2gif-queue-broadcast",
-        ).start()
         _worker_started = True
-
-
-def _broadcast_loop():
-    while True:
-        emit_queue_status()
-        time.sleep(1)
