@@ -159,9 +159,9 @@ def worker():
                 segs = build_segments(dur, job["cfg"])
                 bg_image = find_background_image(job["video"])
                 if bg_image:
-                    job["logger"].info(f"Background image: {bg_image}")
+                    job["logger"].info(f"Compatible background image: {bg_image}")
                 else:
-                    job["logger"].info("Background image: not found")
+                    job["logger"].info("Compatible background image: not found")
                 job["logger"].info(
                     f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s"
                 )

@@ -1,5 +1,7 @@
 import subprocess
 import json
+import shutil
+import pytest
 
 from app import ffmpeg_utils
 
@@ -185,14 +187,136 @@ def test_make_gif_multi_inputs_normalizes_background_before_concat(monkeypatch, 
     assert msg == ""
     args = captured["args"]
     filt = args[args.index("-filter_complex") + 1]
-    concat_pos = filt.index("concat=n=3")
-    assert filt.index("[0:v]scale=w=640:h=360") < concat_pos
-    assert filt.index("[1:v:0]scale=w=640:h=360") < concat_pos
-    assert filt.index("[2:v:0]scale=w=640:h=360") < concat_pos
+    video_concat_pos = filt.index("[v0][v1]concat=n=2:v=1:a=0[vcatraw]")
+    final_concat_pos = filt.index("[bg][vmain]concat=n=2:v=1:a=0[vout]")
+    assert filt.index("[0:v]scale=w=640:h=360") < final_concat_pos
+    assert "[bg_norm]fps=10,trim=end_frame=1,setpts=PTS-STARTPTS[bg]" in filt
+    assert filt.index("[1:v:0]scale=w=640:h=360") < video_concat_pos
+    assert filt.index("[2:v:0]scale=w=640:h=360") < video_concat_pos
+    assert video_concat_pos < final_concat_pos
+    assert filt.index("[bg_norm]fps=10") < final_concat_pos
     assert "force_original_aspect_ratio=decrease" in filt
     assert "pad=640:360:(ow-iw)/2:(oh-ih)/2" in filt
     assert args.count(str(background)) == 1
     assert not any(str(background) in arg and arg != str(background) for arg in args)
+
+
+def test_make_gif_multi_inputs_smooths_video_after_background(monkeypatch, tmp_path):
+    video = "input.mp4"
+    background = tmp_path / "input-background.png"
+    background.write_bytes(b"png")
+    segs = [{"start": 0.0, "end": 1.0}]
+    cfg = {"fps": 30, "height": 320, "loop_forever": True, "smooth": True}
+    job = {"logger": DummyLogger(), "progress_text": ""}
+    captured = {}
+    _patch_probe(monkeypatch)
+
+    class DummyPopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.stdout = []
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", DummyPopen)
+    monkeypatch.setattr(ffmpeg_utils, "_get_source_fps", lambda v: 24.0)
+
+    ffmpeg_utils.make_gif_multi_inputs(
+        video,
+        segs,
+        "out.gif",
+        cfg,
+        job,
+        background_image=str(background),
+    )
+
+    filt = captured["args"][captured["args"].index("-filter_complex") + 1]
+    assert "[bg_norm]fps=30,trim=end_frame=1,setpts=PTS-STARTPTS[bg]" in filt
+    assert "[vcatraw]minterpolate=fps=30,fps=30,setpts=PTS-STARTPTS[vmain]" in filt
+    assert filt.index("[vcatraw]minterpolate") < filt.index("[bg][vmain]concat")
+
+
+def _require_ffmpeg():
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg and ffprobe are required for GIF frame regression tests")
+
+
+def _run_ffmpeg(args):
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _first_frame_rgb(path):
+    data = subprocess.check_output(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=1:1,format=rgb24",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ]
+    )
+    return tuple(data[:3])
+
+
+@pytest.mark.parametrize("smooth", [False, True])
+def test_generated_gif_uses_background_image_as_frame_zero(tmp_path, smooth):
+    _require_ffmpeg()
+    video = tmp_path / "sample.mp4"
+    background = tmp_path / "sample-background.png"
+    out_gif = tmp_path / "poster.gif"
+    _run_ffmpeg(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=160x90:d=2:r=10",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ]
+    )
+    _run_ffmpeg(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=160x90:d=1",
+            "-frames:v",
+            "1",
+            str(background),
+        ]
+    )
+    job = {"logger": DummyLogger(), "progress_text": ""}
+
+    ok, msg = ffmpeg_utils.make_gif_multi_inputs(
+        str(video),
+        [{"start": 0.2, "end": 1.2}],
+        str(out_gif),
+        {"fps": 15, "height": 90, "loop_forever": True, "smooth": smooth},
+        job,
+        background_image=str(background),
+    )
+
+    assert ok, msg
+    red, green, blue = _first_frame_rgb(out_gif)
+    assert red > 200
+    assert green < 50
+    assert blue < 50
 
 
 def test_first_video_stream_index_skips_attached_picture(monkeypatch):

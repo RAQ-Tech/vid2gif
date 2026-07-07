@@ -89,11 +89,47 @@ def resolve_case_insensitive(path: str):
     return cur
 
 
+BACKGROUND_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tbn", ".bmp"}
+BACKGROUND_IMAGE_TYPES = ("background", "backdrop", "fanart", "art")
+
+
+def _background_variant_number(name: str, image_type: str):
+    if name == image_type:
+        return 0
+
+    suffix = name[len(image_type):]
+    if suffix.isdigit():
+        return int(suffix)
+    if suffix.startswith("-") and suffix[1:].isdigit():
+        return int(suffix[1:])
+    return None
+
+
+def _background_image_score(name: str, video_base: str):
+    lower_name = name.lower()
+    lower_base = video_base.lower()
+    prefixed = f"{lower_base}-"
+
+    if lower_name.startswith(prefixed):
+        suffix = lower_name[len(prefixed):]
+        for type_index, image_type in enumerate(BACKGROUND_IMAGE_TYPES):
+            variant = _background_variant_number(suffix, image_type)
+            if variant is not None:
+                return (0, type_index, variant)
+
+    for type_index, image_type in enumerate(BACKGROUND_IMAGE_TYPES):
+        variant = _background_variant_number(lower_name, image_type)
+        if variant is not None:
+            return (1, type_index, variant)
+
+    return None
+
+
 def find_background_image(video_path: str):
     """Return a companion background image for ``video_path`` if present.
 
-    The expected naming convention is ``<video name>-background.<ext>`` where
-    the extension is a common image type.  Matching is case-insensitive.
+    Supports common Emby/Jellyfin/Plex backdrop naming patterns.  Matching is
+    case-insensitive and prefers video-specific names over folder-level names.
     """
 
     if not video_path:
@@ -109,15 +145,18 @@ def find_background_image(video_path: str):
     except OSError:
         return None
 
-    target_prefix = f"{base_name}-background".lower()
-    allowed_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    candidates = []
 
     for entry in entries:
         name, ext = os.path.splitext(entry)
-        if ext.lower() not in allowed_exts:
+        if ext.lower() not in BACKGROUND_IMAGE_EXTS:
             continue
-        if name.lower() == target_prefix:
-            return os.path.join(directory, entry)
+        score = _background_image_score(name, base_name)
+        if score is not None:
+            candidates.append((score, entry.lower(), entry))
+
+    if candidates:
+        _, _, entry = min(candidates)
+        return os.path.join(directory, entry)
 
     return None
-

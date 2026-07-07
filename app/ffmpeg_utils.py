@@ -251,7 +251,8 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
         "-sn",
     ]
 
-    input_refs = []
+    background_ref = None
+    video_refs = []
     input_filters = []
 
     if background_image:
@@ -267,9 +268,11 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
             "-i",
             background_image,
         ]
-        label = "v0"
-        input_filters.append(_normalize_filter("[0:v]", label, width, height))
-        input_refs.append(f"[{label}]")
+        input_filters.append(_normalize_filter("[0:v]", "bg_norm", width, height))
+        input_filters.append(
+            f"[bg_norm]fps={fps},trim=end_frame=1,setpts=PTS-STARTPTS[bg]"
+        )
+        background_ref = "[bg]"
 
     stream_idx = _first_video_stream_index(video, job["logger"])
     video_offset = 1 if background_image else 0
@@ -277,7 +280,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     for i, s in enumerate(segs):
         dur = max(0.01, s["end"] - s["start"])
         args += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", video]
-        label = f"v{len(input_refs)}"
+        label = f"v{len(video_refs)}"
         input_filters.append(
             _normalize_filter(
                 f"[{i + video_offset}:v:{stream_idx}]",
@@ -286,27 +289,34 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
                 height,
             )
         )
-        input_refs.append(f"[{label}]")
+        video_refs.append(f"[{label}]")
 
-    n = len(input_refs)
-    concat_inputs = "".join(input_refs)
+    video_concat_inputs = "".join(video_refs)
 
-    main_filters = ""
+    video_filters = ""
     if cfg.get("smooth"):
         src_fps = _get_source_fps(video)
         target_fps = _fps_to_float(fps)
         if src_fps is not None and target_fps is not None and abs(src_fps - target_fps) > 0.1:
-            main_filters += f"minterpolate=fps={fps},"
-    main_filters += (
-        f"fps={fps},"
-        "format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+            video_filters += f"minterpolate=fps={fps},"
+    video_filters += f"fps={fps},setpts=PTS-STARTPTS[vmain]"
+
+    filter_parts = list(input_filters)
+    filter_parts.append(
+        f"{video_concat_inputs}concat=n={len(video_refs)}:v=1:a=0[vcatraw]"
     )
-    filter_graph = (
-        ";".join(input_filters)
-        + ";"
-        + f"{concat_inputs}concat=n={n}:v=1:a=0[vcat];"
-        + f"[vcat]{main_filters}"
+    filter_parts.append(f"[vcatraw]{video_filters}")
+
+    if background_ref:
+        filter_parts.append(f"{background_ref}[vmain]concat=n=2:v=1:a=0[vout]")
+        final_ref = "[vout]"
+    else:
+        final_ref = "[vmain]"
+
+    filter_parts.append(
+        f"{final_ref}format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
     )
+    filter_graph = ";".join(filter_parts)
 
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]
 
