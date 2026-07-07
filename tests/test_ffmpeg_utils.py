@@ -12,7 +12,7 @@ class DummyLogger:
         self.error_msgs = []
 
     def info(self, msg):
-        pass
+        self.info_msgs.append(msg)
     def warning(self, msg, *args):
         pass
         if args:
@@ -41,6 +41,33 @@ def _patch_probe(monkeypatch, width=640, height=360, fps="24/1"):
 
     monkeypatch.setattr(ffmpeg_utils, "probe_video_details", fake_probe)
 
+
+
+def test_parse_ffmpeg_progress_line_out_time_ms():
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("out_time_ms=1500000") == {
+        "out_time_seconds": 1.5
+    }
+
+
+def test_parse_ffmpeg_progress_line_out_time():
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("out_time=00:01:02.500000") == {
+        "out_time_seconds": 62.5
+    }
+
+
+def test_parse_ffmpeg_progress_line_frame_and_completion():
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("frame=42") == {"frame": 42}
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("progress=end") == {
+        "progress": "end"
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["out_time_ms=not-a-number", "out_time=not-a-time", "frame=none", "plain text"],
+)
+def test_parse_ffmpeg_progress_line_ignores_malformed_values(line):
+    assert ffmpeg_utils.parse_ffmpeg_progress_line(line) == {}
 
 
 def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
@@ -138,7 +165,7 @@ def test_make_gif_multi_inputs_logs_failure(monkeypatch):
 
     class DummyPopen:
         def __init__(self, args, **kwargs):
-            self.stdout = ["line1", "last error"]
+            self.stdout = ["frame=10", "speed=0.1x", "last error"]
             self.returncode = 1
 
         def wait(self):
@@ -150,6 +177,8 @@ def test_make_gif_multi_inputs_logs_failure(monkeypatch):
     assert not ok
     assert "ffmpeg exited with code 1" in msg
     assert "last error" in msg
+    assert "speed=0.1x" not in msg
+    assert not any("speed=" in line for line in logger.info_msgs)
     assert logger.error_msgs and msg == logger.error_msgs[0]
 
 

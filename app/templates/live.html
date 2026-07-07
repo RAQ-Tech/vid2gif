@@ -17,6 +17,8 @@
     .failed { background: var(--bs-danger); }
     .queued { background: var(--bs-secondary); }
     .idle { background: var(--bs-secondary); }
+    .metric-label { font-size: 12px; color: var(--bs-secondary-color); }
+    .metric-value { font-weight: 600; }
   </style>
 {% endblock %}
 
@@ -42,9 +44,48 @@
         </div>
       </div>
 
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center gap-3 mb-2">
+              <div>
+                <div class="metric-label">Current job</div>
+                <div id="jobProgressLabel" class="metric-value">Idle</div>
+              </div>
+              <span id="jobStatus" class="pill idle">idle</span>
+            </div>
+            <div class="progress" role="progressbar" aria-label="Current job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="jobProgressBar" class="progress-bar" style="width: 0%">0%</div>
+            </div>
+            <div class="d-flex flex-wrap gap-3 mt-2 small text-muted">
+              <span id="jobElapsed">Elapsed: not started</span>
+              <span id="jobEta">Remaining: unknown</span>
+              <span id="jobSize">Size: pending</span>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center gap-3 mb-2">
+              <div>
+                <div class="metric-label">Queue</div>
+                <div id="queueProgressLabel" class="metric-value">No active queue</div>
+              </div>
+              <span id="queueItems" class="small text-muted">0 of 0 items</span>
+            </div>
+            <div class="progress" role="progressbar" aria-label="Queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="queueProgressBar" class="progress-bar" style="width: 0%">0%</div>
+            </div>
+            <div class="d-flex flex-wrap gap-3 mt-2 small text-muted">
+              <span id="queueElapsed">Elapsed: not started</span>
+              <span id="queueEta">Remaining: unknown</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div id="logbox" class="mb-2"></div>
       <div class="statusbar">
-        <span id="jobStatus" class="pill idle">idle</span>
         <span id="progressText"></span>
       </div>
     </div>
@@ -82,8 +123,69 @@
       pill.textContent = status;
       pill.className = "pill " + status;
     }
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) return 'unknown';
+      seconds = Math.max(0, Math.round(Number(seconds) || 0));
+      if (seconds < 60) return `${seconds}s`;
+      const mins = Math.floor(seconds / 60);
+      const sec = seconds % 60;
+      if (mins < 60) return `${mins}m ${String(sec).padStart(2, '0')}s`;
+      const hours = Math.floor(mins / 60);
+      return `${hours}h ${String(mins % 60).padStart(2, '0')}m`;
+    }
+    function formatSize(bytes) {
+      if (bytes === null || bytes === undefined) return 'pending';
+      let value = Number(bytes) || 0;
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      for (let i = 0; i < units.length; i++) {
+        if (value < 1024 || i === units.length - 1) {
+          return i === 0 ? `${Math.round(value)} ${units[i]}` : `${value.toFixed(1)} ${units[i]}`;
+        }
+        value /= 1024;
+      }
+      return 'pending';
+    }
+    function setProgressBar(id, percent) {
+      const pct = Math.max(0, Math.min(100, Math.round(Number(percent || 0))));
+      const bar = document.getElementById(id);
+      bar.style.width = `${pct}%`;
+      bar.textContent = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+    }
     function setProgress(text) {
       document.getElementById('progressText').textContent = text || "";
+    }
+    function setJobMetrics(job) {
+      if (!job) {
+        setStatus('idle');
+        setProgress('');
+        setProgressBar('jobProgressBar', 0);
+        document.getElementById('jobProgressLabel').textContent = 'Idle';
+        document.getElementById('jobElapsed').textContent = 'Elapsed: not started';
+        document.getElementById('jobEta').textContent = 'Remaining: unknown';
+        document.getElementById('jobSize').textContent = 'Size: pending';
+        return;
+      }
+      setStatus(job.status);
+      setProgress(job.progress_label || job.progress_text || '');
+      setProgressBar('jobProgressBar', job.progress_percent);
+      document.getElementById('jobProgressLabel').textContent = job.progress_label || job.progress_text || job.status || 'Idle';
+      document.getElementById('jobElapsed').textContent =
+        `Elapsed: ${job.elapsed_seconds === null || job.elapsed_seconds === undefined ? 'not started' : formatDuration(job.elapsed_seconds)}`;
+      document.getElementById('jobEta').textContent =
+        `Remaining: ${job.eta_seconds === null || job.eta_seconds === undefined ? 'unknown' : formatDuration(job.eta_seconds)}`;
+      document.getElementById('jobSize').textContent = `Size: ${formatSize(job.output_size_bytes)}`;
+    }
+    function setQueueMetrics(data) {
+      if (!data) return;
+      setProgressBar('queueProgressBar', data.queue_progress_percent);
+      document.getElementById('queueProgressLabel').textContent = data.queue_progress_label || 'No active queue';
+      document.getElementById('queueItems').textContent =
+        `${data.completed_active_items || 0} of ${data.total_active_items || 0} items`;
+      document.getElementById('queueElapsed').textContent =
+        `Elapsed: ${data.queue_elapsed_seconds === null || data.queue_elapsed_seconds === undefined ? 'not started' : formatDuration(data.queue_elapsed_seconds)}`;
+      document.getElementById('queueEta').textContent =
+        `Remaining: ${data.queue_eta_seconds === null || data.queue_eta_seconds === undefined ? 'unknown' : formatDuration(data.queue_eta_seconds)}`;
     }
     function newestFinishedJob(all) {
       return all
@@ -109,27 +211,32 @@
           const running = all.find(x => x.status === 'running');
           if (running) {
             setCurrentJob(running.id);
-            setProgress(running.progress_text);
-            setStatus(running.status);
+            setJobMetrics(running);
             return;
           }
           const last = all.find(x => x.id === lastJob || x.id === currentJob) || newestFinishedJob(all);
           if (last) {
             setCurrentJob(last.id);
-            setProgress(last.progress_text);
-            setStatus(last.status);
+            setJobMetrics(last);
           } else {
             currentJob = '';
-            setProgress('');
-            setStatus('idle');
+            setJobMetrics(null);
           }
         } else if (currentJob) {
           const j = all.find(x => x.id === currentJob);
           if (!j) return;
           setCurrentJob(j.id);
-          setProgress(j.progress_text);
-          setStatus(j.status);
+          setJobMetrics(j);
         }
+      } catch (e) {
+        // ignore
+      }
+    }
+    async function refreshQueueSummary() {
+      try {
+        const res = await fetch('/api/queue/status');
+        if (!res.ok) return;
+        setQueueMetrics(await res.json());
       } catch (e) {
         // ignore
       }
@@ -145,8 +252,7 @@
         logOffset = data.offset || 0;
         (data.lines || []).forEach(append);
         if (data.job) {
-          setProgress(data.job.progress_text);
-          setStatus(data.job.status);
+          setJobMetrics(data.job);
         }
       } catch (e) {
         // ignore transient polling failures
@@ -155,6 +261,7 @@
 
     async function poll() {
       await refreshStatus();
+      await refreshQueueSummary();
       await refreshLog();
     }
 

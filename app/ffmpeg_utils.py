@@ -1,8 +1,26 @@
 import subprocess
 import shlex
 import json
+import time
 from collections import deque
 
+from .progress import update_render_progress
+
+
+FFMPEG_PROGRESS_KEYS = {
+    "bitrate",
+    "drop_frames",
+    "dup_frames",
+    "fps",
+    "frame",
+    "out_time",
+    "out_time_ms",
+    "out_time_us",
+    "progress",
+    "speed",
+    "stream_0_0_q",
+    "total_size",
+}
 
 
 def ffmpeg_version():
@@ -70,6 +88,77 @@ def probe_video_details(video_path):
         )
 
     return proc.stdout, None
+
+
+def parse_ffmpeg_time(value):
+    value = (value or "").strip()
+    if not value or value.upper() == "N/A":
+        return None
+    try:
+        if ":" not in value:
+            return float(value)
+        parts = value.split(":")
+        if len(parts) != 3:
+            return None
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+        return hours * 3600 + minutes * 60 + seconds
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_ffmpeg_progress_line(line):
+    if not line or "=" not in line:
+        return {}
+    key, value = line.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+
+    if key in ("out_time_ms", "out_time_us"):
+        try:
+            return {"out_time_seconds": int(value) / 1_000_000}
+        except (TypeError, ValueError):
+            return {}
+    if key == "out_time":
+        seconds = parse_ffmpeg_time(value)
+        if seconds is None:
+            return {}
+        return {"out_time_seconds": seconds}
+    if key == "frame":
+        try:
+            return {"frame": int(value)}
+        except (TypeError, ValueError):
+            return {}
+    if key == "progress":
+        return {"progress": value}
+    return {}
+
+
+def is_ffmpeg_progress_line(line):
+    if not line or "=" not in line:
+        return False
+    key = line.split("=", 1)[0].strip()
+    return key in FFMPEG_PROGRESS_KEYS
+
+
+def summarize_video_details(details):
+    try:
+        info = json.loads(details or "{}")
+        stream = info.get("streams", [{}])[0]
+    except Exception:
+        return "Video details unavailable"
+
+    codec = stream.get("codec_name") or "unknown codec"
+    width = stream.get("width")
+    height = stream.get("height")
+    fps = _fps_to_float(stream.get("avg_frame_rate"))
+    parts = [str(codec)]
+    if width and height:
+        parts.append(f"{width}x{height}")
+    if fps:
+        parts.append(f"{fps:.2f} fps")
+    return " · ".join(parts)
 
 
 def build_segments(dur, cfg):
@@ -241,7 +330,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
         "-y",
         "-hide_banner",
         "-v",
-        "info",
+        "warning",
         "-nostats",
         "-progress",
         "pipe:2",
@@ -254,12 +343,12 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     background_ref = None
     video_refs = []
     input_filters = []
+    target_fps_float = _fps_to_float(fps)
+    if target_fps_float is None or target_fps_float <= 0:
+        target_fps_float = 15.0
 
     if background_image:
-        target_fps = _fps_to_float(fps)
-        if target_fps is None or target_fps <= 0:
-            target_fps = 15.0
-        still_duration = max(1.0 / target_fps, 1 / 30.0)
+        still_duration = max(1.0 / target_fps_float, 1 / 30.0)
         args += [
             "-loop",
             "1",
@@ -320,8 +409,11 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
 
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]
 
-    job["logger"].info("----- FFMPEG CMD -----")
-    job["logger"].info(" ".join(shlex.quote(a) for a in args))
+    expected_seconds = sum(max(0.0, s["end"] - s["start"]) for s in segs)
+    if background_image:
+        expected_seconds += 1.0 / target_fps_float
+    job["expected_duration_seconds"] = expected_seconds
+    job["logger"].info("GIF generation started")
 
     proc = subprocess.Popen(
         args,
@@ -331,27 +423,61 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
         bufsize=1,
     )
 
-    last_lines = deque(maxlen=20)
+    last_error_lines = deque(maxlen=12)
+    last_logged_percent = -5
+    last_logged_at = 0
     for raw in proc.stdout:
         line = (raw or "").rstrip("\n")
         if not line:
             continue
-        job["logger"].info(line)
-        last_lines.append(line)
-        if (
-            "frame=" in line
-            or "time=" in line
-            or "speed=" in line
-            or line.startswith("out_time=")
-        ):
-            job["progress_text"] = line.strip()
+        parsed = parse_ffmpeg_progress_line(line)
+        if parsed:
+            update_render_progress(
+                job,
+                expected_seconds,
+                out_time_seconds=parsed.get("out_time_seconds"),
+                frame=parsed.get("frame"),
+                fps=target_fps_float,
+            )
+            if parsed.get("progress") == "end":
+                update_render_progress(
+                    job,
+                    expected_seconds,
+                    out_time_seconds=expected_seconds,
+                    fps=target_fps_float,
+                )
+            percent = job.get("progress_percent", 0)
+            now = time.time()
+            should_log = (
+                percent > 0
+                and (
+                    percent >= 100
+                    or percent - last_logged_percent >= 5
+                    or now - last_logged_at >= 15
+                )
+            )
+            if should_log:
+                job["logger"].info(f"Progress: {job.get('progress_label', '')}")
+                last_logged_percent = percent
+                last_logged_at = now
+        elif not is_ffmpeg_progress_line(line):
+            last_error_lines.append(line)
 
     proc.wait()
     if proc.returncode != 0:
-        tail = "\n".join(last_lines)
-        msg = f"ffmpeg exited with code {proc.returncode}\n{tail}".rstrip()
+        tail = "\n".join(last_error_lines)
+        msg = f"ffmpeg exited with code {proc.returncode}"
+        if tail:
+            msg = f"{msg}\n{tail}"
         job["logger"].error(msg)
+        job["_ffmpeg_error_logged"] = True
         return False, msg
 
+    update_render_progress(
+        job,
+        expected_seconds,
+        out_time_seconds=expected_seconds,
+        fps=target_fps_float,
+    )
+    job["logger"].info("GIF generation finished")
     return True, ""
-

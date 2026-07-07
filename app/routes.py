@@ -18,9 +18,11 @@ from .jobs import (
     enqueue_job,
     find_videos,
     emit_queue_status,
+    new_queue_batch_id,
     public_job,
     queue_status_payload,
 )
+from .progress import mark_job_finished
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -56,6 +58,7 @@ def queue_page():
         shown=shown,
         total=total,
         paused=queue_paused.is_set(),
+        queue_summary=queue_status_payload(),
     )
 
 
@@ -74,7 +77,7 @@ def api_queue_control(action):
             for jid in ids:
                 j = jobs.get(jid)
                 if j and j.get("status") == "queued":
-                    j["status"] = "stopped"
+                    mark_job_finished(j, "stopped")
     return redirect(url_for("queue_page", limit=request.args.get("limit", 10)))
 
 
@@ -108,7 +111,7 @@ def api_queue_status():
 def completed_page():
     with lock:
         all_jobs = [j for j in jobs.values() if j["status"] in ("success", "failed")]
-    return render_template("completed.html", jobs=all_jobs)
+    return render_template("completed.html", jobs=[public_job(j) for j in all_jobs])
 
 
 @app.route("/live")
@@ -261,10 +264,11 @@ def api_add():
         "smooth": (request.form.get("smooth", "off") == "on"),
     }
 
+    batch_id = new_queue_batch_id()
     if os.path.isdir(real_target):
         for v in find_videos(real_target):
-            enqueue_job(v, cfg)
+            enqueue_job(v, cfg, batch_id=batch_id)
     else:
-        enqueue_job(real_target, cfg)
+        enqueue_job(real_target, cfg, batch_id=batch_id)
 
     return redirect(url_for("live_page"))

@@ -15,9 +15,10 @@ def test_api_add_accepts_original_fps(monkeypatch):
     def fake_resolve(path):
         return path
 
-    def fake_enqueue(video, cfg):
+    def fake_enqueue(video, cfg, batch_id=None):
         captured["video"] = video
         captured["cfg"] = cfg
+        captured["batch_id"] = batch_id
 
     monkeypatch.setattr(routes, "resolve_case_insensitive", fake_resolve)
     monkeypatch.setattr(routes, "enqueue_job", fake_enqueue)
@@ -35,4 +36,4 @@ def test_api_add_accepts_original_fps(monkeypatch):
     res = client.post("/api/add", data=data)
     assert res.status_code == 302
     assert captured["cfg"]["fps"] == "original"
-
+    assert captured["batch_id"]

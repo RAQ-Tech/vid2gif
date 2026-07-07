@@ -10,8 +10,19 @@ from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
 from .ffmpeg_utils import (
     get_duration,
     probe_video_details,
+    summarize_video_details,
     build_segments,
     make_gif_multi_inputs,
+)
+from .progress import (
+    TERMINAL_STATUSES,
+    format_duration,
+    format_size,
+    initialize_job_progress,
+    mark_job_finished,
+    mark_job_started,
+    rounded_seconds,
+    update_job_label,
 )
 from .utils import find_background_image, path_is_under
 
@@ -25,12 +36,101 @@ _worker_started = False
 
 
 def public_job(job):
+    update_job_label(job)
     return {
         "id": job.get("id", ""),
         "video": job.get("video", ""),
         "out_gif": job.get("out_gif", ""),
         "status": job.get("status", ""),
         "progress_text": job.get("progress_text", ""),
+        "progress_label": job.get("progress_label", ""),
+        "progress_percent": job.get("progress_percent", 0),
+        "elapsed_seconds": job.get("elapsed_seconds"),
+        "eta_seconds": job.get("eta_seconds"),
+        "output_size_bytes": job.get("output_size_bytes"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+
+
+def _queue_summary(all_jobs):
+    active_batch_ids = {
+        j.get("batch_id")
+        for j in all_jobs
+        if j.get("status") in ("queued", "running") and j.get("batch_id")
+    }
+    if active_batch_ids:
+        relevant = [j for j in all_jobs if j.get("batch_id") in active_batch_ids]
+    else:
+        batch_ids = [j.get("batch_id") for j in all_jobs if j.get("batch_id")]
+        latest_batch = max(batch_ids) if batch_ids else None
+        relevant = [j for j in all_jobs if j.get("batch_id") == latest_batch]
+
+    total = len(relevant)
+    if total == 0:
+        return {
+            "total_active_items": 0,
+            "completed_active_items": 0,
+            "queue_progress_percent": 0,
+            "queue_elapsed_seconds": None,
+            "queue_eta_seconds": None,
+            "queue_progress_label": "No active queue",
+        }
+
+    now = time.time()
+    completed = [j for j in relevant if j.get("status") in TERMINAL_STATUSES]
+    running = [j for j in relevant if j.get("status") == "running"]
+    queued = [j for j in relevant if j.get("status") == "queued"]
+    completed_units = float(len(completed))
+    completed_units += sum(
+        max(0, min(100, j.get("progress_percent") or 0)) / 100.0 for j in running
+    )
+    percent = max(0, min(100, int(round(100 * completed_units / total))))
+
+    starts = [
+        j.get("_started_ts") or j.get("_created_ts")
+        for j in relevant
+        if j.get("_started_ts") or j.get("_created_ts")
+    ]
+    finishes = [j.get("_finished_ts") for j in relevant if j.get("_finished_ts")]
+    elapsed = None
+    if starts:
+        end = max(finishes) if len(completed) == total and finishes else now
+        elapsed = rounded_seconds(end - min(starts))
+
+    finished_durations = [
+        j.get("elapsed_seconds")
+        for j in completed
+        if j.get("elapsed_seconds") and j.get("elapsed_seconds") > 0
+    ]
+    eta = None
+    if len(completed) < total:
+        running_remaining = sum(
+            (100 - max(0, min(100, j.get("progress_percent") or 0))) / 100.0
+            for j in running
+        )
+        remaining_units = len(queued) + running_remaining
+        if finished_durations:
+            eta = rounded_seconds(
+                (sum(finished_durations) / len(finished_durations)) * remaining_units
+            )
+        elif elapsed and percent > 0:
+            eta = rounded_seconds(elapsed * (100 - percent) / percent)
+
+    if percent >= 100:
+        label = f"Complete · {total} item{'s' if total != 1 else ''}"
+    elif eta is not None:
+        label = f"{percent}% complete · {format_duration(eta)} remaining"
+    else:
+        label = f"{percent}% complete"
+
+    return {
+        "total_active_items": total,
+        "completed_active_items": len(completed),
+        "queue_progress_percent": percent,
+        "queue_elapsed_seconds": elapsed,
+        "queue_eta_seconds": eta,
+        "queue_progress_label": label,
     }
 
 
@@ -39,11 +139,16 @@ def queue_status_payload():
         running = [
             public_job(j) for j in jobs.values() if j.get("status") == "running"
         ]
+        all_jobs = list(jobs.values())
     with job_queue.mutex:
         queued_ids = list(job_queue.queue)
     with lock:
         queued = [public_job(jobs[jid]) for jid in queued_ids if jid in jobs]
-    return {"running": running, "queued": queued, "paused": queue_paused.is_set()}
+    summary = _queue_summary(all_jobs)
+    payload = {"running": running, "queued": queued, "paused": queue_paused.is_set()}
+    payload.update(summary)
+    payload["summary"] = dict(summary)
+    return payload
 
 
 def emit_queue_status():
@@ -71,21 +176,27 @@ def create_logger(job_id, log_path):
     return logger
 
 
-def enqueue_job(video_path, cfg):
+def new_queue_batch_id():
+    return datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def enqueue_job(video_path, cfg, batch_id=None):
     if not path_is_under(video_path, LIB_ROOT):
         return None, "Path must be under /library"
     out_gif = os.path.join(os.path.dirname(video_path), "poster.gif")
     base = os.path.splitext(os.path.basename(video_path))[0]
     job_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    batch_id = batch_id or job_id
     tmp_dir = os.path.join(PROCESS_TMP_ROOT, f"{base}_{job_id}")
     log_path = os.path.join(LOG_DIR, f"{job_id}.txt")
     logger = create_logger(job_id, log_path)
     logger.info("Job created")
-    logger.info(f"Video: {video_path}")
-    logger.info(f"Out  : {out_gif}")
+    logger.info(f"Source: {video_path}")
+    logger.info(f"Output: {out_gif}")
 
     job = {
         "id": job_id,
+        "batch_id": batch_id,
         "video": video_path,
         "out_gif": out_gif,
         "tmp_dir": tmp_dir,
@@ -95,6 +206,7 @@ def enqueue_job(video_path, cfg):
         "progress_text": "",
         "logger": logger,
     }
+    initialize_job_progress(job)
     with lock:
         jobs[job_id] = job
     job_queue.put(job_id)
@@ -128,42 +240,44 @@ def worker():
             job_queue.task_done()
             continue
         try:
-            job["status"] = "running"
-            job["logger"].info(f"Starting: {job['video']}")
+            mark_job_started(job)
+            job["logger"].info("Job started")
             emit_queue_status()
             try:
                 os.makedirs(job["tmp_dir"], exist_ok=True)
             except Exception as e:
-                job["status"] = "failed"
+                mark_job_finished(job, "failed")
                 job["logger"].error(f"Failed to create tmp dir: {e}")
                 continue
-            job["logger"].info("----- PROBE -----")
             details, err = probe_video_details(job["video"])
             if err:
-                job["logger"].error(err)
+                job["logger"].info("Video details unavailable")
             else:
-                job["logger"].info(details)
-            job["logger"].info("----- CONFIG ----")
+                job["logger"].info(f"Video details: {summarize_video_details(details)}")
             job["logger"].info(
-                f"height={job['cfg']['height']} fps={job['cfg']['fps']} clip_len={job['cfg']['clip_len']}"
+                "Settings: "
+                f"{job['cfg']['height']}px high, "
+                f"{job['cfg']['fps']} FPS, "
+                f"{job['cfg']['clip_len']}s clips"
             )
 
             dur, err = get_duration(job["video"])
             if err:
-                job["status"] = "failed"
+                mark_job_finished(job, "failed")
                 job["logger"].error(err)
             elif not dur or dur < 0.2:
-                job["status"] = "failed"
+                mark_job_finished(job, "failed")
                 job["logger"].error("Could not read duration.")
             else:
+                job["logger"].info(f"Duration: {format_duration(dur)}")
                 segs = build_segments(dur, job["cfg"])
                 bg_image = find_background_image(job["video"])
                 if bg_image:
-                    job["logger"].info(f"Compatible background image: {bg_image}")
+                    job["logger"].info(f"Background frame: {bg_image}")
                 else:
-                    job["logger"].info("Compatible background image: not found")
+                    job["logger"].info("Background frame: not found")
                 job["logger"].info(
-                    f"{len(segs)} segments, ~{len(segs)*job['cfg']['clip_len']:.1f}s"
+                    f"Segments: {len(segs)} clips, about {format_duration(len(segs)*job['cfg']['clip_len'])}"
                 )
                 tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
                 ok, err_msg = make_gif_multi_inputs(
@@ -176,24 +290,32 @@ def worker():
                 )
                 if ok:
                     try:
+                        job["logger"].info("Moving GIF into place")
                         shutil.move(tmp_gif, job["out_gif"])
                     except Exception as e:
-                        job["status"] = "failed"
+                        mark_job_finished(job, "failed")
                         job["logger"].error(f"Failed to move GIF: {e}")
                     else:
                         if os.path.isfile(job["out_gif"]):
-                            job["status"] = "success"
-                            job["logger"].info("GIF ready: " + job["out_gif"])
+                            mark_job_finished(job, "success", job["out_gif"])
+                            size = format_size(job.get("output_size_bytes"))
+                            elapsed = format_duration(job.get("elapsed_seconds"))
+                            job["logger"].info(
+                                f"GIF ready: {job['out_gif']} ({size}, {elapsed})"
+                            )
                         else:
-                            job["status"] = "failed"
+                            mark_job_finished(job, "failed")
                             job["logger"].error("Moved GIF not found.")
                 else:
-                    job["status"] = "failed"
-                    job["logger"].error(err_msg)
+                    mark_job_finished(job, "failed")
+                    if not job.get("_ffmpeg_error_logged"):
+                        job["logger"].error(err_msg)
         except Exception as e:
-            job["status"] = "failed"
+            mark_job_finished(job, "failed")
             job["logger"].error(f"Exception: {e}")
         finally:
+            if job.get("status") == "running":
+                mark_job_finished(job, "failed")
             try:
                 tmp_dir = job.get("tmp_dir")
                 if tmp_dir and os.path.isdir(tmp_dir):

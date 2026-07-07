@@ -9,7 +9,7 @@
       <div class="table-responsive">
         <table class="table table-striped table-hover">
           <thead class="table-light">
-            <tr><th>ID</th><th>Video</th><th>Status</th><th>Output</th><th>Log</th></tr>
+            <tr><th>ID</th><th>Video</th><th>Status</th><th>Duration</th><th>Size</th><th>Output</th><th>Log</th></tr>
           </thead>
           <tbody id="completed-body">
           {% for j in jobs %}
@@ -17,6 +17,8 @@
             <td>{{ j.id }}</td>
             <td><code>{{ j.video }}</code></td>
             <td>{{ j.status }}</td>
+            <td>{{ j.elapsed_seconds if j.elapsed_seconds is not none else '' }}</td>
+            <td>{{ j.output_size_bytes if j.output_size_bytes is not none else '' }}</td>
             <td><code>{{ j.out_gif }}</code></td>
             <td><a href="/logs/{{ j.id }}">view</a></td>
           </tr>
@@ -42,6 +44,28 @@
     function jobLogHref(id) {
       return `/logs/${encodeURIComponent(id || '')}`;
     }
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) return '';
+      seconds = Math.max(0, Math.round(Number(seconds) || 0));
+      if (seconds < 60) return `${seconds}s`;
+      const mins = Math.floor(seconds / 60);
+      const sec = seconds % 60;
+      if (mins < 60) return `${mins}m ${String(sec).padStart(2, '0')}s`;
+      const hours = Math.floor(mins / 60);
+      return `${hours}h ${String(mins % 60).padStart(2, '0')}m`;
+    }
+    function formatSize(bytes) {
+      if (bytes === null || bytes === undefined) return '';
+      let value = Number(bytes) || 0;
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      for (let i = 0; i < units.length; i++) {
+        if (value < 1024 || i === units.length - 1) {
+          return i === 0 ? `${Math.round(value)} ${units[i]}` : `${value.toFixed(1)} ${units[i]}`;
+        }
+        value /= 1024;
+      }
+      return '';
+    }
     async function refreshCompleted() {
       try {
         const res = await fetch('/api/status');
@@ -54,6 +78,8 @@
           rows += `<tr><td>${escapeHtml(j.id)}</td>` +
                   `<td><code>${escapeHtml(j.video)}</code></td>` +
                   `<td>${escapeHtml(j.status)}</td>` +
+                  `<td>${escapeHtml(formatDuration(j.elapsed_seconds))}</td>` +
+                  `<td>${escapeHtml(formatSize(j.output_size_bytes))}</td>` +
                   `<td><code>${escapeHtml(j.out_gif)}</code></td>` +
                   `<td><a href="${jobLogHref(j.id)}">view</a></td></tr>`;
         });
@@ -66,4 +92,3 @@
     window.addEventListener('load', refreshCompleted);
   </script>
 {% endblock %}
-

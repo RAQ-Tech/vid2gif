@@ -15,6 +15,20 @@
         {% endif %}
         </span>
       </p>
+      <div class="mb-3">
+        <div class="d-flex justify-content-between align-items-center gap-3 mb-1">
+          <span class="fw-semibold">Overall progress</span>
+          <span id="queue-summary-label" class="small text-muted">{{ queue_summary.queue_progress_label }}</span>
+        </div>
+        <div class="progress" role="progressbar" aria-label="Overall queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ queue_summary.queue_progress_percent }}">
+          <div id="queue-progress-bar" class="progress-bar" style="width: {{ queue_summary.queue_progress_percent }}%">{{ queue_summary.queue_progress_percent }}%</div>
+        </div>
+        <div class="d-flex flex-wrap gap-3 mt-2 small text-muted">
+          <span id="queue-items">{{ queue_summary.completed_active_items }} of {{ queue_summary.total_active_items }} items complete</span>
+          <span id="queue-elapsed">Elapsed: {{ queue_summary.queue_elapsed_seconds if queue_summary.queue_elapsed_seconds is not none else 'not started' }}</span>
+          <span id="queue-eta">Remaining: {{ queue_summary.queue_eta_seconds if queue_summary.queue_eta_seconds is not none else 'unknown' }}</span>
+        </div>
+      </div>
       <div class="d-flex flex-wrap gap-2 mb-3">
         <form method="post" action="/api/queue/start?limit={{ limit }}"><button type="submit" class="btn btn-success btn-sm">Start</button></form>
         <form method="post" action="/api/queue/pause?limit={{ limit }}"><button type="submit" class="btn btn-warning btn-sm">Pause</button></form>
@@ -45,7 +59,12 @@
             <td>{{ j.id }}</td>
             <td><code>{{ j.video }}</code></td>
             <td>{{ j.status }}</td>
-            <td><code>{{ j.progress_text }}</code></td>
+            <td>
+              <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
+                <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%">{{ j.progress_percent or 0 }}%</div>
+              </div>
+              <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Starting' }}</div>
+            </td>
             <td><a href="/logs/{{ j.id }}">view</a></td>
           </tr>
           {% endfor %}
@@ -58,7 +77,12 @@
             <td>{{ j.id }}</td>
             <td><code>{{ j.video }}</code></td>
             <td>{{ j.status }}</td>
-            <td><code>{{ j.progress_text }}</code></td>
+            <td>
+              <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
+                <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%">{{ j.progress_percent or 0 }}%</div>
+              </div>
+              <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Waiting' }}</div>
+            </td>
             <td><a href="/logs/{{ j.id }}">view</a></td>
           </tr>
           {% endfor %}
@@ -101,8 +125,39 @@
     function jobLogHref(id) {
       return `/logs/${encodeURIComponent(id || '')}`;
     }
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) return 'unknown';
+      seconds = Math.max(0, Math.round(Number(seconds) || 0));
+      if (seconds < 60) return `${seconds}s`;
+      const mins = Math.floor(seconds / 60);
+      const sec = seconds % 60;
+      if (mins < 60) return `${mins}m ${String(sec).padStart(2, '0')}s`;
+      const hours = Math.floor(mins / 60);
+      return `${hours}h ${String(mins % 60).padStart(2, '0')}m`;
+    }
+    function progressCell(j) {
+      const pct = Math.max(0, Math.min(100, Math.round(Number(j.progress_percent || 0))));
+      const label = escapeHtml(j.progress_label || j.progress_text || (j.status === 'queued' ? 'Waiting' : 'Starting'));
+      return `<div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">` +
+             `<div class="progress-bar" style="width: ${pct}%">${pct}%</div></div>` +
+             `<div class="small text-muted mt-1">${label}</div>`;
+    }
     function queueMoveAction(id, direction) {
       return `/api/queue/move/${encodeURIComponent(id || '')}/${direction}?limit=${encodeURIComponent(limit)}`;
+    }
+    function updateQueueSummary(data) {
+      const pct = Math.max(0, Math.min(100, Math.round(Number(data.queue_progress_percent || 0))));
+      document.getElementById('queue-summary-label').textContent = data.queue_progress_label || `${pct}% complete`;
+      const bar = document.getElementById('queue-progress-bar');
+      bar.style.width = `${pct}%`;
+      bar.textContent = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+      document.getElementById('queue-items').textContent =
+        `${data.completed_active_items || 0} of ${data.total_active_items || 0} items complete`;
+      document.getElementById('queue-elapsed').textContent =
+        `Elapsed: ${data.queue_elapsed_seconds === null || data.queue_elapsed_seconds === undefined ? 'not started' : formatDuration(data.queue_elapsed_seconds)}`;
+      document.getElementById('queue-eta').textContent =
+        `Remaining: ${data.queue_eta_seconds === null || data.queue_eta_seconds === undefined ? 'unknown' : formatDuration(data.queue_eta_seconds)}`;
     }
     function updateQueue(data) {
       const tbody = document.getElementById('queue-body');
@@ -115,7 +170,7 @@
         rows += `<tr><td><button class="btn btn-outline-secondary btn-sm" disabled>&uarr;</button>` +
                 `<button class="btn btn-outline-secondary btn-sm" disabled>&darr;</button></td>` +
                 `<td>${escapeHtml(j.id)}</td><td><code>${escapeHtml(j.video)}</code></td>` +
-                `<td>${escapeHtml(j.status)}</td><td><code>${escapeHtml(j.progress_text)}</code></td>` +
+                `<td>${escapeHtml(j.status)}</td><td>${progressCell(j)}</td>` +
                 `<td><a href="${jobLogHref(j.id)}">view</a></td></tr>`;
       });
       const remaining = Math.max(0, limit - data.running.length);
@@ -126,13 +181,14 @@
                 `<form method="post" action="${queueMoveAction(j.id, 'down')}" class="d-inline">` +
                 `<button class="btn btn-outline-secondary btn-sm">&darr;</button></form>` +
                 `</td><td>${escapeHtml(j.id)}</td><td><code>${escapeHtml(j.video)}</code></td>` +
-                `<td>${escapeHtml(j.status)}</td><td><code>${escapeHtml(j.progress_text)}</code></td>` +
+                `<td>${escapeHtml(j.status)}</td><td>${progressCell(j)}</td>` +
                 `<td><a href="${jobLogHref(j.id)}">view</a></td></tr>`;
       });
       tbody.innerHTML = rows;
       const shown = Math.min(limit, data.running.length + data.queued.length);
       const total = data.running.length + data.queued.length;
       document.getElementById('queue-count').textContent = `${shown} of ${total} items in queue displayed`;
+      updateQueueSummary(data);
     }
 
     async function refreshQueue() {

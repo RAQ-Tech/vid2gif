@@ -36,15 +36,18 @@ def test_api_status_returns_public_job_payload_only():
 
     assert res.status_code == 200
     payload = res.get_json()
-    assert payload == [
-        {
-            "id": "job1",
-            "video": "/library/video<script>.mp4",
-            "out_gif": "/library/poster.gif",
-            "status": "queued",
-            "progress_text": "<progress>",
-        }
-    ]
+    assert payload[0]["id"] == "job1"
+    assert payload[0]["video"] == "/library/video<script>.mp4"
+    assert payload[0]["out_gif"] == "/library/poster.gif"
+    assert payload[0]["status"] == "queued"
+    assert payload[0]["progress_text"] == "Waiting"
+    assert payload[0]["progress_label"] == "Waiting"
+    assert payload[0]["progress_percent"] == 0
+    assert payload[0]["elapsed_seconds"] is None
+    assert payload[0]["eta_seconds"] is None
+    assert payload[0]["output_size_bytes"] is None
+    assert payload[0]["started_at"] is None
+    assert payload[0]["finished_at"] is None
     assert "logger" not in payload[0]
     assert "log_path" not in payload[0]
     assert "cfg" not in payload[0]
@@ -61,8 +64,50 @@ def test_queue_status_returns_public_payloads():
 
     payload = res.get_json()
     assert payload["queued"][0]["id"] == "job1"
+    assert payload["total_active_items"] == 1
+    assert payload["completed_active_items"] == 0
+    assert payload["queue_progress_percent"] == 0
+    assert payload["queue_progress_label"] == "0% complete"
+    assert payload["summary"]["total_active_items"] == 1
     assert "logger" not in payload["queued"][0]
     assert jobs.emit_queue_status() == payload
+    _clear_jobs()
+
+
+def test_queue_status_reports_overall_batch_progress():
+    _clear_jobs()
+    jobs.jobs["done"] = _make_job(job_id="done", status="success")
+    jobs.jobs["done"].update(
+        {
+            "batch_id": "batch1",
+            "progress_percent": 100,
+            "elapsed_seconds": 10,
+            "_started_ts": 100,
+            "_finished_ts": 110,
+        }
+    )
+    jobs.jobs["run"] = _make_job(job_id="run", status="running")
+    jobs.jobs["run"].update(
+        {
+            "batch_id": "batch1",
+            "progress_percent": 50,
+            "elapsed_seconds": 5,
+            "_started_ts": 110,
+        }
+    )
+    jobs.jobs["queued"] = _make_job(job_id="queued", status="queued")
+    jobs.jobs["queued"].update({"batch_id": "batch1", "_created_ts": 111})
+    jobs.job_queue.put("queued")
+
+    client = routes.app.test_client()
+    res = client.get("/api/queue/status")
+
+    payload = res.get_json()
+    assert payload["total_active_items"] == 3
+    assert payload["completed_active_items"] == 1
+    assert payload["queue_progress_percent"] == 50
+    assert payload["queue_eta_seconds"] == 15
+    assert payload["summary"]["queue_progress_percent"] == 50
     _clear_jobs()
 
 
@@ -167,9 +212,11 @@ def test_templates_escape_dynamic_job_tables():
     completed_template = (ROOT / "app" / "templates" / "completed.html").read_text()
 
     assert "escapeHtml(j.video)" in queue_template
-    assert "escapeHtml(j.progress_text)" in queue_template
+    assert "escapeHtml(j.progress_label" in queue_template
     assert "escapeHtml(j.video)" in completed_template
     assert "escapeHtml(j.out_gif)" in completed_template
+    assert "escapeHtml(formatDuration(j.elapsed_seconds))" in completed_template
+    assert "escapeHtml(formatSize(j.output_size_bytes))" in completed_template
 
 
 def test_queue_page_uses_polling_instead_of_socketio():
@@ -194,6 +241,9 @@ def test_live_logs_tracks_last_job_result_instead_of_forcing_running():
     assert "newestFinishedJob(all)" in live_template
     assert "clearInterval(pollTimer)" in live_template
     assert 'class="pill idle">idle</span>' in live_template
+    assert "jobProgressBar" in live_template
+    assert "queueProgressBar" in live_template
+    assert "speed=" not in live_template
 
 
 def test_dockerfile_uses_gunicorn_wsgi_entrypoint():
