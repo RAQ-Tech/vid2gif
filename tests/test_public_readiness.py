@@ -223,6 +223,10 @@ def test_workspace_escapes_dynamic_job_tables():
     assert "escapeHtml(formatDuration(j.elapsed_seconds" in workspace_script
     assert "escapeHtml(formatSize(j.output_size_bytes" in workspace_script
     assert "escapeHtml(j.gif_optimization_label || '')" in workspace_script
+    assert "escapeHtml(variant.name)" in workspace_script
+    assert "escapeHtml(variant.settings_label)" in workspace_script
+    assert "escapeHtml(file.source_name || '')" in workspace_script
+    assert "escapeHtml(file.url)" in workspace_script
     assert "box.textContent +=" in workspace_script
     assert "opt.textContent =" in workspace_script
 
@@ -242,6 +246,10 @@ def test_gifs_workspace_uses_polling_instead_of_socketio():
     assert "fetch('/api/status')" in workspace_script
     assert "fetch(`/api/logs/${encodeURIComponent(currentJob)}" in workspace_script
     assert "fetch(`/api/scan-estimate?${params.toString()}`" in workspace_script
+    assert "fetch('/api/test-lab/status')" in workspace_script
+    assert "fetch('/api/test-lab/run'" in workspace_script
+    assert "fetch('/api/test-lab/delete'" in workspace_script
+    assert "fetch(`/api/media-browser?path=${encodeURIComponent" in workspace_script
 
 
 def test_gifs_workspace_contains_expected_controls_and_metrics():
@@ -254,9 +262,11 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert 'href="/completed"' not in base_template
     assert 'href="/live"' not in base_template
     assert 'data-tab-hash="new"' in workspace_template
+    assert 'data-tab-hash="test"' in workspace_template
     assert 'data-tab-hash="queue"' in workspace_template
     assert 'data-tab-hash="completed"' in workspace_template
     assert 'data-tab-hash="logs"' in workspace_template
+    assert "const tabHashes = ['new', 'test', 'queue', 'completed', 'logs']" in workspace_script
     assert "localStorage.setItem('gifs_active_tab'" in workspace_script
     assert "jobProgressBar" in workspace_template
     assert "queueProgressBar" in workspace_template
@@ -273,6 +283,13 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "setScanEstimate(data.message" in workspace_script
     assert "messageEl.textContent" in workspace_script
     assert "detailEl.textContent" in workspace_script
+    assert "testLabRunProgressBar" in workspace_template
+    assert "testLabVariants" in workspace_template
+    assert "testLabPreviews" in workspace_template
+    assert "testLabFilesBody" in workspace_template
+    assert "data-test-preview" in workspace_script
+    assert "requestAnimationFrame(() =>" in workspace_script
+    assert "data-test-file-id" in workspace_script
     assert "speed=" not in workspace_template
     assert "speed=" not in workspace_script
 

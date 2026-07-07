@@ -1,0 +1,624 @@
+import datetime
+import json
+import os
+import queue
+import re
+import shutil
+import threading
+import time
+
+from .config import LIB_ROOT, LOG_DIR, PROCESS_TMP_ROOT, TEST_LAB_ROOT, VIDEO_EXTS
+from .conversion_gate import conversion_lock
+from .estimate_history import record_successful_job, sample_count
+from .ffmpeg_utils import (
+    build_segments,
+    get_duration,
+    make_gif_multi_inputs,
+    probe_video_details,
+    summarize_video_details,
+)
+from .gif_optimizer import optimize_gif
+from .jobs import create_logger
+from .progress import (
+    TERMINAL_STATUSES,
+    clamp_percent,
+    format_duration,
+    format_size,
+    initialize_job_progress,
+    mark_job_finished,
+    mark_job_started,
+    rounded_seconds,
+    update_job_label,
+    utc_iso,
+)
+from .utils import find_background_image, path_is_under
+
+
+SCHEMA_VERSION = 1
+MIN_VARIANTS = 2
+MAX_VARIANTS = 4
+SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+LAB_TERMINAL_STATUSES = TERMINAL_STATUSES | {"partial"}
+__test__ = False
+
+test_lab_runs = {}
+test_lab_queue = queue.Queue()
+test_lab_lock = threading.Lock()
+_worker_start_lock = threading.Lock()
+_worker_started = False
+
+
+def _now_id():
+    return datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def _run_dir(run_id):
+    return os.path.join(TEST_LAB_ROOT, run_id)
+
+
+def _manifest_path(run_id):
+    return os.path.join(_run_dir(run_id), "manifest.json")
+
+
+def _file_url(run_id, filename):
+    return f"/test-lab/files/{run_id}/{filename}"
+
+
+def _safe_name(value):
+    value = value or ""
+    if SAFE_NAME_RE.match(value):
+        return value
+    return None
+
+
+def _safe_file_path(run_id, filename):
+    run_id = _safe_name(run_id)
+    filename = _safe_name(filename)
+    if not run_id or not filename or not filename.lower().endswith(".gif"):
+        return None
+    path = os.path.realpath(os.path.join(TEST_LAB_ROOT, run_id, filename))
+    if not path_is_under(path, TEST_LAB_ROOT):
+        return None
+    return path
+
+
+def test_lab_file_path(run_id, filename):
+    path = _safe_file_path(run_id, filename)
+    if not path or not os.path.isfile(path):
+        return None
+    return path
+
+
+def settings_label(cfg):
+    fps = "original FPS" if cfg.get("fps") == "original" else f"{cfg.get('fps')} FPS"
+    clip_len = cfg.get("clip_len")
+    try:
+        clip_label = f"{float(clip_len):g}s clips"
+    except (TypeError, ValueError):
+        clip_label = f"{clip_len}s clips"
+    smooth = "smooth" if cfg.get("smooth") else "standard"
+    return (
+        f"{cfg.get('height')}px high, {fps}, {clip_label}, "
+        f"{sample_count(cfg)} samples, {smooth}"
+    )
+
+
+def _manifest_variant(variant):
+    return {
+        "id": variant.get("id", ""),
+        "name": variant.get("name", ""),
+        "filename": variant.get("filename", ""),
+        "settings_label": variant.get("settings_label", ""),
+        "cfg": variant.get("cfg") or {},
+        "status": variant.get("status", ""),
+        "output_size_bytes": variant.get("output_size_bytes"),
+        "elapsed_seconds": variant.get("elapsed_seconds"),
+        "gif_size_before_opt_bytes": variant.get("gif_size_before_opt_bytes"),
+        "gif_size_after_opt_bytes": variant.get("gif_size_after_opt_bytes"),
+        "gif_optimization_saved_bytes": variant.get("gif_optimization_saved_bytes"),
+        "gif_optimization_savings_percent": variant.get(
+            "gif_optimization_savings_percent"
+        ),
+        "gif_optimization_status": variant.get("gif_optimization_status"),
+        "gif_optimization_seconds": variant.get("gif_optimization_seconds"),
+        "gif_optimization_label": variant.get("gif_optimization_label", ""),
+    }
+
+
+def _write_manifest(run):
+    data = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run.get("id", ""),
+        "created_at": run.get("created_at"),
+        "finished_at": run.get("finished_at"),
+        "source_name": run.get("source_name", ""),
+        "variants": [_manifest_variant(v) for v in run.get("variants") or []],
+    }
+    path = _manifest_path(run["id"])
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.{os.getpid()}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+        os.replace(tmp_path, path)
+    except Exception:
+        return False
+    return True
+
+
+def _read_manifest(run_id):
+    try:
+        with open(_manifest_path(run_id), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
+        return {}
+    return data
+
+
+def _close_logger(logger):
+    if not logger:
+        return
+    for handler in list(logger.handlers):
+        try:
+            handler.close()
+        finally:
+            logger.removeHandler(handler)
+
+
+def _public_variant(variant):
+    update_job_label(variant)
+    filename = variant.get("filename", "")
+    run_id = variant.get("run_id", "")
+    output_exists = bool(filename and test_lab_file_path(run_id, filename))
+    return {
+        "id": variant.get("id", ""),
+        "name": variant.get("name", ""),
+        "status": variant.get("status", ""),
+        "progress_label": variant.get("progress_label", ""),
+        "progress_percent": variant.get("progress_percent", 0),
+        "elapsed_seconds": variant.get("elapsed_seconds"),
+        "eta_seconds": variant.get("eta_seconds"),
+        "output_size_bytes": variant.get("output_size_bytes"),
+        "started_at": variant.get("started_at"),
+        "finished_at": variant.get("finished_at"),
+        "settings_label": variant.get("settings_label", ""),
+        "file_id": f"{run_id}/{filename}" if output_exists else "",
+        "url": _file_url(run_id, filename) if output_exists else "",
+        "gif_size_before_opt_bytes": variant.get("gif_size_before_opt_bytes"),
+        "gif_size_after_opt_bytes": variant.get("gif_size_after_opt_bytes"),
+        "gif_optimization_saved_bytes": variant.get("gif_optimization_saved_bytes"),
+        "gif_optimization_savings_percent": variant.get(
+            "gif_optimization_savings_percent"
+        ),
+        "gif_optimization_status": variant.get("gif_optimization_status"),
+        "gif_optimization_seconds": variant.get("gif_optimization_seconds"),
+        "gif_optimization_label": variant.get("gif_optimization_label", ""),
+        "error": variant.get("error", ""),
+    }
+
+
+def _run_progress(run, now=None):
+    now = time.time() if now is None else now
+    variants = run.get("variants") or []
+    total = max(1, len(variants))
+    completed = [v for v in variants if v.get("status") in TERMINAL_STATUSES]
+    running = [v for v in variants if v.get("status") == "running"]
+    units = float(len(completed))
+    units += sum(clamp_percent(v.get("progress_percent")) / 100.0 for v in running)
+    percent = clamp_percent(100 * units / total)
+
+    started = run.get("_started_ts")
+    finished = run.get("_finished_ts")
+    elapsed = None
+    if started:
+        elapsed = rounded_seconds((finished or now) - started)
+
+    eta = None
+    if started and 0 < percent < 100:
+        eta = rounded_seconds((now - started) * (100 - percent) / percent)
+    elif run.get("status") in LAB_TERMINAL_STATUSES:
+        eta = 0
+
+    if run.get("status") == "queued":
+        label = "Waiting"
+    elif run.get("status") == "running":
+        if eta is None:
+            label = f"{percent}% complete"
+        else:
+            label = f"{percent}% complete · {format_duration(eta)} remaining"
+    elif run.get("status") == "partial":
+        label = f"Complete with issues · {len(completed)} of {len(variants)} variants"
+    elif run.get("status") == "success":
+        label = f"Complete · {len(variants)} variants"
+    elif run.get("status") == "failed":
+        label = "Failed"
+    else:
+        label = run.get("status", "")
+
+    run["progress_percent"] = percent
+    run["progress_label"] = label
+    run["elapsed_seconds"] = elapsed
+    run["eta_seconds"] = eta
+    return run
+
+
+def _public_run(run):
+    _run_progress(run)
+    return {
+        "id": run.get("id", ""),
+        "video": run.get("video", ""),
+        "source_name": run.get("source_name", ""),
+        "status": run.get("status", ""),
+        "progress_label": run.get("progress_label", ""),
+        "progress_percent": run.get("progress_percent", 0),
+        "elapsed_seconds": run.get("elapsed_seconds"),
+        "eta_seconds": run.get("eta_seconds"),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "variants": [_public_variant(v) for v in run.get("variants") or []],
+    }
+
+
+def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
+    if not path_is_under(video_path, lib_root):
+        return None, "Path not found"
+    if os.path.islink(video_path) or not os.path.isfile(video_path):
+        return None, "Choose one compatible video file"
+    if os.path.splitext(video_path)[1].lower() not in VIDEO_EXTS:
+        return None, "Choose one compatible video file"
+    if not isinstance(variants, list) or not (MIN_VARIANTS <= len(variants) <= MAX_VARIANTS):
+        return None, "Choose 2 to 4 variants"
+
+    run_id = _now_id()
+    run_dir = _run_dir(run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    created_ts = time.time()
+    run = {
+        "id": run_id,
+        "video": video_path,
+        "source_name": os.path.basename(video_path),
+        "status": "queued",
+        "_created_ts": created_ts,
+        "_started_ts": None,
+        "_finished_ts": None,
+        "created_at": utc_iso(created_ts),
+        "started_at": None,
+        "finished_at": None,
+        "variants": [],
+    }
+
+    for index, raw in enumerate(variants, start=1):
+        cfg = raw.get("cfg") or {}
+        name = (raw.get("name") or f"Variant {index}").strip()[:80]
+        filename = f"variant-{index}.gif"
+        variant_id = f"variant-{index}"
+        variant = {
+            "id": variant_id,
+            "run_id": run_id,
+            "name": name or f"Variant {index}",
+            "video": video_path,
+            "out_gif": os.path.join(run_dir, filename),
+            "filename": filename,
+            "tmp_dir": os.path.join(PROCESS_TMP_ROOT, "test-lab", run_id, variant_id),
+            "status": "queued",
+            "cfg": cfg,
+            "log_path": os.path.join(LOG_DIR, f"test_lab_{run_id}_{variant_id}.txt"),
+            "progress_text": "",
+            "settings_label": settings_label(cfg),
+            "logger": None,
+        }
+        initialize_job_progress(variant, now=created_ts)
+        run["variants"].append(variant)
+
+    _write_manifest(run)
+    with test_lab_lock:
+        test_lab_runs[run_id] = run
+    start_test_lab_worker()
+    test_lab_queue.put(run_id)
+    return run_id, None
+
+
+def _process_variant(run, variant):
+    logger_name = f"test_lab_{run['id']}_{variant['id']}"
+    logger = create_logger(logger_name, variant["log_path"])
+    variant["logger"] = logger
+    mark_job_started(variant)
+    logger.info(f"Test variant started: {variant['name']}")
+    logger.info(f"Source: {run['video']}")
+    logger.info(f"Output: {variant['out_gif']}")
+    logger.info(f"Settings: {variant['settings_label']}")
+
+    try:
+        os.makedirs(variant["tmp_dir"], exist_ok=True)
+    except Exception as e:
+        mark_job_finished(variant, "failed")
+        variant["error"] = f"Failed to create tmp dir: {e}"
+        logger.error(variant["error"])
+        return
+
+    details, err = probe_video_details(run["video"])
+    if err:
+        logger.info("Video details unavailable")
+    else:
+        logger.info(f"Video details: {summarize_video_details(details)}")
+
+    dur, err = get_duration(run["video"])
+    if err:
+        mark_job_finished(variant, "failed")
+        variant["error"] = err
+        logger.error(err)
+        return
+    if not dur or dur < 0.2:
+        mark_job_finished(variant, "failed")
+        variant["error"] = "Could not read duration."
+        logger.error(variant["error"])
+        return
+
+    logger.info(f"Duration: {format_duration(dur)}")
+    segs = build_segments(dur, variant["cfg"])
+    bg_image = find_background_image(run["video"])
+    if bg_image:
+        logger.info(f"Background frame: {bg_image}")
+    else:
+        logger.info("Background frame: not found")
+    logger.info(
+        f"Segments: {len(segs)} clips, about "
+        f"{format_duration(len(segs)*variant['cfg']['clip_len'])}"
+    )
+    tmp_gif = os.path.join(variant["tmp_dir"], "poster.gif")
+
+    with conversion_lock:
+        ok, err_msg = make_gif_multi_inputs(
+            run["video"],
+            segs,
+            tmp_gif,
+            variant["cfg"],
+            variant,
+            background_image=bg_image,
+        )
+        if not ok:
+            mark_job_finished(variant, "failed")
+            variant["error"] = err_msg
+            if not variant.get("_ffmpeg_error_logged"):
+                logger.error(err_msg)
+            return
+
+        optimize_gif(tmp_gif, variant, logger)
+        try:
+            logger.info("Moving test GIF into place")
+            shutil.move(tmp_gif, variant["out_gif"])
+        except Exception as e:
+            mark_job_finished(variant, "failed")
+            variant["error"] = f"Failed to move GIF: {e}"
+            logger.error(variant["error"])
+            return
+
+    if os.path.isfile(variant["out_gif"]):
+        mark_job_finished(variant, "success", variant["out_gif"])
+        record_successful_job(variant)
+        size = format_size(variant.get("output_size_bytes"))
+        elapsed = format_duration(variant.get("elapsed_seconds"))
+        logger.info(f"Test GIF ready: {variant['out_gif']} ({size}, {elapsed})")
+    else:
+        mark_job_finished(variant, "failed")
+        variant["error"] = "Moved GIF not found."
+        logger.error(variant["error"])
+
+
+def _finish_run(run):
+    statuses = [v.get("status") for v in run.get("variants") or []]
+    if statuses and all(status == "success" for status in statuses):
+        status = "success"
+    elif statuses and any(status == "success" for status in statuses):
+        status = "partial"
+    else:
+        status = "failed"
+    now = time.time()
+    run["status"] = status
+    run["_finished_ts"] = now
+    run["finished_at"] = utc_iso(now)
+    _run_progress(run, now=now)
+
+
+def worker():
+    while True:
+        try:
+            run_id = test_lab_queue.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        if run_id is None:
+            break
+
+        with test_lab_lock:
+            run = test_lab_runs.get(run_id)
+            if run:
+                now = time.time()
+                run["status"] = "running"
+                run["_started_ts"] = now
+                run["started_at"] = utc_iso(now)
+                _run_progress(run, now=now)
+        if not run:
+            test_lab_queue.task_done()
+            continue
+
+        try:
+            for variant in run.get("variants") or []:
+                try:
+                    _process_variant(run, variant)
+                except Exception as e:
+                    mark_job_finished(variant, "failed")
+                    variant["error"] = str(e)
+                    if variant.get("logger"):
+                        variant["logger"].error(f"Exception: {e}")
+                finally:
+                    try:
+                        tmp_dir = variant.get("tmp_dir")
+                        if tmp_dir and os.path.isdir(tmp_dir):
+                            shutil.rmtree(tmp_dir, ignore_errors=False)
+                    except Exception as e:
+                        if variant.get("logger"):
+                            variant["logger"].error(f"Failed to remove tmp dir: {e}")
+                    _close_logger(variant.get("logger"))
+                    variant["logger"] = None
+                    with test_lab_lock:
+                        _run_progress(run)
+                        _write_manifest(run)
+            with test_lab_lock:
+                _finish_run(run)
+                _write_manifest(run)
+        finally:
+            test_lab_queue.task_done()
+
+
+def start_test_lab_worker():
+    global _worker_started
+    with _worker_start_lock:
+        if _worker_started:
+            return
+        threading.Thread(target=worker, daemon=True, name="vid2gif-test-lab").start()
+        _worker_started = True
+
+
+def _inventory_items():
+    items = []
+    total_size = 0
+    try:
+        run_ids = sorted(os.listdir(TEST_LAB_ROOT), reverse=True)
+    except Exception:
+        return [], 0
+
+    for run_id in run_ids:
+        if not _safe_name(run_id):
+            continue
+        run_dir = _run_dir(run_id)
+        if not os.path.isdir(run_dir):
+            continue
+        manifest = _read_manifest(run_id)
+        source_name = manifest.get("source_name", "")
+        variants = {
+            v.get("filename"): v
+            for v in manifest.get("variants") or []
+            if isinstance(v, dict)
+        }
+        try:
+            filenames = sorted(os.listdir(run_dir))
+        except Exception:
+            continue
+        for filename in filenames:
+            if not filename.lower().endswith(".gif"):
+                continue
+            path = _safe_file_path(run_id, filename)
+            if not path or not os.path.isfile(path):
+                continue
+            stat = os.stat(path)
+            size = stat.st_size
+            total_size += size
+            meta = variants.get(filename) or {}
+            items.append(
+                {
+                    "id": f"{run_id}/{filename}",
+                    "run_id": run_id,
+                    "filename": filename,
+                    "name": meta.get("name") or filename,
+                    "source_name": source_name,
+                    "settings_label": meta.get("settings_label", ""),
+                    "size_bytes": size,
+                    "size_label": format_size(size),
+                    "modified_at": utc_iso(stat.st_mtime),
+                    "url": _file_url(run_id, filename),
+                    "gif_optimization_label": meta.get("gif_optimization_label", ""),
+                }
+            )
+    return items, total_size
+
+
+def status_payload():
+    with test_lab_lock:
+        runs = [_public_run(run) for run in test_lab_runs.values()]
+    runs.sort(key=lambda run: run.get("id", ""), reverse=True)
+    items, total_size = _inventory_items()
+    return {
+        "runs": runs,
+        "active_run": next(
+            (
+                run
+                for run in runs
+                if run.get("status") in {"queued", "running"}
+            ),
+            runs[0] if runs else None,
+        ),
+        "files": items,
+        "total_size_bytes": total_size,
+        "total_size_label": format_size(total_size),
+        "test_lab_root": TEST_LAB_ROOT,
+    }
+
+
+def _active_file_ids():
+    active = set()
+    with test_lab_lock:
+        runs = list(test_lab_runs.values())
+    for run in runs:
+        if run.get("status") not in LAB_TERMINAL_STATUSES:
+            for variant in run.get("variants") or []:
+                filename = variant.get("filename", "")
+                if filename:
+                    active.add(f"{run.get('id')}/{filename}")
+    return active
+
+
+def _cleanup_run_dir(run_id):
+    run_dir = _run_dir(run_id)
+    if not os.path.isdir(run_dir):
+        return
+    try:
+        has_gifs = any(
+            name.lower().endswith(".gif") for name in os.listdir(run_dir)
+        )
+    except Exception:
+        return
+    if has_gifs:
+        return
+    shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def delete_files(file_ids):
+    active = _active_file_ids()
+    deleted = []
+    refused = []
+    missing = []
+    touched_runs = set()
+
+    for file_id in file_ids or []:
+        file_id = str(file_id or "")
+        if "/" not in file_id:
+            refused.append(file_id)
+            continue
+        run_id, filename = file_id.split("/", 1)
+        path = _safe_file_path(run_id, filename)
+        if not path:
+            refused.append(file_id)
+            continue
+        if file_id in active:
+            refused.append(file_id)
+            continue
+        if not os.path.isfile(path):
+            missing.append(file_id)
+            continue
+        try:
+            os.remove(path)
+            deleted.append(file_id)
+            touched_runs.add(run_id)
+        except Exception:
+            refused.append(file_id)
+
+    for run_id in touched_runs:
+        if run_id not in {fid.split("/", 1)[0] for fid in active if "/" in fid}:
+            _cleanup_run_dir(run_id)
+
+    payload = status_payload()
+    payload.update({"deleted": deleted, "refused": refused, "missing": missing})
+    return payload

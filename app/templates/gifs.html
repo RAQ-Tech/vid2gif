@@ -14,6 +14,10 @@
         <i class="bi bi-plus-lg" aria-hidden="true"></i>
         <span>New Job</span>
       </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#test" data-tab-shortcut="test">
+        <i class="bi bi-columns-gap" aria-hidden="true"></i>
+        <span>Test Lab</span>
+      </a>
       <a class="btn btn-outline-secondary btn-sm" href="#logs" data-tab-shortcut="logs">
         <i class="bi bi-terminal" aria-hidden="true"></i>
         <span>Live Logs</span>
@@ -59,6 +63,12 @@
       <button class="nav-link active" id="tab-new" data-bs-toggle="tab" data-bs-target="#pane-new" type="button" role="tab" aria-controls="pane-new" aria-selected="true" data-tab-hash="new">
         <i class="bi bi-plus-square" aria-hidden="true"></i>
         <span>New Job</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-test" data-bs-toggle="tab" data-bs-target="#pane-test" type="button" role="tab" aria-controls="pane-test" aria-selected="false" data-tab-hash="test">
+        <i class="bi bi-columns-gap" aria-hidden="true"></i>
+        <span>Test Lab</span>
       </button>
     </li>
     <li class="nav-item" role="presentation">
@@ -207,6 +217,125 @@
             </button>
           </div>
         </form>
+      </div>
+    </section>
+
+    <section class="tab-pane fade" id="pane-test" role="tabpanel" aria-labelledby="tab-test" tabindex="0">
+      <div class="workspace-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Test Lab</h2>
+            <div class="text-muted small">Compare 2 to 4 GIF settings against one video without writing to the source folder.</div>
+          </div>
+          <div class="workspace-actions">
+            <button id="testLabRestartPreviews" type="button" class="btn btn-outline-secondary btn-sm">
+              <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+              <span>Restart Previews</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="test-lab-grid">
+          <div class="settings-panel">
+            <div class="panel-subheading">
+              <i class="bi bi-film" aria-hidden="true"></i>
+              <span>Source Video</span>
+            </div>
+            <label class="form-label" for="testLabVideo">Video path</label>
+            <div class="input-group">
+              <input id="testLabVideo" class="form-control" placeholder="/library/movies/Example.mp4">
+              <button id="testLabBrowseButton" class="btn btn-outline-secondary" type="button">
+                <i class="bi bi-search" aria-hidden="true"></i>
+                <span>Browse</span>
+              </button>
+            </div>
+            <div id="testLabBrowser" class="media-browser mt-3"></div>
+          </div>
+
+          <div class="settings-panel">
+            <div class="panel-subheading">
+              <i class="bi bi-sliders" aria-hidden="true"></i>
+              <span>Variants</span>
+            </div>
+            <div class="toolbar-row">
+              <button id="testLabAddVariant" type="button" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                <span>Add Variant</span>
+              </button>
+              <button id="testLabRunButton" type="button" class="btn btn-primary btn-sm ms-md-auto">
+                <i class="bi bi-play-fill" aria-hidden="true"></i>
+                <span>Generate Comparisons</span>
+              </button>
+            </div>
+            <div id="testLabVariants" class="test-lab-variants"></div>
+            <div class="scan-estimate mt-3" aria-live="polite">
+              <i class="bi bi-info-circle" aria-hidden="true"></i>
+              <div>
+                <div id="testLabMessage">Choose one video and 2 to 4 variants</div>
+                <div id="testLabDetail" class="scan-estimate-detail"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="metric-band mt-3">
+          <div id="testLabRunStatus">
+            <div class="text-muted">No test run yet.</div>
+          </div>
+          <div class="metric-progress">
+            <div class="progress" role="progressbar" aria-label="Test lab progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="testLabRunProgressBar" class="progress-bar" style="width: 0%">0%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-responsive workspace-table-wrap">
+          <table class="table table-hover align-middle workspace-table">
+            <thead>
+              <tr><th>Variant</th><th>Status</th><th>Progress</th><th>Duration</th><th>Size</th><th>Optimization</th><th>Settings</th></tr>
+            </thead>
+            <tbody id="testLabRunVariants">
+              <tr><td colspan="7" class="text-muted text-center py-4">No variants yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel-heading mt-4">
+          <div>
+            <h3 class="h6 mb-1">Comparison Previews</h3>
+            <div class="text-muted small">Restart previews reloads all visible GIFs at nearly the same time.</div>
+          </div>
+        </div>
+        <div id="testLabPreviews" class="test-preview-grid">
+          <div class="text-muted text-center py-4">Generated comparisons will appear here.</div>
+        </div>
+
+        <div class="panel-heading mt-4">
+          <div>
+            <h3 class="h6 mb-1">Saved Test GIFs</h3>
+            <div class="text-muted small">Test folder total: <span id="testLabTotalSize">0 B</span></div>
+          </div>
+          <div class="toolbar-row mb-0">
+            <div class="form-check">
+              <input id="testLabSelectAll" class="form-check-input" type="checkbox">
+              <label class="form-check-label" for="testLabSelectAll">Select all</label>
+            </div>
+            <button id="testLabDeleteSelected" type="button" class="btn btn-outline-danger btn-sm">
+              <i class="bi bi-trash" aria-hidden="true"></i>
+              <span>Delete Selected</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-responsive workspace-table-wrap">
+          <table class="table table-hover align-middle workspace-table">
+            <thead>
+              <tr><th>Select</th><th>Name</th><th>Source</th><th>Size</th><th>Optimization</th><th>Settings</th><th>Open</th></tr>
+            </thead>
+            <tbody id="testLabFilesBody">
+              <tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -442,7 +571,8 @@
 <script>
   window.vid2gifConfig = {
     libRoot: {{ lib_root|tojson }},
-    queueLimit: {{ limit|tojson }}
+    queueLimit: {{ limit|tojson }},
+    defaults: {{ defaults|tojson }}
   };
 </script>
 {% endblock %}

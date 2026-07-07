@@ -29,6 +29,7 @@ def test_gifs_workspace_renders_sections():
 
     assert res.status_code == 200
     assert 'id="pane-new"' in html
+    assert 'id="pane-test"' in html
     assert 'id="pane-queue"' in html
     assert 'id="pane-completed"' in html
     assert 'id="pane-logs"' in html

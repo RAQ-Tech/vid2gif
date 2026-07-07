@@ -16,6 +16,7 @@ TMP_ROOT = os.getenv("TMP_ROOT", os.path.join(STATE_ROOT, "tmp"))
 PROCESS_TMP_ROOT = os.getenv(
     "PROCESS_TMP_ROOT", os.path.join(STATE_ROOT, "processing", "tmp")
 )
+TEST_LAB_ROOT = os.getenv("TEST_LAB_ROOT", os.path.join(STATE_ROOT, "test-lab"))
 GIF_OPTIMIZE = os.getenv("GIF_OPTIMIZE", "1").strip().lower() in {
     "1",
     "true",
@@ -26,7 +27,7 @@ GIF_OPTIMIZE_LEVEL = os.getenv("GIF_OPTIMIZE_LEVEL", "2")
 GIFSICLE_BIN = os.getenv("GIFSICLE_BIN", "gifsicle")
 GIF_OPTIMIZE_TIMEOUT = _env_int("GIF_OPTIMIZE_TIMEOUT", 600)
 
-for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT):
+for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT, TEST_LAB_ROOT):
     os.makedirs(path, exist_ok=True)
 
 VIDEO_EXTS = {".mkv",".mp4",".m4v",".mov",".avi",".wmv",".mpg",".mpeg",".webm"}

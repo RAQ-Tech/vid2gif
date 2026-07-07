@@ -7,6 +7,7 @@ import time
 import shutil
 
 from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
+from .conversion_gate import conversion_lock
 from .estimate_history import record_successful_job
 from .gif_optimizer import optimize_gif
 from .ffmpeg_utils import (
@@ -291,38 +292,39 @@ def worker():
                     f"Segments: {len(segs)} clips, about {format_duration(len(segs)*job['cfg']['clip_len'])}"
                 )
                 tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
-                ok, err_msg = make_gif_multi_inputs(
-                    job["video"],
-                    segs,
-                    tmp_gif,
-                    job["cfg"],
-                    job,
-                    background_image=bg_image,
-                )
-                if ok:
-                    optimize_gif(tmp_gif, job, job["logger"])
-                    try:
-                        job["logger"].info("Moving GIF into place")
-                        shutil.move(tmp_gif, job["out_gif"])
-                    except Exception as e:
-                        mark_job_finished(job, "failed")
-                        job["logger"].error(f"Failed to move GIF: {e}")
-                    else:
-                        if os.path.isfile(job["out_gif"]):
-                            mark_job_finished(job, "success", job["out_gif"])
-                            record_successful_job(job)
-                            size = format_size(job.get("output_size_bytes"))
-                            elapsed = format_duration(job.get("elapsed_seconds"))
-                            job["logger"].info(
-                                f"GIF ready: {job['out_gif']} ({size}, {elapsed})"
-                            )
-                        else:
+                with conversion_lock:
+                    ok, err_msg = make_gif_multi_inputs(
+                        job["video"],
+                        segs,
+                        tmp_gif,
+                        job["cfg"],
+                        job,
+                        background_image=bg_image,
+                    )
+                    if ok:
+                        optimize_gif(tmp_gif, job, job["logger"])
+                        try:
+                            job["logger"].info("Moving GIF into place")
+                            shutil.move(tmp_gif, job["out_gif"])
+                        except Exception as e:
                             mark_job_finished(job, "failed")
-                            job["logger"].error("Moved GIF not found.")
-                else:
-                    mark_job_finished(job, "failed")
-                    if not job.get("_ffmpeg_error_logged"):
-                        job["logger"].error(err_msg)
+                            job["logger"].error(f"Failed to move GIF: {e}")
+                        else:
+                            if os.path.isfile(job["out_gif"]):
+                                mark_job_finished(job, "success", job["out_gif"])
+                                record_successful_job(job)
+                                size = format_size(job.get("output_size_bytes"))
+                                elapsed = format_duration(job.get("elapsed_seconds"))
+                                job["logger"].info(
+                                    f"GIF ready: {job['out_gif']} ({size}, {elapsed})"
+                                )
+                            else:
+                                mark_job_finished(job, "failed")
+                                job["logger"].error("Moved GIF not found.")
+                    else:
+                        mark_job_finished(job, "failed")
+                        if not job.get("_ffmpeg_error_logged"):
+                            job["logger"].error(err_msg)
         except Exception as e:
             mark_job_finished(job, "failed")
             job["logger"].error(f"Exception: {e}")

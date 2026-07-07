@@ -1,8 +1,9 @@
 import os
 import time
-from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_file
 
 from . import estimate_history
+from . import test_lab
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
 from .utils import (
     parse_float,
@@ -92,8 +93,8 @@ def _job_config_from_values(values):
             values.get("end_buffer", DEFAULTS["end_buffer"]),
             DEFAULTS["end_buffer"],
         ),
-        "loop_forever": (values.get("loop_forever", "on") == "on"),
-        "smooth": (values.get("smooth", "off") == "on"),
+        "loop_forever": _truthy(values.get("loop_forever", "on")),
+        "smooth": _truthy(values.get("smooth", "off")),
     }
 
 
@@ -349,6 +350,60 @@ def api_listdir():
     return jsonify(entries)
 
 
+@app.route("/api/media-browser")
+def api_media_browser():
+    path = (request.args.get("path") or LIB_ROOT).strip()
+    real = resolve_case_insensitive(path)
+    if real and os.path.isfile(real):
+        real = os.path.dirname(real)
+
+    if not real or not path_is_under(real, LIB_ROOT) or not os.path.isdir(real):
+        return (
+            jsonify(
+                {
+                    "error": "Path not found",
+                    "path": "",
+                    "parent": "",
+                    "folders": [],
+                    "files": [],
+                }
+            ),
+            400,
+        )
+
+    folders = []
+    files = []
+    try:
+        for entry in os.listdir(real):
+            full_path = os.path.join(real, entry)
+            if os.path.islink(full_path):
+                continue
+            if os.path.isdir(full_path):
+                folders.append({"name": entry, "path": full_path})
+            elif os.path.isfile(full_path) and os.path.splitext(entry)[1].lower() in VIDEO_EXTS:
+                files.append({"name": entry, "path": full_path})
+    except Exception:
+        folders = []
+        files = []
+
+    folders.sort(key=lambda item: item["name"].lower())
+    files.sort(key=lambda item: item["name"].lower())
+    parent = ""
+    lib_real = resolve_case_insensitive(LIB_ROOT) or LIB_ROOT
+    real_parent = os.path.dirname(real)
+    if real_parent and path_is_under(real_parent, lib_real) and os.path.normcase(os.path.realpath(real)) != os.path.normcase(os.path.realpath(lib_real)):
+        parent = real_parent
+
+    return jsonify(
+        {
+            "path": real,
+            "parent": parent,
+            "folders": folders,
+            "files": files,
+        }
+    )
+
+
 @app.route("/api/scan-estimate")
 def api_scan_estimate():
     target = (request.args.get("path") or request.args.get("video") or "").strip()
@@ -410,6 +465,68 @@ def api_scan_estimate():
         }
     )
     return jsonify(payload)
+
+
+def _variant_values(raw):
+    values = raw.get("settings") if isinstance(raw.get("settings"), dict) else raw
+    return values if isinstance(values, dict) else {}
+
+
+@app.route("/api/test-lab/run", methods=["POST"])
+def api_test_lab_run():
+    data = request.get_json(silent=True) or {}
+    target = (data.get("video") or "").strip()
+    real_target = resolve_case_insensitive(target)
+    if (
+        not real_target
+        or not path_is_under(real_target, LIB_ROOT)
+        or not os.path.isfile(real_target)
+        or os.path.islink(real_target)
+        or os.path.splitext(real_target)[1].lower() not in VIDEO_EXTS
+    ):
+        return jsonify({"error": "Choose one compatible video file"}), 400
+
+    raw_variants = data.get("variants") or []
+    if not isinstance(raw_variants, list) or not (
+        test_lab.MIN_VARIANTS <= len(raw_variants) <= test_lab.MAX_VARIANTS
+    ):
+        return jsonify({"error": "Choose 2 to 4 variants"}), 400
+
+    variants = []
+    for index, raw in enumerate(raw_variants, start=1):
+        if not isinstance(raw, dict):
+            return jsonify({"error": "Variant settings are invalid"}), 400
+        values = _variant_values(raw)
+        cfg = _job_config_from_values(values)
+        name = (raw.get("name") or raw.get("label") or f"Variant {index}").strip()
+        variants.append({"name": name, "cfg": cfg})
+
+    run_id, err = test_lab.enqueue_test_run(real_target, variants, lib_root=LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"run_id": run_id, "status": test_lab.status_payload()})
+
+
+@app.route("/api/test-lab/status")
+def api_test_lab_status():
+    return jsonify(test_lab.status_payload())
+
+
+@app.route("/api/test-lab/delete", methods=["POST"])
+def api_test_lab_delete():
+    data = request.get_json(silent=True) or {}
+    file_ids = data.get("file_ids") or data.get("ids") or []
+    if not isinstance(file_ids, list):
+        return jsonify({"error": "Choose test GIFs to delete"}), 400
+    return jsonify(test_lab.delete_files(file_ids))
+
+
+@app.route("/test-lab/files/<run_id>/<filename>")
+def test_lab_file(run_id, filename):
+    path = test_lab.test_lab_file_path(run_id, filename)
+    if not path:
+        return "Not found", 404
+    return send_file(path, mimetype="image/gif", conditional=True)
 
 
 @app.route("/api/add", methods=["POST"])

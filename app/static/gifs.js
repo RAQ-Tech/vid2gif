@@ -1,7 +1,7 @@
 (function () {
   const config = window.vid2gifConfig || {};
   const limit = Number(config.queueLimit || 10);
-  const tabHashes = ['new', 'queue', 'completed', 'logs'];
+  const tabHashes = ['new', 'test', 'queue', 'completed', 'logs'];
 
   let currentJob = '';
   let lastJob = '';
@@ -13,6 +13,8 @@
   let scanEstimateTimer = null;
   let scanEstimateToken = 0;
   let scanEstimateController = null;
+  let testLabVariantCount = 0;
+  let testLabMediaPath = '';
 
   function byId(id) {
     return document.getElementById(id);
@@ -73,6 +75,7 @@
     if (status === 'success') return 'text-bg-success';
     if (status === 'failed') return 'text-bg-danger';
     if (status === 'running') return 'text-bg-primary';
+    if (status === 'partial') return 'text-bg-warning';
     return 'text-bg-secondary';
   }
 
@@ -598,6 +601,320 @@
     }
   }
 
+  function testLabDefaultVariant(index) {
+    const defaults = config.defaults || {};
+    return {
+      name: `Variant ${index}`,
+      height: index === 2 ? 360 : (defaults.height || 480),
+      fps: defaults.fps || 15,
+      fps_original: false,
+      clip_len: defaults.clip_len || 2,
+      percent_points: defaults.percent_points || '10,20,30,40,50,60,70,80,90',
+      abs_early: defaults.abs_early ?? 15,
+      abs_late_from_end: defaults.abs_late_from_end ?? 10,
+      start_buffer: defaults.start_buffer ?? 5,
+      end_buffer: defaults.end_buffer ?? 5,
+      loop_forever: defaults.loop_forever !== false,
+      smooth: index === 2 ? true : Boolean(defaults.smooth)
+    };
+  }
+
+  function checkboxAttr(value) {
+    return value ? ' checked' : '';
+  }
+
+  function testLabVariantHtml(values) {
+    return `<div class="test-lab-variant settings-panel" data-test-lab-variant>` +
+      `<div class="variant-heading">` +
+      `<input class="form-control form-control-sm variant-name" data-field="name" value="${escapeHtml(values.name)}" aria-label="Variant name">` +
+      `<button type="button" class="btn btn-outline-danger btn-icon btn-sm" data-remove-variant title="Remove variant"><i class="bi bi-trash" aria-hidden="true"></i></button>` +
+      `</div>` +
+      `<div class="variant-settings-grid">` +
+      `<label class="form-label">Height<input type="number" min="120" step="1" class="form-control form-control-sm" data-field="height" value="${escapeHtml(values.height)}"></label>` +
+      `<label class="form-label">FPS<input type="number" min="1" step="1" class="form-control form-control-sm" data-field="fps" value="${escapeHtml(values.fps)}"></label>` +
+      `<label class="form-label">Clip length<input type="number" min="0.1" step="0.1" class="form-control form-control-sm" data-field="clip_len" value="${escapeHtml(values.clip_len)}"></label>` +
+      `<label class="form-label wide-field">Percent points<input class="form-control form-control-sm" data-field="percent_points" value="${escapeHtml(values.percent_points)}"></label>` +
+      `<label class="form-label">Early<input type="number" step="0.1" class="form-control form-control-sm" data-field="abs_early" value="${escapeHtml(values.abs_early)}"></label>` +
+      `<label class="form-label">Late<input type="number" step="0.1" class="form-control form-control-sm" data-field="abs_late_from_end" value="${escapeHtml(values.abs_late_from_end)}"></label>` +
+      `<label class="form-label">Start buffer<input type="number" step="0.1" class="form-control form-control-sm" data-field="start_buffer" value="${escapeHtml(values.start_buffer)}"></label>` +
+      `<label class="form-label">End buffer<input type="number" step="0.1" class="form-control form-control-sm" data-field="end_buffer" value="${escapeHtml(values.end_buffer)}"></label>` +
+      `</div>` +
+      `<div class="variant-switches">` +
+      `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="fps_original"${checkboxAttr(values.fps_original)}><label class="form-check-label">Original FPS</label></div>` +
+      `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="loop_forever"${checkboxAttr(values.loop_forever)}><label class="form-check-label">Loop forever</label></div>` +
+      `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="smooth"${checkboxAttr(values.smooth)}><label class="form-check-label">Smooth motion</label></div>` +
+      `</div>` +
+      `</div>`;
+  }
+
+  function updateTestLabVariantButtons() {
+    const rows = Array.from(document.querySelectorAll('[data-test-lab-variant]'));
+    rows.forEach(row => {
+      const remove = row.querySelector('[data-remove-variant]');
+      if (remove) remove.disabled = rows.length <= 2;
+    });
+    const add = byId('testLabAddVariant');
+    if (add) add.disabled = rows.length >= 4;
+  }
+
+  function addTestLabVariant(values) {
+    const container = byId('testLabVariants');
+    if (!container) return;
+    const rows = container.querySelectorAll('[data-test-lab-variant]');
+    if (rows.length >= 4) return;
+    testLabVariantCount += 1;
+    container.insertAdjacentHTML('beforeend', testLabVariantHtml(values || testLabDefaultVariant(testLabVariantCount)));
+    updateTestLabVariantButtons();
+  }
+
+  function collectTestLabVariant(row) {
+    const field = name => row.querySelector(`[data-field="${name}"]`);
+    const checked = name => field(name)?.checked ? 'on' : 'off';
+    return {
+      name: field('name')?.value.trim() || 'Variant',
+      settings: {
+        height: field('height')?.value || '',
+        fps: field('fps')?.value || '',
+        fps_original: checked('fps_original'),
+        clip_len: field('clip_len')?.value || '',
+        percent_points: field('percent_points')?.value || '',
+        abs_early: field('abs_early')?.value || '',
+        abs_late_from_end: field('abs_late_from_end')?.value || '',
+        start_buffer: field('start_buffer')?.value || '',
+        end_buffer: field('end_buffer')?.value || '',
+        loop_forever: checked('loop_forever'),
+        smooth: checked('smooth')
+      }
+    };
+  }
+
+  function setTestLabMessage(message, detail) {
+    const messageEl = byId('testLabMessage');
+    const detailEl = byId('testLabDetail');
+    if (messageEl) messageEl.textContent = message || '';
+    if (detailEl) detailEl.textContent = detail || '';
+  }
+
+  async function fetchMediaBrowser(path) {
+    const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Path not found');
+    return data;
+  }
+
+  function renderTestLabBrowser(data) {
+    const browser = byId('testLabBrowser');
+    if (!browser) return;
+    testLabMediaPath = data.path || testLabMediaPath;
+    const folders = (data.folders || []).map(item =>
+      `<button type="button" class="btn btn-outline-secondary btn-sm" data-media-path="${escapeHtml(item.path)}"><i class="bi bi-folder2" aria-hidden="true"></i><span>${escapeHtml(item.name)}</span></button>`
+    ).join('');
+    const files = (data.files || []).map(item =>
+      `<button type="button" class="btn btn-outline-primary btn-sm" data-media-file="${escapeHtml(item.path)}"><i class="bi bi-film" aria-hidden="true"></i><span>${escapeHtml(item.name)}</span></button>`
+    ).join('');
+    browser.innerHTML =
+      `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
+      `<div class="media-browser-actions">` +
+      (data.parent ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-media-path="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Up</span></button>` : '') +
+      `${folders || '<span class="small text-muted">No folders</span>'}` +
+      `</div>` +
+      `<div class="media-browser-files">${files || '<span class="small text-muted">No compatible videos in this folder</span>'}</div>`;
+  }
+
+  async function openTestLabBrowser(path) {
+    const browser = byId('testLabBrowser');
+    if (browser) browser.innerHTML = '<div class="small text-muted">Scanning</div>';
+    try {
+      renderTestLabBrowser(await fetchMediaBrowser(path));
+    } catch (e) {
+      if (browser) browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Path not found')}</div>`;
+    }
+  }
+
+  function renderTestLabRun(run) {
+    const status = byId('testLabRunStatus');
+    const variants = byId('testLabRunVariants');
+    const previews = byId('testLabPreviews');
+    if (!status || !variants || !previews) return;
+    if (!run) {
+      status.innerHTML = '<div class="text-muted">No test run yet.</div>';
+      variants.innerHTML = '';
+      previews.innerHTML = '<div class="text-muted text-center py-4">Generated comparisons will appear here.</div>';
+      setProgressBar('testLabRunProgressBar', 0);
+      return;
+    }
+
+    setProgressBar('testLabRunProgressBar', run.progress_percent);
+    status.innerHTML = `<div class="d-flex justify-content-between gap-3 flex-wrap">` +
+      `<div><div class="metric-label">Current test run</div><div class="metric-value">${escapeHtml(run.progress_label || run.status || '')}</div></div>` +
+      `<div>${statusBadge(run.status)}</div></div>` +
+      `<div class="metric-row"><span>Source: ${escapeHtml(run.source_name || '')}</span><span>Elapsed: ${escapeHtml(formatDuration(run.elapsed_seconds, 'not started'))}</span><span>Remaining: ${escapeHtml(formatDuration(run.eta_seconds, 'unknown'))}</span></div>`;
+
+    variants.innerHTML = (run.variants || []).map(variant =>
+      `<tr><td>${escapeHtml(variant.name)}</td>` +
+      `<td>${statusBadge(variant.status)}</td>` +
+      `<td class="progress-cell">${progressCell(variant)}</td>` +
+      `<td>${escapeHtml(formatDuration(variant.elapsed_seconds, ''))}</td>` +
+      `<td>${escapeHtml(formatSize(variant.output_size_bytes, ''))}</td>` +
+      `<td>${escapeHtml(variant.gif_optimization_label || '')}</td>` +
+      `<td class="path-cell"><code title="${escapeHtml(variant.settings_label)}">${escapeHtml(variant.settings_label)}</code></td></tr>`
+    ).join('') || '<tr><td colspan="7" class="text-muted text-center py-4">No variants yet.</td></tr>';
+
+    const completed = (run.variants || []).filter(variant => variant.url);
+    previews.innerHTML = completed.length ? completed.map(variant =>
+      `<figure class="test-preview">` +
+      `<img data-test-preview data-base-src="${escapeHtml(variant.url)}" src="${escapeHtml(variant.url)}" alt="${escapeHtml(variant.name)} preview">` +
+      `<figcaption><strong>${escapeHtml(variant.name)}</strong><span>${escapeHtml(formatSize(variant.output_size_bytes, ''))}</span><span>${escapeHtml(variant.settings_label)}</span></figcaption>` +
+      `</figure>`
+    ).join('') : '<div class="text-muted text-center py-4">Generated comparisons will appear here.</div>';
+  }
+
+  function renderTestLabFiles(data) {
+    const tbody = byId('testLabFilesBody');
+    const total = byId('testLabTotalSize');
+    if (total) total.textContent = data.total_size_label || '0 B';
+    if (!tbody) return;
+    const files = data.files || [];
+    tbody.innerHTML = files.length ? files.map(file =>
+      `<tr><td><input class="form-check-input" type="checkbox" data-test-file-id="${escapeHtml(file.id)}" aria-label="Select test GIF"></td>` +
+      `<td>${escapeHtml(file.name)}</td>` +
+      `<td class="path-cell"><code title="${escapeHtml(file.source_name || '')}">${escapeHtml(file.source_name || '')}</code></td>` +
+      `<td>${escapeHtml(file.size_label || '')}</td>` +
+      `<td>${escapeHtml(file.gif_optimization_label || '')}</td>` +
+      `<td class="path-cell"><code title="${escapeHtml(file.settings_label || '')}">${escapeHtml(file.settings_label || '')}</code></td>` +
+      `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer" title="Open GIF"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a></td></tr>`
+    ).join('') : '<tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>';
+  }
+
+  async function refreshTestLab() {
+    try {
+      const res = await fetch('/api/test-lab/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderTestLabRun(data.active_run);
+      renderTestLabFiles(data);
+    } catch (e) {
+      // Ignore transient polling failures.
+    }
+  }
+
+  async function startTestLabRun() {
+    const video = byId('testLabVideo')?.value.trim() || '';
+    const rows = Array.from(document.querySelectorAll('[data-test-lab-variant]'));
+    if (!video) {
+      setTestLabMessage('Choose one video', '');
+      return;
+    }
+    if (rows.length < 2 || rows.length > 4) {
+      setTestLabMessage('Choose 2 to 4 variants', '');
+      return;
+    }
+
+    setTestLabMessage('Creating test run', '');
+    const button = byId('testLabRunButton');
+    if (button) button.disabled = true;
+    try {
+      const res = await fetch('/api/test-lab/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          video,
+          variants: rows.map(collectTestLabVariant)
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTestLabMessage(data.error || 'Could not create test run', '');
+        return;
+      }
+      setTestLabMessage('Test run started', data.run_id || '');
+      renderTestLabRun((data.status || {}).active_run);
+      renderTestLabFiles(data.status || {});
+    } catch (e) {
+      setTestLabMessage('Could not create test run', e.message || '');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function restartTestLabPreviews() {
+    const imgs = Array.from(document.querySelectorAll('[data-test-preview]'));
+    const token = Date.now();
+    requestAnimationFrame(() => {
+      imgs.forEach(img => {
+        const base = img.getAttribute('data-base-src');
+        if (base) img.src = `${base}?restart=${token}`;
+      });
+    });
+  }
+
+  async function deleteSelectedTestLabFiles() {
+    const ids = Array.from(document.querySelectorAll('[data-test-file-id]:checked'))
+      .map(input => input.getAttribute('data-test-file-id'))
+      .filter(Boolean);
+    if (!ids.length) {
+      setTestLabMessage('Select test GIFs to delete', '');
+      return;
+    }
+    setTestLabMessage('Deleting selected test GIFs', '');
+    try {
+      const res = await fetch('/api/test-lab/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file_ids: ids})
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTestLabMessage(data.error || 'Delete failed', '');
+        return;
+      }
+      setTestLabMessage(`${(data.deleted || []).length} test GIFs deleted`, (data.refused || []).length ? `${data.refused.length} could not be deleted` : '');
+      renderTestLabFiles(data);
+    } catch (e) {
+      setTestLabMessage('Delete failed', e.message || '');
+    }
+  }
+
+  function initTestLab() {
+    const pane = byId('pane-test');
+    if (!pane) return;
+    addTestLabVariant(testLabDefaultVariant(1));
+    addTestLabVariant(testLabDefaultVariant(2));
+    const video = byId('testLabVideo');
+    if (video && !video.value) video.value = config.libRoot || '/library';
+    openTestLabBrowser(config.libRoot || '/library');
+
+    byId('testLabAddVariant')?.addEventListener('click', () => addTestLabVariant(testLabDefaultVariant(testLabVariantCount + 1)));
+    byId('testLabVariants')?.addEventListener('click', event => {
+      const remove = event.target.closest('[data-remove-variant]');
+      if (!remove) return;
+      const rows = document.querySelectorAll('[data-test-lab-variant]');
+      if (rows.length <= 2) return;
+      remove.closest('[data-test-lab-variant]')?.remove();
+      updateTestLabVariantButtons();
+    });
+    byId('testLabBrowseButton')?.addEventListener('click', () => openTestLabBrowser(video?.value.trim() || testLabMediaPath || config.libRoot || '/library'));
+    byId('testLabBrowser')?.addEventListener('click', event => {
+      const folder = event.target.closest('[data-media-path]');
+      const file = event.target.closest('[data-media-file]');
+      if (folder) {
+        openTestLabBrowser(folder.getAttribute('data-media-path'));
+      } else if (file) {
+        const path = file.getAttribute('data-media-file') || '';
+        if (video) video.value = path;
+      }
+    });
+    byId('testLabRunButton')?.addEventListener('click', startTestLabRun);
+    byId('testLabRestartPreviews')?.addEventListener('click', restartTestLabPreviews);
+    byId('testLabSelectAll')?.addEventListener('change', event => {
+      document.querySelectorAll('[data-test-file-id]').forEach(input => {
+        input.checked = event.target.checked;
+      });
+    });
+    byId('testLabDeleteSelected')?.addEventListener('click', deleteSelectedTestLabFiles);
+    refreshTestLab();
+  }
+
   function activateTab(hash, updateUrl) {
     const safeHash = tabHashes.includes(hash) ? hash : 'new';
     const button = document.querySelector(`[data-tab-hash="${safeHash}"]`);
@@ -679,11 +996,13 @@
   document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     initNewJob();
+    initTestLab();
     initQueueLimit();
     initLogs();
     refreshQueue();
     refreshCompleted();
     setInterval(refreshQueue, 1000);
     setInterval(refreshCompleted, 5000);
+    setInterval(refreshTestLab, 1000);
   });
 }());
