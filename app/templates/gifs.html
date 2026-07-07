@@ -227,12 +227,6 @@
             <h2 class="h5 mb-1">Test Lab</h2>
             <div class="text-muted small">Compare 2 to 4 GIF settings against one video without writing to the source folder.</div>
           </div>
-          <div class="workspace-actions">
-            <button id="testLabRestartPreviews" type="button" class="btn btn-outline-secondary btn-sm">
-              <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-              <span>Restart Previews</span>
-            </button>
-          </div>
         </div>
 
         <div class="test-lab-grid">
@@ -303,11 +297,21 @@
         <div class="panel-heading mt-4">
           <div>
             <h3 class="h6 mb-1">Comparison Previews</h3>
-            <div class="text-muted small">Restart previews reloads all visible GIFs at nearly the same time.</div>
+            <div class="text-muted small">Drag saved GIFs into any slot, or drag between slots to swap.</div>
+          </div>
+          <div class="toolbar-row mb-0">
+            <button id="testLabRestartPreviews" type="button" class="btn btn-outline-secondary btn-sm">
+              <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+              <span>Restart</span>
+            </button>
+            <div class="form-check">
+              <input id="testLabAutoRestart" class="form-check-input" type="checkbox">
+              <label class="form-check-label" for="testLabAutoRestart">Auto Restart</label>
+            </div>
           </div>
         </div>
         <div id="testLabPreviews" class="test-preview-grid">
-          <div class="text-muted text-center py-4">Generated comparisons will appear here.</div>
+          <div class="text-muted text-center py-4">Saved and generated GIFs can be placed here for comparison.</div>
         </div>
 
         <div class="panel-heading mt-4">

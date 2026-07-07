@@ -15,6 +15,11 @@
   let scanEstimateController = null;
   let testLabVariantCount = 0;
   let testLabMediaPath = '';
+  let testLabSelectedFileIds = new Set();
+  let testLabFilesById = new Map();
+  let testLabSlotIds = ['', '', '', ''];
+  let testLabLastRunId = '';
+  let testLabSeenRunFileIds = new Set();
 
   function byId(id) {
     return document.getElementById(id);
@@ -604,8 +609,8 @@
   function testLabDefaultVariant(index) {
     const defaults = config.defaults || {};
     return {
-      name: `Variant ${index}`,
-      height: index === 2 ? 360 : (defaults.height || 480),
+      name: `Variant ${index || testLabVariantCount + 1}`,
+      height: defaults.height || 480,
       fps: defaults.fps || 15,
       fps_original: false,
       clip_len: defaults.clip_len || 2,
@@ -615,7 +620,7 @@
       start_buffer: defaults.start_buffer ?? 5,
       end_buffer: defaults.end_buffer ?? 5,
       loop_forever: defaults.loop_forever !== false,
-      smooth: index === 2 ? true : Boolean(defaults.smooth)
+      smooth: Boolean(defaults.smooth)
     };
   }
 
@@ -623,16 +628,48 @@
     return value ? ' checked' : '';
   }
 
+  function disabledAttr(value) {
+    return value ? ' disabled' : '';
+  }
+
+  function optionHtml(value, label, selectedValue) {
+    return `<option value="${escapeHtml(value)}"${String(value) === String(selectedValue) ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+  }
+
+  function presetOrCustom(value, presets) {
+    const text = String(value ?? '');
+    return presets.includes(text) ? text : 'custom';
+  }
+
   function testLabVariantHtml(values) {
+    const heightPreset = presetOrCustom(values.height, ['240', '360', '480', '720', '1080']);
+    const fpsPreset = presetOrCustom(values.fps, ['10', '12', '15', '20', '24', '30']);
+    const clipPreset = presetOrCustom(values.clip_len, ['1', '2', '3', '4', '5']);
+    const showHeightCustom = heightPreset === 'custom';
+    const showFpsCustom = fpsPreset === 'custom' && !values.fps_original;
+    const showClipCustom = clipPreset === 'custom';
     return `<div class="test-lab-variant settings-panel" data-test-lab-variant>` +
       `<div class="variant-heading">` +
       `<input class="form-control form-control-sm variant-name" data-field="name" value="${escapeHtml(values.name)}" aria-label="Variant name">` +
       `<button type="button" class="btn btn-outline-danger btn-icon btn-sm" data-remove-variant title="Remove variant"><i class="bi bi-trash" aria-hidden="true"></i></button>` +
       `</div>` +
       `<div class="variant-settings-grid">` +
-      `<label class="form-label">Height<input type="number" min="120" step="1" class="form-control form-control-sm" data-field="height" value="${escapeHtml(values.height)}"></label>` +
-      `<label class="form-label">FPS<input type="number" min="1" step="1" class="form-control form-control-sm" data-field="fps" value="${escapeHtml(values.fps)}"></label>` +
-      `<label class="form-label">Clip length<input type="number" min="0.1" step="0.1" class="form-control form-control-sm" data-field="clip_len" value="${escapeHtml(values.clip_len)}"></label>` +
+      `<label class="form-label">Height<select class="form-select form-select-sm" data-field="height_preset">` +
+      optionHtml('240', '240', heightPreset) + optionHtml('360', '360', heightPreset) +
+      optionHtml('480', '480', heightPreset) + optionHtml('720', '720', heightPreset) +
+      optionHtml('1080', '1080', heightPreset) + optionHtml('custom', 'Custom', heightPreset) +
+      `</select><input type="number" min="120" step="1" class="form-control form-control-sm mt-2${showHeightCustom ? '' : ' d-none'}" data-field="height_custom" value="${showHeightCustom ? escapeHtml(values.height) : ''}"${disabledAttr(!showHeightCustom)}></label>` +
+      `<label class="form-label">FPS<select class="form-select form-select-sm" data-field="fps_preset">` +
+      optionHtml('10', '10', fpsPreset) + optionHtml('12', '12', fpsPreset) +
+      optionHtml('15', '15', fpsPreset) + optionHtml('20', '20', fpsPreset) +
+      optionHtml('24', '24', fpsPreset) + optionHtml('30', '30', fpsPreset) +
+      optionHtml('custom', 'Custom', fpsPreset) +
+      `</select><input type="number" min="1" step="1" class="form-control form-control-sm mt-2${showFpsCustom ? '' : ' d-none'}" data-field="fps_custom" value="${showFpsCustom ? escapeHtml(values.fps) : ''}"${disabledAttr(!showFpsCustom)}></label>` +
+      `<label class="form-label">Clip length<select class="form-select form-select-sm" data-field="clip_len_preset">` +
+      optionHtml('1', '1 second', clipPreset) + optionHtml('2', '2 seconds', clipPreset) +
+      optionHtml('3', '3 seconds', clipPreset) + optionHtml('4', '4 seconds', clipPreset) +
+      optionHtml('5', '5 seconds', clipPreset) + optionHtml('custom', 'Custom', clipPreset) +
+      `</select><input type="number" min="0.1" step="0.1" class="form-control form-control-sm mt-2${showClipCustom ? '' : ' d-none'}" data-field="clip_len_custom" value="${showClipCustom ? escapeHtml(values.clip_len) : ''}"${disabledAttr(!showClipCustom)}></label>` +
       `<label class="form-label wide-field">Percent points<input class="form-control form-control-sm" data-field="percent_points" value="${escapeHtml(values.percent_points)}"></label>` +
       `<label class="form-label">Early<input type="number" step="0.1" class="form-control form-control-sm" data-field="abs_early" value="${escapeHtml(values.abs_early)}"></label>` +
       `<label class="form-label">Late<input type="number" step="0.1" class="form-control form-control-sm" data-field="abs_late_from_end" value="${escapeHtml(values.abs_late_from_end)}"></label>` +
@@ -645,6 +682,23 @@
       `<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-field="smooth"${checkboxAttr(values.smooth)}><label class="form-check-label">Smooth motion</label></div>` +
       `</div>` +
       `</div>`;
+  }
+
+  function toggleVariantCustomInput(row, presetField, customField, originalField) {
+    const preset = row.querySelector(`[data-field="${presetField}"]`);
+    const custom = row.querySelector(`[data-field="${customField}"]`);
+    const original = originalField ? row.querySelector(`[data-field="${originalField}"]`) : null;
+    if (!preset || !custom) return;
+    const showCustom = preset.value === 'custom' && !(original && original.checked);
+    custom.classList.toggle('d-none', !showCustom);
+    custom.disabled = !showCustom;
+    if (!showCustom) custom.value = '';
+  }
+
+  function toggleTestLabVariantControls(row) {
+    toggleVariantCustomInput(row, 'height_preset', 'height_custom');
+    toggleVariantCustomInput(row, 'fps_preset', 'fps_custom', 'fps_original');
+    toggleVariantCustomInput(row, 'clip_len_preset', 'clip_len_custom');
   }
 
   function updateTestLabVariantButtons() {
@@ -664,6 +718,7 @@
     if (rows.length >= 4) return;
     testLabVariantCount += 1;
     container.insertAdjacentHTML('beforeend', testLabVariantHtml(values || testLabDefaultVariant(testLabVariantCount)));
+    toggleTestLabVariantControls(container.lastElementChild);
     updateTestLabVariantButtons();
   }
 
@@ -673,10 +728,13 @@
     return {
       name: field('name')?.value.trim() || 'Variant',
       settings: {
-        height: field('height')?.value || '',
-        fps: field('fps')?.value || '',
+        height_preset: field('height_preset')?.value || '',
+        height_custom: field('height_custom')?.value || '',
+        fps_preset: field('fps_preset')?.value || '',
+        fps_custom: field('fps_custom')?.value || '',
         fps_original: checked('fps_original'),
-        clip_len: field('clip_len')?.value || '',
+        clip_len_preset: field('clip_len_preset')?.value || '',
+        clip_len_custom: field('clip_len_custom')?.value || '',
         percent_points: field('percent_points')?.value || '',
         abs_early: field('abs_early')?.value || '',
         abs_late_from_end: field('abs_late_from_end')?.value || '',
@@ -731,15 +789,131 @@
     }
   }
 
+  function loadTestLabSlots() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('testlab_slots') || '[]');
+      if (Array.isArray(saved)) {
+        testLabSlotIds = [0, 1, 2, 3].map(index => saved[index] || '');
+      }
+    } catch (e) {
+      testLabSlotIds = ['', '', '', ''];
+    }
+  }
+
+  function saveTestLabSlots() {
+    localStorage.setItem('testlab_slots', JSON.stringify(testLabSlotIds));
+  }
+
+  function loadTestLabAutoRestart() {
+    const checkbox = byId('testLabAutoRestart');
+    if (!checkbox) return;
+    checkbox.checked = localStorage.getItem('testlab_auto_restart') === '1';
+  }
+
+  function testLabAutoRestartEnabled() {
+    return byId('testLabAutoRestart')?.checked || false;
+  }
+
+  function clearTestLabSlotsFor(fileIds) {
+    const ids = new Set(fileIds || []);
+    let changed = false;
+    testLabSlotIds = testLabSlotIds.map(fileId => {
+      if (ids.has(fileId)) {
+        changed = true;
+        return '';
+      }
+      return fileId;
+    });
+    if (changed) {
+      saveTestLabSlots();
+      renderTestLabSlots();
+    }
+  }
+
+  function syncTestLabSlotsToFiles() {
+    let changed = false;
+    testLabSlotIds = testLabSlotIds.map(fileId => {
+      if (fileId && !testLabFilesById.has(fileId)) {
+        changed = true;
+        return '';
+      }
+      return fileId;
+    });
+    if (changed) saveTestLabSlots();
+    return changed;
+  }
+
+  function testLabSlotHtml(index) {
+    const fileId = testLabSlotIds[index] || '';
+    const file = fileId ? testLabFilesById.get(fileId) : null;
+    const slotLabel = `Slot ${index + 1}`;
+    if (!file) {
+      return `<div class="test-slot empty" data-slot-index="${index}" data-slot-drop>` +
+        `<div class="test-slot-header"><span>${slotLabel}</span></div>` +
+        `<div class="test-slot-empty">Drop GIF here</div>` +
+        `</div>`;
+    }
+    return `<figure class="test-slot occupied" data-slot-index="${index}" data-slot-drop draggable="true">` +
+      `<div class="test-slot-header"><span>${slotLabel}</span>` +
+      `<button type="button" class="btn btn-outline-secondary btn-icon btn-sm" data-clear-slot="${index}" title="Clear slot"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div>` +
+      `<img data-test-preview data-base-src="${escapeHtml(file.url)}" src="${escapeHtml(file.url)}" alt="${escapeHtml(file.name)} preview">` +
+      `<figcaption><strong>${escapeHtml(file.name)}</strong><span>${escapeHtml(file.size_label || '')}</span><span>${escapeHtml(file.settings_label || '')}</span></figcaption>` +
+      `</figure>`;
+  }
+
+  function renderTestLabSlots() {
+    const previews = byId('testLabPreviews');
+    if (!previews) return;
+    previews.innerHTML = [0, 1, 2, 3].map(testLabSlotHtml).join('');
+  }
+
+  function fillOpenTestLabSlots(fileIds) {
+    let changed = false;
+    (fileIds || []).forEach(fileId => {
+      if (!fileId || testLabSlotIds.includes(fileId) || !testLabFilesById.has(fileId)) return;
+      const openIndex = testLabSlotIds.findIndex(value => !value);
+      if (openIndex === -1) return;
+      testLabSlotIds[openIndex] = fileId;
+      changed = true;
+    });
+    if (changed) {
+      saveTestLabSlots();
+      renderTestLabSlots();
+      if (testLabAutoRestartEnabled()) restartTestLabPreviews();
+    }
+  }
+
+  function autoFillTestLabSlotsFromRun(run) {
+    if (!run) return;
+    if (run.id !== testLabLastRunId) {
+      testLabLastRunId = run.id || '';
+      testLabSeenRunFileIds = new Set();
+    }
+    const newFileIds = [];
+    (run.variants || []).forEach(variant => {
+      if (!variant.file_id || testLabSeenRunFileIds.has(variant.file_id)) return;
+      testLabSeenRunFileIds.add(variant.file_id);
+      newFileIds.push(variant.file_id);
+    });
+    fillOpenTestLabSlots(newFileIds);
+  }
+
+  function updateTestLabSelectAll(files) {
+    const selectAll = byId('testLabSelectAll');
+    if (!selectAll) return;
+    const ids = (files || []).map(file => file.id);
+    const selectedCount = ids.filter(id => testLabSelectedFileIds.has(id)).length;
+    selectAll.checked = ids.length > 0 && selectedCount === ids.length;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < ids.length;
+  }
+
   function renderTestLabRun(run) {
     const status = byId('testLabRunStatus');
     const variants = byId('testLabRunVariants');
-    const previews = byId('testLabPreviews');
-    if (!status || !variants || !previews) return;
+    if (!status || !variants) return;
     if (!run) {
       status.innerHTML = '<div class="text-muted">No test run yet.</div>';
       variants.innerHTML = '';
-      previews.innerHTML = '<div class="text-muted text-center py-4">Generated comparisons will appear here.</div>';
       setProgressBar('testLabRunProgressBar', 0);
       return;
     }
@@ -751,7 +925,7 @@
       `<div class="metric-row"><span>Source: ${escapeHtml(run.source_name || '')}</span><span>Elapsed: ${escapeHtml(formatDuration(run.elapsed_seconds, 'not started'))}</span><span>Remaining: ${escapeHtml(formatDuration(run.eta_seconds, 'unknown'))}</span></div>`;
 
     variants.innerHTML = (run.variants || []).map(variant =>
-      `<tr><td>${escapeHtml(variant.name)}</td>` +
+      `<tr><td>${escapeHtml(variant.name)}${variant.reused ? '<div class="small text-muted">Reused</div>' : ''}</td>` +
       `<td>${statusBadge(variant.status)}</td>` +
       `<td class="progress-cell">${progressCell(variant)}</td>` +
       `<td>${escapeHtml(formatDuration(variant.elapsed_seconds, ''))}</td>` +
@@ -759,14 +933,7 @@
       `<td>${escapeHtml(variant.gif_optimization_label || '')}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(variant.settings_label)}">${escapeHtml(variant.settings_label)}</code></td></tr>`
     ).join('') || '<tr><td colspan="7" class="text-muted text-center py-4">No variants yet.</td></tr>';
-
-    const completed = (run.variants || []).filter(variant => variant.url);
-    previews.innerHTML = completed.length ? completed.map(variant =>
-      `<figure class="test-preview">` +
-      `<img data-test-preview data-base-src="${escapeHtml(variant.url)}" src="${escapeHtml(variant.url)}" alt="${escapeHtml(variant.name)} preview">` +
-      `<figcaption><strong>${escapeHtml(variant.name)}</strong><span>${escapeHtml(formatSize(variant.output_size_bytes, ''))}</span><span>${escapeHtml(variant.settings_label)}</span></figcaption>` +
-      `</figure>`
-    ).join('') : '<div class="text-muted text-center py-4">Generated comparisons will appear here.</div>';
+    autoFillTestLabSlotsFromRun(run);
   }
 
   function renderTestLabFiles(data) {
@@ -775,8 +942,15 @@
     if (total) total.textContent = data.total_size_label || '0 B';
     if (!tbody) return;
     const files = data.files || [];
+    const availableIds = new Set(files.map(file => file.id));
+    testLabSelectedFileIds = new Set(
+      Array.from(testLabSelectedFileIds).filter(fileId => availableIds.has(fileId))
+    );
+    testLabFilesById = new Map(files.map(file => [file.id, file]));
+    syncTestLabSlotsToFiles();
+    updateTestLabSelectAll(files);
     tbody.innerHTML = files.length ? files.map(file =>
-      `<tr><td><input class="form-check-input" type="checkbox" data-test-file-id="${escapeHtml(file.id)}" aria-label="Select test GIF"></td>` +
+      `<tr draggable="true" data-drag-file-id="${escapeHtml(file.id)}"><td><input class="form-check-input" type="checkbox" data-test-file-id="${escapeHtml(file.id)}" aria-label="Select test GIF"${testLabSelectedFileIds.has(file.id) ? ' checked' : ''}></td>` +
       `<td>${escapeHtml(file.name)}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(file.source_name || '')}">${escapeHtml(file.source_name || '')}</code></td>` +
       `<td>${escapeHtml(file.size_label || '')}</td>` +
@@ -784,6 +958,7 @@
       `<td class="path-cell"><code title="${escapeHtml(file.settings_label || '')}">${escapeHtml(file.settings_label || '')}</code></td>` +
       `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer" title="Open GIF"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a></td></tr>`
     ).join('') : '<tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>';
+    renderTestLabSlots();
   }
 
   async function refreshTestLab() {
@@ -791,8 +966,8 @@
       const res = await fetch('/api/test-lab/status');
       if (!res.ok) return;
       const data = await res.json();
-      renderTestLabRun(data.active_run);
       renderTestLabFiles(data);
+      renderTestLabRun(data.active_run);
     } catch (e) {
       // Ignore transient polling failures.
     }
@@ -828,8 +1003,8 @@
         return;
       }
       setTestLabMessage('Test run started', data.run_id || '');
-      renderTestLabRun((data.status || {}).active_run);
       renderTestLabFiles(data.status || {});
+      renderTestLabRun((data.status || {}).active_run);
     } catch (e) {
       setTestLabMessage('Could not create test run', e.message || '');
     } finally {
@@ -849,9 +1024,7 @@
   }
 
   async function deleteSelectedTestLabFiles() {
-    const ids = Array.from(document.querySelectorAll('[data-test-file-id]:checked'))
-      .map(input => input.getAttribute('data-test-file-id'))
-      .filter(Boolean);
+    const ids = Array.from(testLabSelectedFileIds);
     if (!ids.length) {
       setTestLabMessage('Select test GIFs to delete', '');
       return;
@@ -868,6 +1041,9 @@
         setTestLabMessage(data.error || 'Delete failed', '');
         return;
       }
+      const removedIds = [...(data.deleted || []), ...(data.missing || [])];
+      removedIds.forEach(fileId => testLabSelectedFileIds.delete(fileId));
+      clearTestLabSlotsFor(removedIds);
       setTestLabMessage(`${(data.deleted || []).length} test GIFs deleted`, (data.refused || []).length ? `${data.refused.length} could not be deleted` : '');
       renderTestLabFiles(data);
     } catch (e) {
@@ -875,9 +1051,85 @@
     }
   }
 
+  function setDragData(event, fileId, sourceSlot) {
+    if (!event.dataTransfer || !fileId) return;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', fileId);
+    event.dataTransfer.setData('application/x-test-lab-file', fileId);
+    if (sourceSlot !== undefined && sourceSlot !== null) {
+      event.dataTransfer.setData('application/x-test-lab-slot', String(sourceSlot));
+    }
+  }
+
+  function handleTestLabSlotDrop(event, targetSlot) {
+    if (!event.dataTransfer) return;
+    const fileId =
+      event.dataTransfer.getData('application/x-test-lab-file') ||
+      event.dataTransfer.getData('text/plain');
+    if (!fileId || !testLabFilesById.has(fileId)) return;
+    const sourceSlotRaw = event.dataTransfer.getData('application/x-test-lab-slot');
+    const sourceSlot =
+      sourceSlotRaw === '' ? null : Number.parseInt(sourceSlotRaw, 10);
+
+    if (Number.isInteger(sourceSlot) && sourceSlot >= 0 && sourceSlot < 4) {
+      if (sourceSlot === targetSlot) return;
+      const existing = testLabSlotIds[targetSlot] || '';
+      testLabSlotIds[targetSlot] = fileId;
+      testLabSlotIds[sourceSlot] = existing;
+    } else {
+      testLabSlotIds[targetSlot] = fileId;
+    }
+    saveTestLabSlots();
+    renderTestLabSlots();
+  }
+
+  function initTestLabDragAndDrop() {
+    byId('testLabFilesBody')?.addEventListener('dragstart', event => {
+      const row = event.target.closest('[data-drag-file-id]');
+      if (!row) return;
+      setDragData(event, row.getAttribute('data-drag-file-id'));
+    });
+
+    const previews = byId('testLabPreviews');
+    if (!previews) return;
+    previews.addEventListener('dragstart', event => {
+      const slot = event.target.closest('[data-slot-index]');
+      if (!slot) return;
+      const index = Number.parseInt(slot.getAttribute('data-slot-index'), 10);
+      const fileId = testLabSlotIds[index];
+      if (!fileId) {
+        event.preventDefault();
+        return;
+      }
+      setDragData(event, fileId, index);
+    });
+    previews.addEventListener('dragover', event => {
+      if (!event.target.closest('[data-slot-drop]')) return;
+      event.preventDefault();
+    });
+    previews.addEventListener('drop', event => {
+      const slot = event.target.closest('[data-slot-drop]');
+      if (!slot) return;
+      event.preventDefault();
+      const index = Number.parseInt(slot.getAttribute('data-slot-index'), 10);
+      handleTestLabSlotDrop(event, index);
+    });
+    previews.addEventListener('click', event => {
+      const clear = event.target.closest('[data-clear-slot]');
+      if (!clear) return;
+      const index = Number.parseInt(clear.getAttribute('data-clear-slot'), 10);
+      if (!Number.isInteger(index)) return;
+      testLabSlotIds[index] = '';
+      saveTestLabSlots();
+      renderTestLabSlots();
+    });
+  }
+
   function initTestLab() {
     const pane = byId('pane-test');
     if (!pane) return;
+    loadTestLabSlots();
+    loadTestLabAutoRestart();
     addTestLabVariant(testLabDefaultVariant(1));
     addTestLabVariant(testLabDefaultVariant(2));
     const video = byId('testLabVideo');
@@ -885,6 +1137,10 @@
     openTestLabBrowser(config.libRoot || '/library');
 
     byId('testLabAddVariant')?.addEventListener('click', () => addTestLabVariant(testLabDefaultVariant(testLabVariantCount + 1)));
+    byId('testLabVariants')?.addEventListener('change', event => {
+      const row = event.target.closest('[data-test-lab-variant]');
+      if (row) toggleTestLabVariantControls(row);
+    });
     byId('testLabVariants')?.addEventListener('click', event => {
       const remove = event.target.closest('[data-remove-variant]');
       if (!remove) return;
@@ -906,11 +1162,33 @@
     });
     byId('testLabRunButton')?.addEventListener('click', startTestLabRun);
     byId('testLabRestartPreviews')?.addEventListener('click', restartTestLabPreviews);
-    byId('testLabSelectAll')?.addEventListener('change', event => {
-      document.querySelectorAll('[data-test-file-id]').forEach(input => {
-        input.checked = event.target.checked;
-      });
+    byId('testLabAutoRestart')?.addEventListener('change', event => {
+      localStorage.setItem('testlab_auto_restart', event.target.checked ? '1' : '0');
     });
+    byId('testLabSelectAll')?.addEventListener('change', event => {
+      const files = Array.from(testLabFilesById.keys());
+      files.forEach(fileId => {
+        if (event.target.checked) {
+          testLabSelectedFileIds.add(fileId);
+        } else {
+          testLabSelectedFileIds.delete(fileId);
+        }
+      });
+      renderTestLabFiles({files: Array.from(testLabFilesById.values()), total_size_label: byId('testLabTotalSize')?.textContent || '0 B'});
+    });
+    byId('testLabFilesBody')?.addEventListener('change', event => {
+      const input = event.target.closest('[data-test-file-id]');
+      if (!input) return;
+      const fileId = input.getAttribute('data-test-file-id');
+      if (!fileId) return;
+      if (input.checked) {
+        testLabSelectedFileIds.add(fileId);
+      } else {
+        testLabSelectedFileIds.delete(fileId);
+      }
+      updateTestLabSelectAll(Array.from(testLabFilesById.values()));
+    });
+    initTestLabDragAndDrop();
     byId('testLabDeleteSelected')?.addEventListener('click', deleteSelectedTestLabFiles);
     refreshTestLab();
   }

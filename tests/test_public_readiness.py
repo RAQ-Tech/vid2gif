@@ -287,7 +287,21 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "testLabVariants" in workspace_template
     assert "testLabPreviews" in workspace_template
     assert "testLabFilesBody" in workspace_template
+    assert "testLabAutoRestart" in workspace_template
+    assert ">Restart</span>" in workspace_template
     assert "data-test-preview" in workspace_script
+    assert "height_preset" in workspace_script
+    assert "fps_preset" in workspace_script
+    assert "clip_len_preset" in workspace_script
+    assert "toggleTestLabVariantControls" in workspace_script
+    assert "testLabSelectedFileIds" in workspace_script
+    assert "testLabSlotIds" in workspace_script
+    assert "testlab_slots" in workspace_script
+    assert "data-slot-drop" in workspace_script
+    assert "data-drag-file-id" in workspace_script
+    assert "application/x-test-lab-file" in workspace_script
+    assert "fillOpenTestLabSlots" in workspace_script
+    assert "testlab_auto_restart" in workspace_script
     assert "requestAnimationFrame(() =>" in workspace_script
     assert "data-test-file-id" in workspace_script
     assert "speed=" not in workspace_template

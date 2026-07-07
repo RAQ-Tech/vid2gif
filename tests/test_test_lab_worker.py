@@ -85,7 +85,7 @@ def test_test_lab_worker_outputs_under_state_and_continues_after_failure(monkeyp
 
     run_id, err = test_lab.enqueue_test_run(
         str(video),
-        [_variant("A"), _variant("B"), _variant("C")],
+        [_variant("A", 360), _variant("B", 480), _variant("C", 720)],
         lib_root=str(lib),
     )
     assert err is None
@@ -111,6 +111,167 @@ def test_test_lab_worker_outputs_under_state_and_continues_after_failure(monkeyp
     assert (lab_root / run_id / "variant-3.gif").is_file()
     assert not (lib / "poster.gif").exists()
     assert not any((tmp_path / "state" / "processing" / "tmp").rglob("poster.gif"))
+
+
+def test_test_lab_worker_reuses_existing_fingerprint_without_ffmpeg(monkeypatch, tmp_path):
+    lab_root = _reset_lab(monkeypatch, tmp_path)
+    lib = tmp_path / "library"
+    lib.mkdir()
+    video = lib / "movie.mp4"
+    video.write_bytes(b"video")
+    old_run = lab_root / "oldrun"
+    old_run.mkdir()
+    (old_run / "variant-1.gif").write_bytes(b"GIF89a")
+    manifest = {
+        "schema_version": 1,
+        "run_id": "oldrun",
+        "source_name": "movie.mp4",
+        "variants": [
+            {
+                "id": "variant-1",
+                "name": "Existing",
+                "filename": "variant-1.gif",
+                "request_fingerprint": "same-fingerprint",
+                "settings_label": "360px high",
+                "gif_optimization_label": "Saved 1 MB",
+            }
+        ],
+    }
+    (old_run / "manifest.json").write_text(__import__("json").dumps(manifest))
+    monkeypatch.setattr(test_lab, "request_fingerprint", lambda *args, **kwargs: "same-fingerprint")
+    monkeypatch.setattr(
+        test_lab,
+        "make_gif_multi_inputs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ffmpeg should not run for a reusable test GIF")
+        ),
+    )
+    monkeypatch.setattr(
+        test_lab,
+        "optimize_gif",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("optimizer should not run for a reusable test GIF")
+        ),
+    )
+
+    run_id, err = test_lab.enqueue_test_run(
+        str(video),
+        [_variant("A"), _variant("B")],
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    thread = threading.Thread(target=test_lab.worker)
+    thread.start()
+    test_lab.test_lab_queue.put(None)
+    thread.join(timeout=5)
+
+    run = test_lab.test_lab_runs[run_id]
+    assert run["status"] == "success"
+    assert [v["reused"] for v in run["variants"]] == [True, True]
+    assert [v["reused_file_id"] for v in run["variants"]] == [
+        "oldrun/variant-1.gif",
+        "oldrun/variant-1.gif",
+    ]
+    public = test_lab.status_payload()["active_run"]
+    assert public["variants"][0]["file_id"] == "oldrun/variant-1.gif"
+
+
+def test_test_lab_worker_regenerates_when_reuse_file_is_missing(monkeypatch, tmp_path):
+    lab_root = _reset_lab(monkeypatch, tmp_path)
+    lib = tmp_path / "library"
+    lib.mkdir()
+    video = lib / "movie.mp4"
+    video.write_bytes(b"video")
+    old_run = lab_root / "oldrun"
+    old_run.mkdir()
+    manifest = {
+        "schema_version": 1,
+        "run_id": "oldrun",
+        "variants": [
+            {
+                "id": "variant-1",
+                "filename": "variant-1.gif",
+                "request_fingerprint": "same-fingerprint",
+            }
+        ],
+    }
+    (old_run / "manifest.json").write_text(__import__("json").dumps(manifest))
+    monkeypatch.setattr(test_lab, "request_fingerprint", lambda *args, **kwargs: "same-fingerprint")
+    monkeypatch.setattr(test_lab, "probe_video_details", lambda path: ("{}", None))
+    monkeypatch.setattr(test_lab, "summarize_video_details", lambda details: "h264 1280x720")
+    monkeypatch.setattr(test_lab, "get_duration", lambda path: (10.0, None))
+    monkeypatch.setattr(test_lab, "build_segments", lambda dur, cfg: [{"start": 1, "end": 2}])
+    monkeypatch.setattr(test_lab, "find_background_image", lambda path: None)
+    events = []
+
+    def fake_make_gif(video_path, segs, out_gif, cfg, job, background_image=None):
+        events.append(job["id"])
+        with open(out_gif, "wb") as f:
+            f.write(b"gif")
+        return True, ""
+
+    monkeypatch.setattr(test_lab, "make_gif_multi_inputs", fake_make_gif)
+    monkeypatch.setattr(test_lab, "optimize_gif", lambda *args, **kwargs: None)
+    monkeypatch.setattr(test_lab, "record_successful_job", lambda job: True)
+
+    run_id, err = test_lab.enqueue_test_run(
+        str(video),
+        [_variant("A"), _variant("B", 480)],
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    thread = threading.Thread(target=test_lab.worker)
+    thread.start()
+    test_lab.test_lab_queue.put(None)
+    thread.join(timeout=5)
+
+    assert events == ["variant-1"]
+    assert (lab_root / run_id / "variant-1.gif").is_file()
+    assert test_lab.test_lab_runs[run_id]["variants"][1]["reused"] is True
+
+
+def test_test_lab_worker_generates_same_run_duplicate_once(monkeypatch, tmp_path):
+    lab_root = _reset_lab(monkeypatch, tmp_path)
+    lib = tmp_path / "library"
+    lib.mkdir()
+    video = lib / "movie.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(test_lab, "probe_video_details", lambda path: ("{}", None))
+    monkeypatch.setattr(test_lab, "summarize_video_details", lambda details: "h264 1280x720")
+    monkeypatch.setattr(test_lab, "get_duration", lambda path: (10.0, None))
+    monkeypatch.setattr(test_lab, "build_segments", lambda dur, cfg: [{"start": 1, "end": 2}])
+    monkeypatch.setattr(test_lab, "find_background_image", lambda path: None)
+    events = []
+
+    def fake_make_gif(video_path, segs, out_gif, cfg, job, background_image=None):
+        events.append(job["id"])
+        with open(out_gif, "wb") as f:
+            f.write(b"gif")
+        return True, ""
+
+    monkeypatch.setattr(test_lab, "make_gif_multi_inputs", fake_make_gif)
+    monkeypatch.setattr(test_lab, "optimize_gif", lambda *args, **kwargs: None)
+    monkeypatch.setattr(test_lab, "record_successful_job", lambda job: True)
+
+    run_id, err = test_lab.enqueue_test_run(
+        str(video),
+        [_variant("A"), _variant("B")],
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    thread = threading.Thread(target=test_lab.worker)
+    thread.start()
+    test_lab.test_lab_queue.put(None)
+    thread.join(timeout=5)
+
+    run = test_lab.test_lab_runs[run_id]
+    assert events == ["variant-1"]
+    assert run["variants"][1]["reused"] is True
+    assert run["variants"][1]["reused_file_id"] == f"{run_id}/variant-1.gif"
+    assert not (lab_root / run_id / "variant-2.gif").exists()
 
 
 def test_test_lab_status_reads_persisted_inventory_after_memory_reset(monkeypatch, tmp_path):

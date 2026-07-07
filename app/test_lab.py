@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import os
 import queue
@@ -7,7 +8,15 @@ import shutil
 import threading
 import time
 
-from .config import LIB_ROOT, LOG_DIR, PROCESS_TMP_ROOT, TEST_LAB_ROOT, VIDEO_EXTS
+from .config import (
+    GIF_OPTIMIZE,
+    GIF_OPTIMIZE_LEVEL,
+    LIB_ROOT,
+    LOG_DIR,
+    PROCESS_TMP_ROOT,
+    TEST_LAB_ROOT,
+    VIDEO_EXTS,
+)
 from .conversion_gate import conversion_lock
 from .estimate_history import record_successful_job, sample_count
 from .ffmpeg_utils import (
@@ -17,7 +26,7 @@ from .ffmpeg_utils import (
     probe_video_details,
     summarize_video_details,
 )
-from .gif_optimizer import optimize_gif
+from .gif_optimizer import normalize_optimize_level, optimize_gif
 from .jobs import create_logger
 from .progress import (
     TERMINAL_STATUSES,
@@ -82,11 +91,88 @@ def _safe_file_path(run_id, filename):
     return path
 
 
+def _file_id(run_id, filename):
+    if not run_id or not filename:
+        return ""
+    return f"{run_id}/{filename}"
+
+
+def _url_for_file_id(file_id):
+    if not file_id or "/" not in file_id:
+        return ""
+    run_id, filename = file_id.split("/", 1)
+    if not _safe_file_path(run_id, filename):
+        return ""
+    return _file_url(run_id, filename)
+
+
 def test_lab_file_path(run_id, filename):
     path = _safe_file_path(run_id, filename)
     if not path or not os.path.isfile(path):
         return None
     return path
+
+
+def _hash_text(value):
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _relative_identity(path, root):
+    try:
+        rel = os.path.relpath(
+            os.path.realpath(path),
+            os.path.realpath(root),
+        )
+    except (OSError, ValueError):
+        rel = os.path.basename(path)
+    rel = os.path.normcase(rel).replace(os.sep, "/")
+    return _hash_text(rel)
+
+
+def _file_identity(path, root):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return {
+        "relative_path_hash": _relative_identity(path, root),
+        "size": stat.st_size,
+        "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
+    }
+
+
+def normalized_cfg(cfg):
+    return {
+        "height": int(cfg.get("height") or 0),
+        "fps": "original" if cfg.get("fps") == "original" else int(cfg.get("fps") or 0),
+        "clip_len": round(float(cfg.get("clip_len") or 0), 4),
+        "percent_points": [int(p) for p in (cfg.get("percent_points") or [])],
+        "abs_early": round(float(cfg.get("abs_early") or 0), 4),
+        "abs_late_from_end": round(float(cfg.get("abs_late_from_end") or 0), 4),
+        "start_buffer": round(float(cfg.get("start_buffer") or 0), 4),
+        "end_buffer": round(float(cfg.get("end_buffer") or 0), 4),
+        "loop_forever": bool(cfg.get("loop_forever")),
+        "smooth": bool(cfg.get("smooth")),
+    }
+
+
+def request_fingerprint(video_path, cfg, lib_root=LIB_ROOT, background_image=None):
+    if background_image is None:
+        background_image = find_background_image(video_path)
+    payload = {
+        "schema": 1,
+        "source": _file_identity(video_path, lib_root),
+        "background": _file_identity(background_image, lib_root),
+        "settings": normalized_cfg(cfg),
+        "optimization": {
+            "enabled": bool(GIF_OPTIMIZE),
+            "level": normalize_optimize_level(GIF_OPTIMIZE_LEVEL),
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def settings_label(cfg):
@@ -108,6 +194,10 @@ def _manifest_variant(variant):
         "id": variant.get("id", ""),
         "name": variant.get("name", ""),
         "filename": variant.get("filename", ""),
+        "request_fingerprint": variant.get("request_fingerprint", ""),
+        "reused": bool(variant.get("reused")),
+        "reused_file_id": variant.get("reused_file_id", ""),
+        "reuse_variant_id": variant.get("reuse_variant_id", ""),
         "settings_label": variant.get("settings_label", ""),
         "cfg": variant.get("cfg") or {},
         "status": variant.get("status", ""),
@@ -157,6 +247,44 @@ def _read_manifest(run_id):
     return data
 
 
+def _reuse_match(fingerprint):
+    if not fingerprint:
+        return None
+    try:
+        run_ids = sorted(os.listdir(TEST_LAB_ROOT), reverse=True)
+    except Exception:
+        return None
+
+    for run_id in run_ids:
+        if not _safe_name(run_id):
+            continue
+        manifest = _read_manifest(run_id)
+        for variant in manifest.get("variants") or []:
+            if not isinstance(variant, dict):
+                continue
+            if variant.get("request_fingerprint") != fingerprint:
+                continue
+            filename = variant.get("filename", "")
+            path = _safe_file_path(run_id, filename)
+            if not path or not os.path.isfile(path):
+                continue
+            file_id = _file_id(run_id, filename)
+            return {
+                "file_id": file_id,
+                "path": path,
+                "url": _file_url(run_id, filename),
+                "meta": variant,
+            }
+    return None
+
+
+def _path_for_file_id(file_id):
+    if not file_id or "/" not in file_id:
+        return None
+    run_id, filename = file_id.split("/", 1)
+    return test_lab_file_path(run_id, filename)
+
+
 def _close_logger(logger):
     if not logger:
         return
@@ -171,11 +299,17 @@ def _public_variant(variant):
     update_job_label(variant)
     filename = variant.get("filename", "")
     run_id = variant.get("run_id", "")
-    output_exists = bool(filename and test_lab_file_path(run_id, filename))
+    own_file_id = _file_id(run_id, filename)
+    reused_file_id = variant.get("reused_file_id", "")
+    own_exists = bool(filename and test_lab_file_path(run_id, filename))
+    reused_url = _url_for_file_id(reused_file_id)
+    file_id = own_file_id if own_exists else reused_file_id
+    url = _file_url(run_id, filename) if own_exists else reused_url
     return {
         "id": variant.get("id", ""),
         "name": variant.get("name", ""),
         "status": variant.get("status", ""),
+        "reused": bool(variant.get("reused")),
         "progress_label": variant.get("progress_label", ""),
         "progress_percent": variant.get("progress_percent", 0),
         "elapsed_seconds": variant.get("elapsed_seconds"),
@@ -184,8 +318,9 @@ def _public_variant(variant):
         "started_at": variant.get("started_at"),
         "finished_at": variant.get("finished_at"),
         "settings_label": variant.get("settings_label", ""),
-        "file_id": f"{run_id}/{filename}" if output_exists else "",
-        "url": _file_url(run_id, filename) if output_exists else "",
+        "request_fingerprint": variant.get("request_fingerprint", ""),
+        "file_id": file_id if url else "",
+        "url": url,
         "gif_size_before_opt_bytes": variant.get("gif_size_before_opt_bytes"),
         "gif_size_after_opt_bytes": variant.get("gif_size_after_opt_bytes"),
         "gif_optimization_saved_bytes": variant.get("gif_optimization_saved_bytes"),
@@ -197,6 +332,18 @@ def _public_variant(variant):
         "gif_optimization_label": variant.get("gif_optimization_label", ""),
         "error": variant.get("error", ""),
     }
+
+
+def _variant_public_file_id(variant):
+    run_id = variant.get("run_id", "")
+    filename = variant.get("filename", "")
+    own_file_id = _file_id(run_id, filename)
+    if filename and test_lab_file_path(run_id, filename):
+        return own_file_id
+    reused_file_id = variant.get("reused_file_id", "")
+    if _path_for_file_id(reused_file_id):
+        return reused_file_id
+    return ""
 
 
 def _run_progress(run, now=None):
@@ -290,11 +437,30 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
         "variants": [],
     }
 
+    background_image = find_background_image(video_path)
+    first_variant_for_fingerprint = {}
     for index, raw in enumerate(variants, start=1):
         cfg = raw.get("cfg") or {}
         name = (raw.get("name") or f"Variant {index}").strip()[:80]
         filename = f"variant-{index}.gif"
         variant_id = f"variant-{index}"
+        fingerprint = request_fingerprint(
+            video_path,
+            cfg,
+            lib_root=lib_root,
+            background_image=background_image,
+        )
+        reuse_match = _reuse_match(fingerprint)
+        reuse_variant_id = ""
+        reused_file_id = ""
+        if fingerprint in first_variant_for_fingerprint:
+            reuse_variant_id = first_variant_for_fingerprint[fingerprint]
+        elif reuse_match:
+            reused_file_id = reuse_match["file_id"]
+            first_variant_for_fingerprint[fingerprint] = variant_id
+        else:
+            first_variant_for_fingerprint[fingerprint] = variant_id
+
         variant = {
             "id": variant_id,
             "run_id": run_id,
@@ -302,6 +468,10 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
             "video": video_path,
             "out_gif": os.path.join(run_dir, filename),
             "filename": filename,
+            "request_fingerprint": fingerprint,
+            "reused_file_id": reused_file_id,
+            "reuse_variant_id": reuse_variant_id,
+            "reused": False,
             "tmp_dir": os.path.join(PROCESS_TMP_ROOT, "test-lab", run_id, variant_id),
             "status": "queued",
             "cfg": cfg,
@@ -321,6 +491,66 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
     return run_id, None
 
 
+def _copy_reuse_metrics(variant, meta):
+    for key in (
+        "gif_size_before_opt_bytes",
+        "gif_size_after_opt_bytes",
+        "gif_optimization_saved_bytes",
+        "gif_optimization_savings_percent",
+        "gif_optimization_status",
+        "gif_optimization_seconds",
+        "gif_optimization_label",
+    ):
+        if meta.get(key) is not None:
+            variant[key] = meta.get(key)
+
+
+def _complete_reused_file(variant, file_id, logger, meta=None):
+    path = _path_for_file_id(file_id)
+    if not path:
+        return False
+    variant["reused"] = True
+    variant["reused_file_id"] = file_id
+    if meta:
+        _copy_reuse_metrics(variant, meta)
+    mark_job_finished(variant, "success", path)
+    logger.info(f"Reused existing test GIF: {file_id}")
+    return True
+
+
+def _complete_same_run_reuse(run, variant, logger):
+    reuse_variant_id = variant.get("reuse_variant_id")
+    if not reuse_variant_id:
+        return False
+    source = next(
+        (
+            candidate
+            for candidate in run.get("variants") or []
+            if candidate.get("id") == reuse_variant_id
+        ),
+        None,
+    )
+    if not source:
+        mark_job_finished(variant, "failed")
+        variant["error"] = "Matching variant was not found."
+        logger.error(variant["error"])
+        return True
+    if source.get("status") != "success":
+        mark_job_finished(variant, "failed")
+        variant["error"] = "Matching variant did not complete."
+        logger.error(variant["error"])
+        return True
+
+    file_id = _variant_public_file_id(source)
+    if not file_id:
+        mark_job_finished(variant, "failed")
+        variant["error"] = "Matching variant output was not found."
+        logger.error(variant["error"])
+        return True
+    _complete_reused_file(variant, file_id, logger, meta=source)
+    return True
+
+
 def _process_variant(run, variant):
     logger_name = f"test_lab_{run['id']}_{variant['id']}"
     logger = create_logger(logger_name, variant["log_path"])
@@ -330,6 +560,24 @@ def _process_variant(run, variant):
     logger.info(f"Source: {run['video']}")
     logger.info(f"Output: {variant['out_gif']}")
     logger.info(f"Settings: {variant['settings_label']}")
+
+    if _complete_same_run_reuse(run, variant, logger):
+        return
+
+    reused_file_id = variant.get("reused_file_id")
+    if reused_file_id:
+        match_path = _path_for_file_id(reused_file_id)
+        if match_path:
+            meta = _reuse_match(variant.get("request_fingerprint", ""))
+            _complete_reused_file(
+                variant,
+                reused_file_id,
+                logger,
+                meta=(meta or {}).get("meta") if meta else None,
+            )
+            return
+        logger.info("Reusable test GIF was missing; regenerating")
+        variant["reused_file_id"] = ""
 
     try:
         os.makedirs(variant["tmp_dir"], exist_ok=True)
@@ -525,6 +773,7 @@ def _inventory_items():
                     "name": meta.get("name") or filename,
                     "source_name": source_name,
                     "settings_label": meta.get("settings_label", ""),
+                    "request_fingerprint": meta.get("request_fingerprint", ""),
                     "size_bytes": size,
                     "size_label": format_size(size),
                     "modified_at": utc_iso(stat.st_mtime),
@@ -567,6 +816,9 @@ def _active_file_ids():
                 filename = variant.get("filename", "")
                 if filename:
                     active.add(f"{run.get('id')}/{filename}")
+                reused_file_id = variant.get("reused_file_id", "")
+                if reused_file_id:
+                    active.add(reused_file_id)
     return active
 
 

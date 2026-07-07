@@ -185,3 +185,55 @@ def test_test_lab_delete_reports_inventory_and_refuses_active_files(monkeypatch,
     assert not stale.exists()
     assert active.exists()
     assert payload["total_size_bytes"] == active.stat().st_size
+
+
+def test_request_fingerprint_changes_with_source_and_background(tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    video = lib / "movie.mp4"
+    video.write_bytes(b"video")
+    cfg = {
+        "height": 360,
+        "fps": 24,
+        "clip_len": 2,
+        "percent_points": [10, 50, 90],
+        "abs_early": 0,
+        "abs_late_from_end": 0,
+        "start_buffer": 5,
+        "end_buffer": 5,
+        "loop_forever": True,
+        "smooth": False,
+    }
+
+    base = test_lab.request_fingerprint(
+        str(video),
+        cfg,
+        lib_root=str(lib),
+        background_image=None,
+    )
+    background = lib / "background.jpg"
+    background.write_bytes(b"background")
+    with_background = test_lab.request_fingerprint(
+        str(video),
+        cfg,
+        lib_root=str(lib),
+        background_image=str(background),
+    )
+    video.write_bytes(b"changed video")
+    source_changed = test_lab.request_fingerprint(
+        str(video),
+        cfg,
+        lib_root=str(lib),
+        background_image=None,
+    )
+    background.write_bytes(b"changed background")
+    background_changed = test_lab.request_fingerprint(
+        str(video),
+        cfg,
+        lib_root=str(lib),
+        background_image=str(background),
+    )
+
+    assert base != with_background
+    assert base != source_changed
+    assert with_background != background_changed

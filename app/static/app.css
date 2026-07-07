@@ -408,12 +408,13 @@ body {
 
 .test-preview-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
 
-.test-preview {
+.test-slot {
+  min-height: 220px;
   min-width: 0;
   margin: 0;
   border: 1px solid var(--bs-border-color);
@@ -422,21 +423,54 @@ body {
   background: var(--bs-body-bg);
 }
 
-.test-preview img {
+.test-slot.empty {
+  display: grid;
+  align-content: start;
+  border-style: dashed;
+  background: var(--bs-tertiary-bg);
+}
+
+.test-slot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bs-border-color);
+  color: var(--bs-secondary-color);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.test-slot-empty {
+  display: grid;
+  min-height: 170px;
+  place-items: center;
+  padding: 16px;
+  color: var(--bs-secondary-color);
+  text-align: center;
+}
+
+.test-slot img {
   display: block;
   width: 100%;
   background: #000;
 }
 
-.test-preview figcaption {
+.test-slot figcaption {
   display: grid;
   gap: 2px;
   padding: 10px 12px;
   font-size: 0.875rem;
 }
 
-.test-preview figcaption span {
+.test-slot figcaption span {
   color: var(--bs-secondary-color);
+}
+
+[data-drag-file-id],
+.test-slot.occupied {
+  cursor: grab;
 }
 
 .statusbar {
@@ -489,6 +523,10 @@ body {
   }
 
   .variant-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .test-preview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
