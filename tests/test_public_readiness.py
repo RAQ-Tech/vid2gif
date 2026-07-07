@@ -48,6 +48,13 @@ def test_api_status_returns_public_job_payload_only():
     assert payload[0]["output_size_bytes"] is None
     assert payload[0]["started_at"] is None
     assert payload[0]["finished_at"] is None
+    assert payload[0]["gif_size_before_opt_bytes"] is None
+    assert payload[0]["gif_size_after_opt_bytes"] is None
+    assert payload[0]["gif_optimization_saved_bytes"] is None
+    assert payload[0]["gif_optimization_savings_percent"] is None
+    assert payload[0]["gif_optimization_status"] is None
+    assert payload[0]["gif_optimization_seconds"] is None
+    assert payload[0]["gif_optimization_label"] == ""
     assert "logger" not in payload[0]
     assert "log_path" not in payload[0]
     assert "cfg" not in payload[0]
@@ -217,6 +224,7 @@ def test_templates_escape_dynamic_job_tables():
     assert "escapeHtml(j.out_gif)" in completed_template
     assert "escapeHtml(formatDuration(j.elapsed_seconds))" in completed_template
     assert "escapeHtml(formatSize(j.output_size_bytes))" in completed_template
+    assert "escapeHtml(j.gif_optimization_label || '')" in completed_template
 
 
 def test_queue_page_uses_polling_instead_of_socketio():
@@ -243,6 +251,8 @@ def test_live_logs_tracks_last_job_result_instead_of_forcing_running():
     assert 'class="pill idle">idle</span>' in live_template
     assert "jobProgressBar" in live_template
     assert "queueProgressBar" in live_template
+    assert "jobOptimization" in live_template
+    assert "gif_optimization_label" in live_template
     assert "speed=" not in live_template
 
 
@@ -250,6 +260,7 @@ def test_dockerfile_uses_gunicorn_wsgi_entrypoint():
     dockerfile = (ROOT / "Dockerfile").read_text()
 
     assert "COPY app ./app" in dockerfile
+    assert "gifsicle" in dockerfile
     assert '"gunicorn"' in dockerfile
     assert '"--threads", "8"' in dockerfile
     assert '"--graceful-timeout", "10"' in dockerfile

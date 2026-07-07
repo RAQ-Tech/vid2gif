@@ -1,5 +1,13 @@
 import os
 
+
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # -------- Paths & setup --------
 LIB_ROOT = os.getenv("LIB_ROOT", "/library")
 STATE_ROOT = os.getenv("STATE_ROOT", "/state")
@@ -8,6 +16,15 @@ TMP_ROOT = os.getenv("TMP_ROOT", os.path.join(STATE_ROOT, "tmp"))
 PROCESS_TMP_ROOT = os.getenv(
     "PROCESS_TMP_ROOT", os.path.join(STATE_ROOT, "processing", "tmp")
 )
+GIF_OPTIMIZE = os.getenv("GIF_OPTIMIZE", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+GIF_OPTIMIZE_LEVEL = os.getenv("GIF_OPTIMIZE_LEVEL", "2")
+GIFSICLE_BIN = os.getenv("GIFSICLE_BIN", "gifsicle")
+GIF_OPTIMIZE_TIMEOUT = _env_int("GIF_OPTIMIZE_TIMEOUT", 600)
 
 for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT):
     os.makedirs(path, exist_ok=True)

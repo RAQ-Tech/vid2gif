@@ -78,6 +78,10 @@ python -m pytest
 | `TMP_ROOT` | `/state/tmp` | General temporary directory |
 | `PROCESS_TMP_ROOT` | `/state/processing/tmp` | Per-job processing directory |
 | `CHOWN_LIBRARY` | `0` | Set to `1` only if the container should recursively take ownership of `/library` at startup |
+| `GIF_OPTIMIZE` | `1` | Run lossless Gifsicle optimization before moving the final `poster.gif` into place |
+| `GIF_OPTIMIZE_LEVEL` | `2` | Gifsicle optimization level, clamped to `1`, `2`, or `3` |
+| `GIFSICLE_BIN` | `gifsicle` | Gifsicle executable path or command name |
+| `GIF_OPTIMIZE_TIMEOUT` | `600` | Maximum seconds allowed for one GIF optimization step |
 
 These can be overridden when invoking `python -m app.main` or the Docker
 container, for example `docker run -e LIB_ROOT=/media/videos ...`.
@@ -85,6 +89,9 @@ container, for example `docker run -e LIB_ROOT=/media/videos ...`.
 The Docker entrypoint always ensures `/state` is writable for logs and
 temporary files. It does not scan and chown `/library` by default, which avoids
 slow startup on large mounted media libraries.
+
+GIF optimization is lossless and keeps the original ffmpeg output if Gifsicle is
+missing, fails, times out, or produces a larger file.
 
 ## Example Workflow
 

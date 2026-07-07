@@ -61,6 +61,7 @@
               <span id="jobElapsed">Elapsed: not started</span>
               <span id="jobEta">Remaining: unknown</span>
               <span id="jobSize">Size: pending</span>
+              <span id="jobOptimization">Optimization: pending</span>
             </div>
           </div>
         </div>
@@ -164,6 +165,7 @@
         document.getElementById('jobElapsed').textContent = 'Elapsed: not started';
         document.getElementById('jobEta').textContent = 'Remaining: unknown';
         document.getElementById('jobSize').textContent = 'Size: pending';
+        document.getElementById('jobOptimization').textContent = 'Optimization: pending';
         return;
       }
       setStatus(job.status);
@@ -175,6 +177,8 @@
       document.getElementById('jobEta').textContent =
         `Remaining: ${job.eta_seconds === null || job.eta_seconds === undefined ? 'unknown' : formatDuration(job.eta_seconds)}`;
       document.getElementById('jobSize').textContent = `Size: ${formatSize(job.output_size_bytes)}`;
+      document.getElementById('jobOptimization').textContent =
+        `Optimization: ${job.gif_optimization_label || 'pending'}`;
     }
     function setQueueMetrics(data) {
       if (!data) return;

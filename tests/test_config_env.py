@@ -62,3 +62,37 @@ def test_state_root_updates_default_directories(monkeypatch, tmp_path):
         assert Path(config.LOG_DIR).is_dir()
         assert Path(config.TMP_ROOT).is_dir()
         assert Path(config.PROCESS_TMP_ROOT).is_dir()
+
+
+def test_gif_optimizer_defaults_are_enabled(monkeypatch):
+    for key in (
+        "GIF_OPTIMIZE",
+        "GIF_OPTIMIZE_LEVEL",
+        "GIFSICLE_BIN",
+        "GIF_OPTIMIZE_TIMEOUT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    with config_with_env(monkeypatch) as config:
+        assert config.GIF_OPTIMIZE is True
+        assert config.GIF_OPTIMIZE_LEVEL == "2"
+        assert config.GIFSICLE_BIN == "gifsicle"
+        assert config.GIF_OPTIMIZE_TIMEOUT == 600
+
+
+def test_gif_optimizer_env_overrides(monkeypatch):
+    with config_with_env(
+        monkeypatch,
+        GIF_OPTIMIZE="0",
+        GIF_OPTIMIZE_LEVEL="3",
+        GIFSICLE_BIN="/usr/local/bin/gifsicle",
+        GIF_OPTIMIZE_TIMEOUT="120",
+    ) as config:
+        assert config.GIF_OPTIMIZE is False
+        assert config.GIF_OPTIMIZE_LEVEL == "3"
+        assert config.GIFSICLE_BIN == "/usr/local/bin/gifsicle"
+        assert config.GIF_OPTIMIZE_TIMEOUT == 120
+
+
+def test_gif_optimizer_invalid_timeout_uses_default(monkeypatch):
+    with config_with_env(monkeypatch, GIF_OPTIMIZE_TIMEOUT="soon") as config:
+        assert config.GIF_OPTIMIZE_TIMEOUT == 600

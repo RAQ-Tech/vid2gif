@@ -3,7 +3,7 @@ FROM python:3.11-slim
 ARG PUID=1000
 ARG PGID=1000
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg gosu \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg gifsicle gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g "$PGID" app \

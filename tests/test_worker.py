@@ -38,11 +38,31 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, 'probe_video_details', lambda v: ('', None))
     monkeypatch.setattr(jobs, 'get_duration', lambda v: (10.0, None))
     monkeypatch.setattr(jobs, 'build_segments', lambda d, c: [{'start': 0, 'end': 1}])
+    events = []
     def fake_make_gif(video, segs, out_gif, cfg, job, background_image=None):
+        events.append('make')
         with open(out_gif, 'wb') as f:
-            f.write(b'GIF89a')
+            f.write(b'unoptimized')
         return True, ''
+    def fake_optimize_gif(gif_path, job, logger=None):
+        events.append('optimize')
+        assert os.path.isfile(gif_path)
+        assert not os.path.exists(job['out_gif'])
+        with open(gif_path, 'wb') as f:
+            f.write(b'optimized')
+        job.update(
+            {
+                'gif_size_before_opt_bytes': 11,
+                'gif_size_after_opt_bytes': 9,
+                'gif_optimization_saved_bytes': 2,
+                'gif_optimization_savings_percent': 18.2,
+                'gif_optimization_status': 'optimized',
+                'gif_optimization_seconds': 1,
+                'gif_optimization_label': 'Saved 2 B (18.2%)',
+            }
+        )
     monkeypatch.setattr(jobs, 'make_gif_multi_inputs', fake_make_gif)
+    monkeypatch.setattr(jobs, 'optimize_gif', fake_optimize_gif)
     t = threading.Thread(target=jobs.worker)
     t.start()
     jobs.job_queue.put(job_id)
@@ -50,6 +70,9 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
     t.join()
     assert job['status'] == 'success'
     assert os.path.isfile(job['out_gif'])
+    assert out_gif.read_bytes() == b'optimized'
+    assert events == ['make', 'optimize']
+    assert job['gif_optimization_status'] == 'optimized'
     assert not os.path.exists(job['tmp_dir'])
     _clear_jobs_and_queue()
 
@@ -87,6 +110,13 @@ def test_worker_failure_leaves_existing_output_and_cleans_tmp_dir(tmp_path, monk
         return False, 'ffmpeg failed'
 
     monkeypatch.setattr(jobs, 'make_gif_multi_inputs', fake_make_gif)
+    monkeypatch.setattr(
+        jobs,
+        'optimize_gif',
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError('optimizer should not run after ffmpeg failure')
+        ),
+    )
     t = threading.Thread(target=jobs.worker)
     t.start()
     jobs.job_queue.put(job_id)

@@ -7,6 +7,7 @@ import time
 import shutil
 
 from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
+from .gif_optimizer import optimize_gif
 from .ffmpeg_utils import (
     get_duration,
     probe_video_details,
@@ -50,6 +51,15 @@ def public_job(job):
         "output_size_bytes": job.get("output_size_bytes"),
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
+        "gif_size_before_opt_bytes": job.get("gif_size_before_opt_bytes"),
+        "gif_size_after_opt_bytes": job.get("gif_size_after_opt_bytes"),
+        "gif_optimization_saved_bytes": job.get("gif_optimization_saved_bytes"),
+        "gif_optimization_savings_percent": job.get(
+            "gif_optimization_savings_percent"
+        ),
+        "gif_optimization_status": job.get("gif_optimization_status"),
+        "gif_optimization_seconds": job.get("gif_optimization_seconds"),
+        "gif_optimization_label": job.get("gif_optimization_label", ""),
     }
 
 
@@ -289,6 +299,7 @@ def worker():
                     background_image=bg_image,
                 )
                 if ok:
+                    optimize_gif(tmp_gif, job, job["logger"])
                     try:
                         job["logger"].info("Moving GIF into place")
                         shutil.move(tmp_gif, job["out_gif"])
