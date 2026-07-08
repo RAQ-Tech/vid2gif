@@ -54,6 +54,48 @@
         </div>
       </div>
 
+      <div class="settings-panel">
+        <div class="panel-subheading">
+          <i class="bi bi-sliders" aria-hidden="true"></i>
+          <span>Duplicate Cleanup</span>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_grouping_mode">Grouping mode</label>
+            <select id="duplicate_grouping_mode" name="duplicate_grouping_mode" class="form-select">
+              {% for value, label in duplicate_grouping_modes.items() %}
+                <option value="{{ value }}" {% if settings.duplicate_grouping_mode == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_keeper_rule">Keeper rule</label>
+            <select id="duplicate_keeper_rule" name="duplicate_keeper_rule" class="form-select">
+              {% for value, label in duplicate_keeper_rules.items() %}
+                <option value="{{ value }}" {% if settings.duplicate_keeper_rule == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_accessory_policy">Accessory policy</label>
+            <select id="duplicate_accessory_policy" name="duplicate_accessory_policy" class="form-select">
+              {% for value, label in duplicate_accessory_policies.items() %}
+                <option value="{{ value }}" {% if settings.duplicate_accessory_policy == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label" for="duplicate_move_root">Move destination</label>
+            <input id="duplicate_move_root" name="duplicate_move_root" class="form-control" value="{{ settings.duplicate_move_root }}" placeholder="/library/.vid2gif-duplicates">
+            <div class="form-text">Move destinations must stay inside the mounted library root, but can be outside the specific Emby library folder being scanned.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_excluded_folders">Excluded folder names</label>
+            <input id="duplicate_excluded_folders" name="duplicate_excluded_folders" class="form-control" value="{{ duplicate_excluded_folders_text }}" placeholder="trailer, trailers">
+          </div>
+        </div>
+      </div>
+
       <div class="settings-panel settings-panel-actions">
         <button type="submit" class="btn btn-primary ms-md-auto">
           <i class="bi bi-save" aria-hidden="true"></i>

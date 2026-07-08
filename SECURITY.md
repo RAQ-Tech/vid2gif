@@ -19,6 +19,8 @@ The app writes generated GIFs as `poster.gif` next to selected source videos.
 When landscape poster maintenance is enabled, it can also replace matching
 `*-poster.*` image files with `*-background.*` images and create
 `*-poster-backup.*` files in mounted media folders.
+Duplicate cleanup can move, delete, or rename confirmed files under the mounted
+library root and records applied cleanup actions under `/state`.
 
 ## Reporting Issues
 

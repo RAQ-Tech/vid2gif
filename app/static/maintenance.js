@@ -1,5 +1,6 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
+  const maintenanceTabHashes = ['posters', 'duplicates'];
   const groupState = new Map();
   let currentScan = null;
   let currentPlan = null;
@@ -76,7 +77,31 @@
     if (file.kind === 'video') {
       return file.metadata_label || 'Video';
     }
-    return 'Accessory';
+    const parts = [file.role ? `Accessory: ${file.role}` : 'Accessory'];
+    if (file.default_reason) parts.push(file.default_reason);
+    return parts.join(' - ');
+  }
+
+  function defaultSelected(file) {
+    return file.default_selected !== false && file.default_operation !== 'keep';
+  }
+
+  function fileOperationOptions(group, file, state) {
+    const selected = state.fileOperations?.get(file.id) || 'default';
+    const options = file.kind === 'video'
+      ? [
+        ['default', 'Default cleanup'],
+        ['keep', 'Keep']
+      ]
+      : [
+        ['default', `Default: ${file.default_operation || 'review'}`],
+        ['cleanup', 'Move/Delete'],
+        ['rename', 'Rename to keeper'],
+        ['keep', 'Keep']
+      ];
+    return `<select class="form-select form-select-sm" data-maint-operation="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}">` +
+      options.map(([value, label]) => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('') +
+      `</select>`;
   }
 
   function groupCandidateFiles(group, state) {
@@ -96,6 +121,7 @@
         enabled: true,
         keepId: group.recommended_keep_id,
         includedFileIds: new Set(),
+        fileOperations: new Map(),
         candidateSignature: ''
       });
     }
@@ -104,7 +130,8 @@
     const signature = candidates.map(file => file.id).join('|');
     if (state.candidateSignature !== signature) {
       state.candidateSignature = signature;
-      state.includedFileIds = new Set(candidates.map(file => file.id));
+      state.includedFileIds = new Set(candidates.filter(defaultSelected).map(file => file.id));
+      state.fileOperations = new Map();
     }
     return state;
   }
@@ -138,6 +165,7 @@
       `<td>${escapeHtml(kind)}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
       `<td class="path-cell"><code title="${escapeHtml(fileDetails(file))}">${escapeHtml(fileDetails(file))}</code></td>` +
+      `<td>${fileOperationOptions(group, file, state)}</td>` +
       `<td>${escapeHtml(file.size_label || formatSize(file.size_bytes))}</td>` +
       `</tr>`;
   }
@@ -147,7 +175,7 @@
     const candidates = groupCandidateFiles(group, state);
     const rows = candidates.length
       ? candidates.map(file => fileRow(group, file, state)).join('')
-      : '<tr><td colspan="5" class="text-muted text-center py-3">No files selected for cleanup in this group.</td></tr>';
+      : '<tr><td colspan="6" class="text-muted text-center py-3">No files selected for cleanup in this group.</td></tr>';
     const keeper = (group.videos || []).find(video => video.id === state.keepId);
     return `<section class="maintenance-group" data-maint-group-card="${escapeHtml(group.id)}">` +
       `<div class="maintenance-group-heading">` +
@@ -172,7 +200,7 @@
       `</div>` +
       `<div class="table-responsive workspace-table-wrap mt-2">` +
       `<table class="table table-hover align-middle workspace-table maintenance-table">` +
-      `<thead><tr><th>Include</th><th>Kind</th><th>File</th><th>Details</th><th>Size</th></tr></thead>` +
+      `<thead><tr><th>Include</th><th>Kind</th><th>File</th><th>Details</th><th>Operation</th><th>Size</th></tr></thead>` +
       `<tbody>${rows}</tbody>` +
       `</table></div>` +
       `</section>`;
@@ -304,12 +332,19 @@
       const state = ensureGroupState(group);
       const keepId = state.keepId || group.recommended_keep_id;
       const candidates = groupCandidateFiles(group, state);
+      const fileOperations = candidates
+        .map(file => ({
+          file_id: file.id,
+          operation: state.fileOperations?.get(file.id) || 'default'
+        }))
+        .filter(item => item.operation !== 'default');
       return {
         id: group.id,
         enabled: state.enabled,
         keep_video_id: keepId,
         remove_video_ids: (group.videos || []).filter(video => video.id !== keepId).map(video => video.id),
-        include_file_ids: candidates.filter(file => state.includedFileIds.has(file.id)).map(file => file.id)
+        include_file_ids: candidates.filter(file => state.includedFileIds.has(file.id)).map(file => file.id),
+        file_operations: fileOperations
       };
     });
   }
@@ -319,14 +354,18 @@
     if (!summary) return;
     const action = plan.action === 'delete' ? 'Delete' : 'Move';
     const sample = (plan.files || []).slice(0, 8).map(file =>
-      `<li><code title="${escapeHtml(file.source_path)}">${escapeHtml(file.relative_path || file.source_path)}</code></li>`
+      `<li><strong>${escapeHtml(file.operation || action)}</strong> <code title="${escapeHtml(file.source_path)}">${escapeHtml(file.relative_path || file.source_path)}</code>${file.destination_path ? ` -> <code title="${escapeHtml(file.destination_path)}">${escapeHtml(file.destination_name || file.destination_path)}</code>` : ''}</li>`
     ).join('');
+    const review = (plan.manual_review || []).length
+      ? `<div class="text-muted mt-2">${escapeHtml((plan.manual_review || []).length)} file(s) kept for manual review.</div>`
+      : '';
     summary.innerHTML =
       `<div class="settings-panel">` +
       `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>Cleanup Plan</span></div>` +
       `<div class="metric-row mt-0"><span>${escapeHtml(action)} ${escapeHtml(plan.file_count || 0)} files</span><span>${escapeHtml(plan.total_size_label || '0 B')}</span>` +
       `${plan.move_root ? `<span>Quarantine: <code>${escapeHtml(plan.move_root)}</code></span>` : ''}</div>` +
       `${sample ? `<ul class="maintenance-plan-list mt-2">${sample}${(plan.files || []).length > 8 ? '<li class="text-muted">Additional files are included in the plan.</li>' : ''}</ul>` : '<div class="text-muted mt-2">No files selected.</div>'}` +
+      `${review}` +
       `</div>`;
     const selected = byId('maintenanceSelectedSize');
     if (selected) selected.textContent = plan.total_size_label || '0 B';
@@ -391,9 +430,63 @@
         `${result.applied_count || 0} files processed`,
         `${result.total_applied_label || '0 B'} cleaned, ${result.missing_count || 0} missing, ${result.refused_count || 0} refused`
       );
+      refreshMaintenanceLogs();
       currentPlan = null;
     } catch (e) {
       setMessage('Cleanup failed', e.message || '');
+    }
+  }
+
+  function renderMaintenanceLogs(logs) {
+    const list = byId('maintenanceLogList');
+    if (!list) return;
+    if (!(logs || []).length) {
+      list.innerHTML = '<div class="text-muted text-center py-4">No duplicate cleanup logs yet.</div>';
+      return;
+    }
+    const rows = logs.map(log =>
+      `<tr>` +
+      `<td><button class="btn btn-outline-secondary btn-sm" type="button" data-maint-log="${escapeHtml(log.id)}">Open</button></td>` +
+      `<td>${escapeHtml(log.created_at || '')}</td>` +
+      `<td>${escapeHtml(log.action || '')}</td>` +
+      `<td>${escapeHtml(log.applied_count || 0)} applied, ${escapeHtml(log.refused_count || 0)} refused</td>` +
+      `<td>${escapeHtml(log.size_label || '')}${log.truncated ? ' truncated' : ''}</td>` +
+      `</tr>`
+    ).join('');
+    list.innerHTML =
+      `<div class="table-responsive workspace-table-wrap">` +
+      `<table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th></th><th>Time</th><th>Action</th><th>Result</th><th>Log size</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>`;
+  }
+
+  async function refreshMaintenanceLogs() {
+    try {
+      const res = await fetch('/api/maintenance/duplicates/logs');
+      const data = await res.json();
+      if (!res.ok) return;
+      renderMaintenanceLogs(data.logs || []);
+    } catch (e) {
+      const list = byId('maintenanceLogList');
+      if (list) list.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Logs unavailable')}</div>`;
+    }
+  }
+
+  async function openMaintenanceLog(logId) {
+    const output = byId('maintenanceLogContent');
+    if (!output) return;
+    output.classList.remove('d-none');
+    output.textContent = 'Loading log...';
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/logs/${encodeURIComponent(logId)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        output.textContent = data.error || 'Log unavailable';
+        return;
+      }
+      output.textContent = data.log?.content || '';
+    } catch (e) {
+      output.textContent = e.message || 'Log unavailable';
     }
   }
 
@@ -649,6 +742,37 @@
     }
   }
 
+  function activateMaintenanceTab(hash, updateUrl) {
+    const safeHash = maintenanceTabHashes.includes(hash) ? hash : 'posters';
+    const button = document.querySelector(`[data-maint-tab-hash="${safeHash}"]`);
+    if (!button || !window.bootstrap) return;
+    window.bootstrap.Tab.getOrCreateInstance(button).show();
+    localStorage.setItem('maintenance_active_tab', safeHash);
+    if (updateUrl) {
+      history.replaceState(null, '', `#${safeHash}`);
+    }
+  }
+
+  function initMaintenanceTabs() {
+    const requested = location.hash.replace('#', '');
+    const saved = localStorage.getItem('maintenance_active_tab');
+    activateMaintenanceTab(maintenanceTabHashes.includes(requested) ? requested : (saved || 'posters'), false);
+    document.querySelectorAll('[data-maint-tab-hash]').forEach(button => {
+      button.addEventListener('shown.bs.tab', event => {
+        const hash = event.target.getAttribute('data-maint-tab-hash') || 'posters';
+        localStorage.setItem('maintenance_active_tab', hash);
+        history.replaceState(null, '', `#${hash}`);
+      });
+    });
+    document.querySelectorAll('[data-maint-tab-shortcut]').forEach(link => {
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        activateMaintenanceTab(link.getAttribute('data-maint-tab-shortcut'), true);
+      });
+    });
+    window.addEventListener('hashchange', () => activateMaintenanceTab(location.hash.replace('#', ''), false));
+  }
+
   function initEvents() {
     byId('maintenanceBrowseButton')?.addEventListener('click', () => {
       openBrowser(byId('maintenancePath')?.value.trim() || config.libRoot || '/library');
@@ -660,6 +784,7 @@
     byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
     byId('posterRefreshButton')?.addEventListener('click', refreshPosterStatus);
+    byId('maintenanceRefreshLogsButton')?.addEventListener('click', refreshMaintenanceLogs);
     byId('maintenanceAction')?.addEventListener('change', () => {
       invalidatePlan();
       updateSelectedSize();
@@ -680,6 +805,7 @@
       const enabled = event.target.closest('[data-maint-group-enabled]');
       const keep = event.target.closest('[data-maint-keep]');
       const file = event.target.closest('[data-maint-file]');
+      const operation = event.target.closest('[data-maint-operation]');
       if (enabled) {
         const groupId = enabled.getAttribute('data-maint-group-enabled');
         const state = groupState.get(groupId);
@@ -712,14 +838,36 @@
         }
         invalidatePlan();
         updateSelectedSize();
+        return;
       }
+      if (operation) {
+        const groupId = operation.getAttribute('data-maint-group');
+        const fileId = operation.getAttribute('data-maint-operation');
+        const state = groupState.get(groupId);
+        if (state && fileId) {
+          if (operation.value === 'default') {
+            state.fileOperations.delete(fileId);
+          } else {
+            state.fileOperations.set(fileId, operation.value);
+          }
+        }
+        invalidatePlan();
+      }
+    });
+
+    byId('maintenanceLogList')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-maint-log]');
+      if (!button) return;
+      openMaintenanceLog(button.getAttribute('data-maint-log'));
     });
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    initMaintenanceTabs();
     initEvents();
     setProgress(null);
     openBrowser(config.libRoot || '/library');
+    refreshMaintenanceLogs();
     refreshPosterStatus();
     posterPollTimer = setInterval(refreshPosterStatus, 10000);
   });

@@ -8,10 +8,11 @@ vid2gif is intended for trusted private networks only. Do not expose it directly
 to the public internet.
 
 The app can browse mounted library directories, shows video paths and file names
-to users of the Web UI, can write `poster.gif` next to selected videos, and can
-replace matching Emby poster images during library maintenance. Run it behind a
-firewall or private reverse proxy, and only mount media directories that the
-container should be allowed to inspect and write to.
+to users of the Web UI, can write `poster.gif` next to selected videos, can
+replace matching Emby poster images, and can move, delete, or rename confirmed
+duplicate-cleanup files during library maintenance. Run it behind a firewall or
+private reverse proxy, and only mount media directories that the container
+should be allowed to inspect and write to.
 
 If you need internet-facing access, add authentication, CSRF protection, rate
 limiting, stricter file-serving rules, and reverse-proxy hardening before
@@ -107,6 +108,11 @@ Library Maintenance page or environment variables, it copies existing
 the original poster once as `*-poster-backup.*`. It stores run state under
 `/state` and does not create `.posters_done` marker files. Optional Emby refresh
 settings can be tested from the same page before automatic refresh is enabled.
+
+Duplicate cleanup settings live on the Settings page. Duplicate move
+destinations default to `/library/.vid2gif-duplicates`, can be changed to another
+folder under the mounted library root, and every applied cleanup writes a bounded
+JSONL audit log under `/state/maintenance-logs/duplicates`.
 
 ## Example Workflow
 

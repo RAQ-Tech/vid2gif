@@ -223,6 +223,19 @@ def _settings_context(error="", saved=False, form_values=None):
     if form_values:
         selected = form_values.get("preview_height_preset", selected)
         custom = form_values.get("preview_height_custom", custom)
+        settings = dict(settings)
+        for key in (
+            "duplicate_grouping_mode",
+            "duplicate_keeper_rule",
+            "duplicate_accessory_policy",
+            "duplicate_move_root",
+        ):
+            if key in form_values:
+                settings[key] = form_values.get(key)
+        if "duplicate_excluded_folders" in form_values:
+            settings["duplicate_excluded_folders"] = app_settings.parse_excluded_folders(
+                form_values.get("duplicate_excluded_folders")
+            )
     return {
         "settings": settings,
         "preview_height_presets": app_settings.PREVIEW_HEIGHT_PRESETS,
@@ -231,6 +244,12 @@ def _settings_context(error="", saved=False, form_values=None):
         "preview_height_label": app_settings.preview_height_label(preview_height),
         "preview_height_warning": app_settings.warning_for_preview_height(
             preview_height
+        ),
+        "duplicate_grouping_modes": app_settings.DUPLICATE_GROUPING_MODES,
+        "duplicate_keeper_rules": app_settings.DUPLICATE_KEEPER_RULES,
+        "duplicate_accessory_policies": app_settings.DUPLICATE_ACCESSORY_POLICIES,
+        "duplicate_excluded_folders_text": ", ".join(
+            settings.get("duplicate_excluded_folders") or []
         ),
         "error": error,
         "saved": saved,
@@ -255,7 +274,20 @@ def settings_page():
                 ),
                 400,
             )
-        if not app_settings.save_settings({"test_lab_preview_height": height}):
+        settings = app_settings.load_settings()
+        settings.update(
+            {
+                "test_lab_preview_height": height,
+                "duplicate_grouping_mode": request.form.get("duplicate_grouping_mode"),
+                "duplicate_keeper_rule": request.form.get("duplicate_keeper_rule"),
+                "duplicate_accessory_policy": request.form.get("duplicate_accessory_policy"),
+                "duplicate_move_root": request.form.get("duplicate_move_root"),
+                "duplicate_excluded_folders": app_settings.parse_excluded_folders(
+                    request.form.get("duplicate_excluded_folders")
+                ),
+            }
+        )
+        if not app_settings.save_settings(settings):
             return (
                 render_template(
                     "settings.html",
@@ -531,6 +563,19 @@ def api_maintenance_duplicates_apply():
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"result": result})
+
+
+@app.route("/api/maintenance/duplicates/logs")
+def api_maintenance_duplicates_logs():
+    return jsonify({"logs": maintenance.list_duplicate_cleanup_logs()})
+
+
+@app.route("/api/maintenance/duplicates/logs/<log_id>")
+def api_maintenance_duplicates_log(log_id):
+    log, err = maintenance.read_duplicate_cleanup_log(log_id)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"log": log})
 
 
 @app.route("/api/maintenance/landscape-posters/status")

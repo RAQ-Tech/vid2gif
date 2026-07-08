@@ -7,219 +7,271 @@
   <div class="workspace-heading">
     <div>
       <h1 class="h3 mb-1">Library Maintenance</h1>
-      <div class="text-muted small">Scan media folders, review duplicate candidates, and clean only confirmed files.</div>
+      <div class="text-muted small">Review focused maintenance tools without one long cleanup page.</div>
+    </div>
+    <div class="workspace-actions">
+      <a class="btn btn-primary btn-sm" href="#posters" data-maint-tab-shortcut="posters">
+        <i class="bi bi-image" aria-hidden="true"></i>
+        <span>Posters</span>
+      </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#duplicates" data-maint-tab-shortcut="duplicates">
+        <i class="bi bi-files" aria-hidden="true"></i>
+        <span>Duplicates</span>
+      </a>
     </div>
   </div>
 
-  <section class="status-strip maintenance-status-strip" aria-label="Duplicate cleanup status">
-    <div class="status-tile">
-      <div class="metric-label">Scan</div>
-      <div id="maintenanceScanState" class="metric-value">Idle</div>
-    </div>
-    <div class="status-tile status-tile-wide">
-      <div class="d-flex justify-content-between gap-3">
-        <div>
-          <div class="metric-label">Progress</div>
-          <div id="maintenanceProgressLabel" class="metric-value">Choose a folder</div>
-        </div>
-        <span id="maintenanceProgressPercent" class="small text-muted">0%</span>
-      </div>
-      <div class="progress progress-thin mt-2" role="progressbar" aria-label="Duplicate scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div id="maintenanceProgressBar" class="progress-bar" style="width: 0%"></div>
-      </div>
-    </div>
-    <div class="status-tile">
-      <div class="metric-label">Groups</div>
-      <div id="maintenanceGroupCount" class="metric-value">0</div>
-    </div>
-    <div class="status-tile">
-      <div class="metric-label">Selected Size</div>
-      <div id="maintenanceSelectedSize" class="metric-value">0 B</div>
-    </div>
-  </section>
-
-  <section class="workspace-panel maintenance-panel mb-3">
-    <div class="panel-heading">
-      <div>
-        <h2 class="h5 mb-1">Landscape Posters</h2>
-        <div class="text-muted small">Copy matching video background images over existing posters, with one preserved backup.</div>
-      </div>
-      <div class="toolbar-row mb-0">
-        <button id="posterRunButton" class="btn btn-primary btn-sm" type="button">
-          <i class="bi bi-play-fill" aria-hidden="true"></i>
-          <span>Run Now</span>
-        </button>
-        <button id="posterRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
-          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-          <span>Refresh</span>
-        </button>
-      </div>
-    </div>
-
-    <div class="metric-band">
-      <div>
-        <div class="metric-label">Automation</div>
-        <div id="posterAutomationState" class="metric-value">Loading</div>
-      </div>
-      <div class="metric-progress">
-        <div class="metric-row mt-0">
-          <span id="posterLastRun">Last run: unknown</span>
-          <span id="posterNextRun">Next run: disabled</span>
-          <span id="posterLastResult">Updated: 0</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-grid">
-      <div class="settings-panel">
-        <div class="panel-subheading">
-          <i class="bi bi-sliders" aria-hidden="true"></i>
-          <span>Automation Settings</span>
-        </div>
-        <div class="toolbar-row">
-          <div class="form-check form-switch">
-            <input id="posterAutomationEnabled" class="form-check-input" type="checkbox">
-            <label class="form-check-label" for="posterAutomationEnabled">Run automatically</label>
-          </div>
-        </div>
-        <div class="row g-3">
-          <div class="col-md-6">
-            <label class="form-label" for="posterScanInterval">Incremental scan seconds</label>
-            <input id="posterScanInterval" class="form-control" type="number" min="60" step="60" value="900">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label" for="posterFullScanInterval">Full scan seconds</label>
-            <input id="posterFullScanInterval" class="form-control" type="number" min="3600" step="3600" value="86400">
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-panel">
-        <div class="panel-subheading">
-          <i class="bi bi-hdd-network" aria-hidden="true"></i>
-          <span>Emby Refresh</span>
-        </div>
-        <div class="form-check form-switch mb-3">
-          <input id="posterEmbyRefreshEnabled" class="form-check-input" type="checkbox">
-          <label class="form-check-label" for="posterEmbyRefreshEnabled">Refresh Emby after changes</label>
-        </div>
-        <div class="row g-3">
-          <div class="col-md-7">
-            <label class="form-label" for="posterEmbyUrl">Emby URL</label>
-            <input id="posterEmbyUrl" class="form-control" placeholder="http://emby:8096">
-          </div>
-          <div class="col-md-5">
-            <label class="form-label" for="posterEmbyApiKey">API key</label>
-            <input id="posterEmbyApiKey" class="form-control" type="password" autocomplete="off" placeholder="Leave blank to keep current">
-          </div>
-        </div>
-        <div class="toolbar-row mt-3 mb-2">
-          <button id="posterEmbyTestButton" class="btn btn-outline-secondary btn-sm" type="button">
-            <i class="bi bi-plug" aria-hidden="true"></i>
-            <span>Test Emby</span>
-          </button>
-          <span id="posterEmbyConfigured" class="badge text-bg-secondary">Not configured</span>
-        </div>
-        <div class="metric-row mt-0">
-          <span id="posterEmbyLastTest">Last test: never</span>
-          <span id="posterEmbyLastRefresh">Last refresh: never</span>
-        </div>
-        <div id="posterEmbyServer" class="scan-estimate-detail mt-1">Server: unknown</div>
-        <div id="posterEmbyStatusMessage" class="scan-estimate-detail mt-1"></div>
-      </div>
-    </div>
-
-    <div class="toolbar-row mt-3">
-      <button id="posterSaveSettingsButton" class="btn btn-outline-primary btn-sm" type="button">
-        <i class="bi bi-save" aria-hidden="true"></i>
-        <span>Save Settings</span>
+  <ul class="nav nav-tabs workspace-tabs" role="tablist" aria-label="Library maintenance sections">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="tab-posters" data-bs-toggle="tab" data-bs-target="#pane-posters" type="button" role="tab" aria-controls="pane-posters" aria-selected="true" data-maint-tab-hash="posters">
+        <i class="bi bi-image" aria-hidden="true"></i>
+        <span>Landscape Posters</span>
       </button>
-    </div>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-duplicates" data-bs-toggle="tab" data-bs-target="#pane-duplicates" type="button" role="tab" aria-controls="pane-duplicates" aria-selected="false" data-maint-tab-hash="duplicates">
+        <i class="bi bi-files" aria-hidden="true"></i>
+        <span>Duplicates</span>
+      </button>
+    </li>
+  </ul>
 
-    <div class="scan-estimate mt-3" aria-live="polite">
-      <i class="bi bi-info-circle" aria-hidden="true"></i>
-      <div>
-        <div id="posterMessageTitle">Landscape poster status loading.</div>
-        <div id="posterMessageDetail" class="scan-estimate-detail"></div>
+  <div class="tab-content workspace-content">
+    <section class="tab-pane fade show active" id="pane-posters" role="tabpanel" aria-labelledby="tab-posters" tabindex="0">
+      <div class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Landscape Posters</h2>
+            <div class="text-muted small">Copy matching video background images over existing posters, with one preserved backup.</div>
+          </div>
+          <div class="toolbar-row mb-0">
+            <button id="posterRunButton" class="btn btn-primary btn-sm" type="button">
+              <i class="bi bi-play-fill" aria-hidden="true"></i>
+              <span>Run Now</span>
+            </button>
+            <button id="posterRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
+              <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="metric-band">
+          <div>
+            <div class="metric-label">Automation</div>
+            <div id="posterAutomationState" class="metric-value">Loading</div>
+          </div>
+          <div class="metric-progress">
+            <div class="metric-row mt-0">
+              <span id="posterLastRun">Last run: unknown</span>
+              <span id="posterNextRun">Next run: disabled</span>
+              <span id="posterLastResult">Updated: 0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="settings-panel">
+            <div class="panel-subheading">
+              <i class="bi bi-sliders" aria-hidden="true"></i>
+              <span>Automation Settings</span>
+            </div>
+            <div class="toolbar-row">
+              <div class="form-check form-switch">
+                <input id="posterAutomationEnabled" class="form-check-input" type="checkbox">
+                <label class="form-check-label" for="posterAutomationEnabled">Run automatically</label>
+              </div>
+            </div>
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label" for="posterScanInterval">Incremental scan seconds</label>
+                <input id="posterScanInterval" class="form-control" type="number" min="60" step="60" value="900">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label" for="posterFullScanInterval">Full scan seconds</label>
+                <input id="posterFullScanInterval" class="form-control" type="number" min="3600" step="3600" value="86400">
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-panel">
+            <div class="panel-subheading">
+              <i class="bi bi-hdd-network" aria-hidden="true"></i>
+              <span>Emby Refresh</span>
+            </div>
+            <div class="form-check form-switch mb-3">
+              <input id="posterEmbyRefreshEnabled" class="form-check-input" type="checkbox">
+              <label class="form-check-label" for="posterEmbyRefreshEnabled">Refresh Emby after changes</label>
+            </div>
+            <div class="row g-3">
+              <div class="col-md-7">
+                <label class="form-label" for="posterEmbyUrl">Emby URL</label>
+                <input id="posterEmbyUrl" class="form-control" placeholder="http://emby:8096">
+              </div>
+              <div class="col-md-5">
+                <label class="form-label" for="posterEmbyApiKey">API key</label>
+                <input id="posterEmbyApiKey" class="form-control" type="password" autocomplete="off" placeholder="Leave blank to keep current">
+              </div>
+            </div>
+            <div class="toolbar-row mt-3 mb-2">
+              <button id="posterEmbyTestButton" class="btn btn-outline-secondary btn-sm" type="button">
+                <i class="bi bi-plug" aria-hidden="true"></i>
+                <span>Test Emby</span>
+              </button>
+              <span id="posterEmbyConfigured" class="badge text-bg-secondary">Not configured</span>
+            </div>
+            <div class="metric-row mt-0">
+              <span id="posterEmbyLastTest">Last test: never</span>
+              <span id="posterEmbyLastRefresh">Last refresh: never</span>
+            </div>
+            <div id="posterEmbyServer" class="scan-estimate-detail mt-1">Server: unknown</div>
+            <div id="posterEmbyStatusMessage" class="scan-estimate-detail mt-1"></div>
+          </div>
+        </div>
+
+        <div class="toolbar-row mt-3">
+          <button id="posterSaveSettingsButton" class="btn btn-outline-primary btn-sm" type="button">
+            <i class="bi bi-save" aria-hidden="true"></i>
+            <span>Save Settings</span>
+          </button>
+        </div>
+
+        <div class="scan-estimate mt-3" aria-live="polite">
+          <i class="bi bi-info-circle" aria-hidden="true"></i>
+          <div>
+            <div id="posterMessageTitle">Landscape poster status loading.</div>
+            <div id="posterMessageDetail" class="scan-estimate-detail"></div>
+          </div>
+        </div>
+
+        <div id="posterRecentItems" class="table-responsive workspace-table-wrap mt-3">
+          <table class="table table-hover align-middle workspace-table">
+            <thead><tr><th>Status</th><th>Background</th><th>Poster</th><th>Detail</th></tr></thead>
+            <tbody><tr><td colspan="4" class="text-muted text-center py-4">No landscape poster run yet.</td></tr></tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div id="posterRecentItems" class="table-responsive workspace-table-wrap mt-3">
-      <table class="table table-hover align-middle workspace-table">
-        <thead><tr><th>Status</th><th>Background</th><th>Poster</th><th>Detail</th></tr></thead>
-        <tbody><tr><td colspan="4" class="text-muted text-center py-4">No landscape poster run yet.</td></tr></tbody>
-      </table>
-    </div>
-  </section>
+    <section class="tab-pane fade" id="pane-duplicates" role="tabpanel" aria-labelledby="tab-duplicates" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Duplicate cleanup status">
+        <div class="status-tile">
+          <div class="metric-label">Scan</div>
+          <div id="maintenanceScanState" class="metric-value">Idle</div>
+        </div>
+        <div class="status-tile status-tile-wide">
+          <div class="d-flex justify-content-between gap-3">
+            <div>
+              <div class="metric-label">Progress</div>
+              <div id="maintenanceProgressLabel" class="metric-value">Choose a folder</div>
+            </div>
+            <span id="maintenanceProgressPercent" class="small text-muted">0%</span>
+          </div>
+          <div class="progress progress-thin mt-2" role="progressbar" aria-label="Duplicate scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="maintenanceProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Groups</div>
+          <div id="maintenanceGroupCount" class="metric-value">0</div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Selected Size</div>
+          <div id="maintenanceSelectedSize" class="metric-value">0 B</div>
+        </div>
+      </section>
 
-  <section class="workspace-panel maintenance-panel">
-    <div class="panel-heading">
-      <div>
-        <h2 class="h5 mb-1">Duplicate Identification</h2>
-        <div class="text-muted small">Only videos in the same folder with matching cleaned names are grouped.</div>
-      </div>
-    </div>
+      <section class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Duplicate Identification</h2>
+            <div class="text-muted small">Videos are grouped using the Duplicate Cleanup settings.</div>
+          </div>
+          <a class="btn btn-outline-secondary btn-sm" href="/settings">
+            <i class="bi bi-gear" aria-hidden="true"></i>
+            <span>Cleanup Settings</span>
+          </a>
+        </div>
 
-    <div class="settings-panel">
-      <div class="panel-subheading">
-        <i class="bi bi-folder2-open" aria-hidden="true"></i>
-        <span>Scan Source</span>
-      </div>
-      <label class="form-label" for="maintenancePath">Library path</label>
-      <div class="input-group">
-        <input id="maintenancePath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
-        <button id="maintenanceBrowseButton" class="btn btn-outline-secondary" type="button">
-          <i class="bi bi-search" aria-hidden="true"></i>
-          <span>Browse</span>
-        </button>
-        <button id="maintenanceScanButton" class="btn btn-primary" type="button">
-          <i class="bi bi-search" aria-hidden="true"></i>
-          <span>Scan</span>
-        </button>
-      </div>
-      <div id="maintenanceBrowser" class="media-browser mt-3"></div>
-    </div>
-  </section>
+        <div class="settings-panel">
+          <div class="panel-subheading">
+            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+            <span>Scan Source</span>
+          </div>
+          <label class="form-label" for="maintenancePath">Library path</label>
+          <div class="input-group">
+            <input id="maintenancePath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
+            <button id="maintenanceBrowseButton" class="btn btn-outline-secondary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Browse</span>
+            </button>
+            <button id="maintenanceScanButton" class="btn btn-primary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Scan</span>
+            </button>
+          </div>
+          <div id="maintenanceBrowser" class="media-browser mt-3"></div>
+        </div>
+      </section>
 
-  <section class="workspace-panel maintenance-panel mt-3">
-    <div class="panel-heading">
-      <div>
-        <h2 class="h5 mb-1">Review Cleanup</h2>
-        <div class="text-muted small">Choose the keeper for each group, then confirm the exact file action plan.</div>
-      </div>
-      <div class="toolbar-row mb-0">
-        <label class="form-label mb-0 compact-control" for="maintenanceAction">
-          Action
-          <select id="maintenanceAction" class="form-select form-select-sm">
-            <option value="move" selected>Move to quarantine</option>
-            <option value="delete">Delete immediately</option>
-          </select>
-        </label>
-        <button id="maintenancePlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
-          <i class="bi bi-list-check" aria-hidden="true"></i>
-          <span>Review Plan</span>
-        </button>
-        <button id="maintenanceApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
-          <i class="bi bi-check2-circle" aria-hidden="true"></i>
-          <span>Apply</span>
-        </button>
-      </div>
-    </div>
+      <section class="workspace-panel maintenance-panel mt-3">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Review Cleanup</h2>
+            <div class="text-muted small">Choose the keeper, operation overrides, and final file action plan.</div>
+          </div>
+          <div class="toolbar-row mb-0">
+            <label class="form-label mb-0 compact-control" for="maintenanceAction">
+              Action
+              <select id="maintenanceAction" class="form-select form-select-sm">
+                <option value="move" selected>Move to quarantine</option>
+                <option value="delete">Delete immediately</option>
+              </select>
+            </label>
+            <button id="maintenancePlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
+              <i class="bi bi-list-check" aria-hidden="true"></i>
+              <span>Review Plan</span>
+            </button>
+            <button id="maintenanceApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+              <i class="bi bi-check2-circle" aria-hidden="true"></i>
+              <span>Apply</span>
+            </button>
+          </div>
+        </div>
 
-    <div id="maintenanceMessage" class="scan-estimate" aria-live="polite">
-      <i class="bi bi-info-circle" aria-hidden="true"></i>
-      <div>
-        <div id="maintenanceMessageTitle">No scan results yet.</div>
-        <div id="maintenanceMessageDetail" class="scan-estimate-detail"></div>
-      </div>
-    </div>
+        <div id="maintenanceMessage" class="scan-estimate" aria-live="polite">
+          <i class="bi bi-info-circle" aria-hidden="true"></i>
+          <div>
+            <div id="maintenanceMessageTitle">No scan results yet.</div>
+            <div id="maintenanceMessageDetail" class="scan-estimate-detail"></div>
+          </div>
+        </div>
 
-    <div id="maintenanceGroups" class="maintenance-groups mt-3">
-      <div class="text-muted text-center py-4">Duplicate groups will appear here after a scan.</div>
-    </div>
+        <div id="maintenanceGroups" class="maintenance-groups mt-3">
+          <div class="text-muted text-center py-4">Duplicate groups will appear here after a scan.</div>
+        </div>
 
-    <div id="maintenancePlanSummary" class="maintenance-plan-summary mt-3"></div>
-  </section>
+        <div id="maintenancePlanSummary" class="maintenance-plan-summary mt-3"></div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel mt-3">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Cleanup Logs</h2>
+            <div class="text-muted small">Recent duplicate cleanup runs are stored as bounded JSONL logs.</div>
+          </div>
+          <button id="maintenanceRefreshLogsButton" class="btn btn-outline-secondary btn-sm" type="button">
+            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            <span>Refresh Logs</span>
+          </button>
+        </div>
+        <div id="maintenanceLogList" class="maintenance-plan-summary">
+          <div class="text-muted text-center py-4">No cleanup logs loaded.</div>
+        </div>
+        <pre id="maintenanceLogContent" class="maintenance-log-view mt-3 d-none"></pre>
+      </section>
+    </section>
+  </div>
 </div>
 
 <script>
