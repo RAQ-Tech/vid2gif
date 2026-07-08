@@ -391,6 +391,44 @@ def test_maintenance_scan_route_rejects_symlink(monkeypatch, tmp_path):
     assert res.get_json()["error"] == "Path not found"
 
 
+def test_maintenance_scan_and_status_routes_return_json_settings(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    keep = _write(movie / "Movie 2160p.mkv", b"keep")
+    remove = _write(movie / "Movie 1080p.mkv", b"remove")
+    _reset_maintenance(
+        monkeypatch,
+        {
+            keep.name: {"width": 3840, "height": 2160},
+            remove.name: {"width": 1920, "height": 1080},
+        },
+        settings_overrides={"duplicate_excluded_folders": ["trailers", "trailer"]},
+    )
+    monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
+    client = routes.app.test_client()
+
+    res = client.post(
+        "/api/maintenance/duplicates/scan",
+        json={"path": str(movie), "synchronous": True},
+    )
+
+    assert res.status_code == 200
+    assert res.is_json
+    scan = res.get_json()["scan"]
+    assert scan["status"] == "success"
+    assert scan["settings"]["excluded_folders"] == ["trailer", "trailers"]
+    assert isinstance(scan["settings"]["excluded_folders"], list)
+
+    status = client.get(
+        "/api/maintenance/duplicates/status",
+        query_string={"scan_id": scan["id"]},
+    )
+    assert status.status_code == 200
+    assert status.is_json
+    status_scan = status.get_json()["scan"]
+    assert status_scan["settings"]["excluded_folders"] == ["trailer", "trailers"]
+
+
 def test_maintenance_routes_report_missing_scan_and_malformed_plan():
     client = routes.app.test_client()
 
@@ -427,6 +465,7 @@ def test_maintenance_page_and_static_assets_render():
     assert "fetch('/api/maintenance/duplicates/apply'" in script
     assert "fetch('/api/maintenance/duplicates/logs')" in script
     assert "maintenance_active_tab" in script
+    assert "readJsonResponse" in script
     assert "data-maint-operation" in script
     assert "escapeHtml(file.source_path)" in script
     assert "textContent" in script

@@ -90,6 +90,23 @@ def duplicate_settings():
     }
 
 
+def public_duplicate_settings(settings):
+    settings = settings or {}
+    return {
+        "grouping_mode": str(settings.get("grouping_mode") or "balanced"),
+        "keeper_rule": str(settings.get("keeper_rule") or "quality"),
+        "accessory_policy": str(
+            settings.get("accessory_policy") or "rename_unmatched"
+        ),
+        "move_root": str(
+            settings.get("move_root") or app_settings.DEFAULT_DUPLICATE_MOVE_ROOT
+        ),
+        "excluded_folders": sorted(
+            str(item) for item in (settings.get("excluded_folders") or [])
+        ),
+    }
+
+
 def _effective_move_root(settings, lib_root):
     configured = settings.get("move_root") or app_settings.DEFAULT_DUPLICATE_MOVE_ROOT
     try:
@@ -668,7 +685,7 @@ def public_scan(scan):
         "duplicate_group_count": len(scan.get("groups") or []),
         "reclaimable_bytes": scan.get("reclaimable_bytes", 0),
         "reclaimable_label": format_size(scan.get("reclaimable_bytes", 0)),
-        "settings": dict(scan.get("settings") or {}),
+        "settings": public_duplicate_settings(scan.get("settings")),
         "groups": [_public_group(group) for group in scan.get("groups") or []],
     }
 

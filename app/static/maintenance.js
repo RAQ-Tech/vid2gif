@@ -48,6 +48,18 @@
     if (detailEl) detailEl.textContent = detail || '';
   }
 
+  async function readJsonResponse(res) {
+    const text = await res.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      const status = res?.status ? ` ${res.status}` : '';
+      const label = res?.statusText ? ` ${res.statusText}` : '';
+      throw new Error(`Server returned${status}${label}`.trim());
+    }
+  }
+
   function setProgress(scan) {
     const state = byId('maintenanceScanState');
     const label = byId('maintenanceProgressLabel');
@@ -224,7 +236,7 @@
     browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
     try {
       const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
         return;
@@ -280,7 +292,7 @@
     if (!scanId) return;
     try {
       const res = await fetch(`/api/maintenance/duplicates/status?scan_id=${encodeURIComponent(scanId)}`);
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setMessage(data.error || 'Scan unavailable', '');
         stopPolling();
@@ -313,7 +325,7 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({path})
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setMessage(data.error || 'Scan could not start', '');
         return;
@@ -388,7 +400,7 @@
           groups: collectOverrides()
         })
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setMessage(data.error || 'Plan could not be built', '');
         return;
@@ -420,7 +432,7 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({plan_id: currentPlan.id})
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setMessage(data.error || 'Cleanup failed', '');
         return;
@@ -463,7 +475,7 @@
   async function refreshMaintenanceLogs() {
     try {
       const res = await fetch('/api/maintenance/duplicates/logs');
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) return;
       renderMaintenanceLogs(data.logs || []);
     } catch (e) {
@@ -479,7 +491,7 @@
     output.textContent = 'Loading log...';
     try {
       const res = await fetch(`/api/maintenance/duplicates/logs/${encodeURIComponent(logId)}`);
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         output.textContent = data.error || 'Log unavailable';
         return;
@@ -631,7 +643,7 @@
   async function refreshPosterStatus() {
     try {
       const res = await fetch('/api/maintenance/landscape-posters/status');
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setPosterMessage(data.error || 'Landscape poster status unavailable', '');
         return;
@@ -669,7 +681,7 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(collectPosterSettings())
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setPosterMessage(data.error || 'Settings could not be saved', '');
         return;
@@ -698,7 +710,7 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(collectPosterSettings())
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setPosterMessage(data.error || 'Emby connection test failed', '');
         return;
@@ -726,7 +738,7 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({path: config.libRoot || '/library', mode: 'full'})
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         setPosterMessage(data.error || 'Landscape poster run could not start', '');
         return;
