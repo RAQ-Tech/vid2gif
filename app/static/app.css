@@ -339,6 +339,15 @@ body {
   gap: 14px;
 }
 
+.maintenance-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 0;
+}
+
 .maintenance-group {
   padding: 14px;
   border: 1px solid var(--bs-border-color);
@@ -363,6 +372,10 @@ body {
   margin-top: 10px;
   color: var(--bs-secondary-color);
   font-size: 0.875rem;
+}
+
+.maintenance-group-detail {
+  margin-top: 12px;
 }
 
 .maintenance-table td,

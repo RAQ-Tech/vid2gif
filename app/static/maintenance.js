@@ -2,8 +2,12 @@
   const config = window.vid2gifMaintenanceConfig || {};
   const maintenanceTabHashes = ['posters', 'duplicates'];
   const groupState = new Map();
+  const groupSummaries = new Map();
   let currentScan = null;
   let currentPlan = null;
+  let currentGroupsPage = null;
+  let groupPageOffset = 0;
+  let groupPageLimit = 25;
   let pollTimer = null;
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
@@ -128,16 +132,37 @@
   }
 
   function ensureGroupState(group) {
+    if (!group?.id) {
+      return {
+        enabled: true,
+        keepId: '',
+        includedFileIds: new Set(),
+        fileOperations: new Map(),
+        candidateSignature: '',
+        dirty: false,
+        expanded: false,
+        loading: false
+      };
+    }
     if (!groupState.has(group.id)) {
       groupState.set(group.id, {
         enabled: true,
         keepId: group.recommended_keep_id,
         includedFileIds: new Set(),
         fileOperations: new Map(),
-        candidateSignature: ''
+        candidateSignature: '',
+        dirty: false,
+        expanded: false,
+        loading: false
       });
     }
     const state = groupState.get(group.id);
+    if (!state.keepId && group.recommended_keep_id) {
+      state.keepId = group.recommended_keep_id;
+    }
+    if (!(group.videos || []).length) {
+      return state;
+    }
     const candidates = groupCandidateFiles(group, state);
     const signature = candidates.map(file => file.id).join('|');
     if (state.candidateSignature !== signature) {
@@ -149,18 +174,79 @@
   }
 
   function updateSelectedSize() {
-    let total = 0;
-    (currentScan?.groups || []).forEach(group => {
-      const state = ensureGroupState(group);
-      if (!state.enabled) return;
-      groupCandidateFiles(group, state).forEach(file => {
-        if (state.includedFileIds.has(file.id)) {
-          total += Number(file.size_bytes || 0);
-        }
-      });
+    let total = Number(currentScan?.reclaimable_bytes || 0);
+    groupState.forEach((state, groupId) => {
+      if (!state.dirty) return;
+      const summary = groupSummaries.get(groupId);
+      if (!summary) return;
+      const original = Number(summary.reclaimable_bytes || 0);
+      if (!state.enabled) {
+        total -= original;
+        return;
+      }
+      const detail = summary.videos ? summary : null;
+      if (detail) {
+        let selected = 0;
+        groupCandidateFiles(detail, state).forEach(file => {
+          if (state.includedFileIds.has(file.id)) {
+            selected += Number(file.size_bytes || 0);
+          }
+        });
+        total += selected - original;
+      }
     });
+    total = Math.max(0, total);
     const selected = byId('maintenanceSelectedSize');
-    if (selected) selected.textContent = formatSize(total);
+    if (selected) selected.textContent = currentPlan?.total_size_label || formatSize(total);
+  }
+
+  function markGroupDirty(groupId) {
+    const state = groupState.get(groupId);
+    if (state) state.dirty = true;
+    invalidatePlan();
+    updateSelectedSize();
+  }
+
+  function mergeGroupDetail(group) {
+    if (!group?.id) return;
+    const existing = groupSummaries.get(group.id) || {};
+    groupSummaries.set(group.id, {...existing, ...group});
+    if (currentGroupsPage?.groups) {
+      currentGroupsPage.groups = currentGroupsPage.groups.map(item =>
+        item.id === group.id ? {...item, ...group} : item
+      );
+    }
+    ensureGroupState(groupSummaries.get(group.id));
+  }
+
+  function currentPageGroups() {
+    return (currentGroupsPage?.groups || []).map(group => groupSummaries.get(group.id) || group);
+  }
+
+  function pageRangeText(page) {
+    const total = Number(page?.total || 0);
+    if (!total) return '0 of 0';
+    const start = Number(page.offset || 0) + 1;
+    const end = Math.min(total, Number(page.offset || 0) + Number(page.count || 0));
+    return `${start}-${end} of ${total}`;
+  }
+
+  function renderPager(page) {
+    if (!page) return '';
+    const pageSizes = [25, 50, 100].map(size =>
+      `<option value="${size}"${Number(page.limit) === size ? ' selected' : ''}>${size}</option>`
+    ).join('');
+    return `<div class="maintenance-pager">` +
+      `<div class="text-muted small">${escapeHtml(pageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
+      `<div class="toolbar-row mb-0">` +
+      `<label class="form-label mb-0 compact-control">Show` +
+      `<select class="form-select form-select-sm" data-maint-page-limit>` +
+      `${pageSizes}` +
+      `</select></label>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
+      `</div>` +
+      `</div>`;
   }
 
   function groupOption(video, recommendedId) {
@@ -182,13 +268,89 @@
       `</tr>`;
   }
 
+  async function loadGroupDetails(groupId) {
+    if (!currentScan?.id || !groupId) return;
+    const state = groupState.get(groupId);
+    if (state) state.loading = true;
+    renderGroups();
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/groups/${encodeURIComponent(groupId)}?scan_id=${encodeURIComponent(currentScan.id)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setMessage(data.error || 'Group details unavailable', '');
+        return;
+      }
+      mergeGroupDetail(data.group);
+    } catch (e) {
+      setMessage('Group details unavailable', e.message || '');
+    } finally {
+      const latest = groupState.get(groupId);
+      if (latest) latest.loading = false;
+      renderGroups();
+      updateSelectedSize();
+    }
+  }
+
+  async function loadGroupsPage(offset = groupPageOffset) {
+    if (!currentScan?.id || currentScan.status !== 'success') return;
+    const target = byId('maintenanceGroups');
+    if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading duplicate groups...</div>';
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/groups?scan_id=${encodeURIComponent(currentScan.id)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(groupPageLimit)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setMessage(data.error || 'Duplicate groups unavailable', '');
+        return;
+      }
+      currentGroupsPage = data;
+      groupPageOffset = Number(data.offset || 0);
+      groupPageLimit = Number(data.limit || groupPageLimit);
+      (data.groups || []).forEach(group => {
+        const existing = groupSummaries.get(group.id) || {};
+        groupSummaries.set(group.id, {...existing, ...group});
+      });
+      renderGroups();
+      updateSelectedSize();
+      if (data.large_result) {
+        setMessage(
+          `${data.total || 0} duplicate groups found`,
+          `Large result set loaded ${data.limit || groupPageLimit} groups at a time.`
+        );
+      }
+    } catch (e) {
+      setMessage('Duplicate groups unavailable', e.message || '');
+    }
+  }
+
   function renderGroup(group) {
     const state = ensureGroupState(group);
-    const candidates = groupCandidateFiles(group, state);
+    const expanded = Boolean(state.expanded);
+    const hasDetails = Boolean((group.videos || []).length);
+    const loading = Boolean(state.loading);
+    const candidates = hasDetails ? groupCandidateFiles(group, state) : [];
     const rows = candidates.length
       ? candidates.map(file => fileRow(group, file, state)).join('')
       : '<tr><td colspan="6" class="text-muted text-center py-3">No files selected for cleanup in this group.</td></tr>';
-    const keeper = (group.videos || []).find(video => video.id === state.keepId);
+    const keeper = hasDetails
+      ? (group.videos || []).find(video => video.id === state.keepId)
+      : null;
+    const recommended = keeper?.name || group.recommended_keep_name || '';
+    const detail = expanded
+      ? (loading
+        ? '<div class="text-muted small mt-3">Loading group details...</div>'
+        : (hasDetails
+          ? `<div class="maintenance-group-detail">` +
+            `<label class="form-label mb-0 compact-control">Keeper` +
+            `<select class="form-select form-select-sm" data-maint-keep="${escapeHtml(group.id)}">` +
+            `${(group.videos || []).map(video => groupOption(video, state.keepId)).join('')}` +
+            `</select></label>` +
+            `<div class="table-responsive workspace-table-wrap mt-2">` +
+            `<table class="table table-hover align-middle workspace-table maintenance-table">` +
+            `<thead><tr><th>Include</th><th>Kind</th><th>File</th><th>Details</th><th>Operation</th><th>Size</th></tr></thead>` +
+            `<tbody>${rows}</tbody>` +
+            `</table></div></div>`
+          : '<div class="text-muted small mt-3">Open this group to load file details.</div>'))
+      : '';
     return `<section class="maintenance-group" data-maint-group-card="${escapeHtml(group.id)}">` +
       `<div class="maintenance-group-heading">` +
       `<div class="form-check">` +
@@ -199,34 +361,37 @@
       `<div class="fw-semibold">${escapeHtml(group.normalized_name || 'Duplicate group')}</div>` +
       `<div class="text-muted small path-cell"><code title="${escapeHtml(group.folder)}">${escapeHtml(group.folder)}</code></div>` +
       `</div>` +
-      `<label class="form-label mb-0 compact-control">Keeper` +
-      `<select class="form-select form-select-sm" data-maint-keep="${escapeHtml(group.id)}">` +
-      `${(group.videos || []).map(video => groupOption(video, state.keepId)).join('')}` +
-      `</select></label>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-expand="${escapeHtml(group.id)}">` +
+      `<i class="bi ${expanded ? 'bi-chevron-up' : 'bi-chevron-down'}" aria-hidden="true"></i>` +
+      `<span>${expanded ? 'Collapse' : 'Expand'}</span></button>` +
       `</div>` +
       `<div class="maintenance-group-summary">` +
-      `<span>${escapeHtml((group.videos || []).length)} videos</span>` +
+      `<span>${escapeHtml(group.video_count ?? (group.videos || []).length)} videos</span>` +
       `<span>${escapeHtml(group.accessory_count || 0)} accessory files</span>` +
-      `<span>Recommended: ${escapeHtml(keeper?.name || '')}</span>` +
+      `<span>Recommended: ${escapeHtml(recommended)}</span>` +
       `<span>Default reclaimable: ${escapeHtml(group.reclaimable_label || '')}</span>` +
       `</div>` +
-      `<div class="table-responsive workspace-table-wrap mt-2">` +
-      `<table class="table table-hover align-middle workspace-table maintenance-table">` +
-      `<thead><tr><th>Include</th><th>Kind</th><th>File</th><th>Details</th><th>Operation</th><th>Size</th></tr></thead>` +
-      `<tbody>${rows}</tbody>` +
-      `</table></div>` +
+      `${detail}` +
       `</section>`;
   }
 
-  function renderGroups(scan) {
+  function renderGroups() {
     const target = byId('maintenanceGroups');
     if (!target) return;
-    if (!scan || !(scan.groups || []).length) {
-      target.innerHTML = '<div class="text-muted text-center py-4">No duplicate groups found.</div>';
+    if (!currentScan || currentScan.status !== 'success') {
+      target.innerHTML = '<div class="text-muted text-center py-4">Duplicate groups will appear here after a scan.</div>';
       updateSelectedSize();
       return;
     }
-    target.innerHTML = scan.groups.map(renderGroup).join('');
+    if (!currentGroupsPage || !(currentGroupsPage.groups || []).length) {
+      target.innerHTML = currentScan.duplicate_group_count
+        ? `${currentGroupsPage ? renderPager(currentGroupsPage) : ''}<div class="text-muted text-center py-4">No duplicate groups on this page.</div>`
+        : '<div class="text-muted text-center py-4">No duplicate groups found.</div>';
+      updateSelectedSize();
+      return;
+    }
+    const groups = currentPageGroups();
+    target.innerHTML = `${renderPager(currentGroupsPage)}${groups.map(renderGroup).join('')}${renderPager(currentGroupsPage)}`;
     updateSelectedSize();
   }
 
@@ -268,16 +433,21 @@
   function handleScan(scan) {
     currentScan = scan;
     setProgress(scan);
-    renderGroups(scan);
+    renderGroups();
     const planButton = byId('maintenancePlanButton');
-    if (planButton) planButton.disabled = !scan || scan.status !== 'success' || !(scan.groups || []).length;
+    if (planButton) planButton.disabled = !scan || scan.status !== 'success' || !(scan.duplicate_group_count || 0);
     if (!scan) {
       setMessage('No scan results yet.', '');
     } else if (scan.status === 'success') {
       setMessage(
         `${scan.duplicate_group_count || 0} duplicate groups found`,
-        scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : ''
+        scan.large_result
+          ? `Large result set. Loading ${groupPageLimit} groups at a time.`
+          : (scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '')
       );
+      if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
+        loadGroupsPage(0);
+      }
     } else if (scan.status === 'failed') {
       setMessage('Scan failed', scan.error || '');
     } else {
@@ -313,6 +483,9 @@
     }
     stopPolling();
     groupState.clear();
+    groupSummaries.clear();
+    currentGroupsPage = null;
+    groupPageOffset = 0;
     currentPlan = null;
     invalidatePlan();
     setMessage('Starting scan', '');
@@ -340,8 +513,10 @@
   }
 
   function collectOverrides() {
-    return (currentScan?.groups || []).map(group => {
-      const state = ensureGroupState(group);
+    const overrides = [];
+    groupState.forEach((state, groupId) => {
+      if (!state.dirty) return;
+      const group = groupSummaries.get(groupId) || {id: groupId, videos: [], recommended_keep_id: state.keepId};
       const keepId = state.keepId || group.recommended_keep_id;
       const candidates = groupCandidateFiles(group, state);
       const fileOperations = candidates
@@ -350,15 +525,19 @@
           operation: state.fileOperations?.get(file.id) || 'default'
         }))
         .filter(item => item.operation !== 'default');
-      return {
+      const override = {
         id: group.id,
-        enabled: state.enabled,
-        keep_video_id: keepId,
-        remove_video_ids: (group.videos || []).filter(video => video.id !== keepId).map(video => video.id),
-        include_file_ids: candidates.filter(file => state.includedFileIds.has(file.id)).map(file => file.id),
-        file_operations: fileOperations
+        enabled: state.enabled
       };
+      if ((group.videos || []).length) {
+        override.keep_video_id = keepId;
+        override.remove_video_ids = (group.videos || []).filter(video => video.id !== keepId).map(video => video.id);
+        override.include_file_ids = candidates.filter(file => state.includedFileIds.has(file.id)).map(file => file.id);
+        override.file_operations = fileOperations;
+      }
+      overrides.push(override);
     });
+    return overrides;
   }
 
   function renderPlan(plan) {
@@ -802,6 +981,31 @@
       updateSelectedSize();
     });
 
+    byId('maintenanceGroups')?.addEventListener('click', event => {
+      const page = event.target.closest('[data-maint-page]');
+      const expand = event.target.closest('[data-maint-expand]');
+      if (page) {
+        const direction = page.getAttribute('data-maint-page');
+        if (direction === 'next' && currentGroupsPage?.has_next) {
+          loadGroupsPage(currentGroupsPage.next_offset);
+        } else if (direction === 'prev' && currentGroupsPage?.has_previous) {
+          loadGroupsPage(currentGroupsPage.previous_offset);
+        }
+        return;
+      }
+      if (expand) {
+        const groupId = expand.getAttribute('data-maint-expand');
+        const group = groupSummaries.get(groupId) || {id: groupId};
+        const state = ensureGroupState(group);
+        state.expanded = !state.expanded;
+        if (state.expanded && !(group.videos || []).length) {
+          loadGroupDetails(groupId);
+        } else {
+          renderGroups();
+        }
+      }
+    });
+
     byId('maintenanceBrowser')?.addEventListener('click', event => {
       const folder = event.target.closest('[data-maint-folder]');
       const choose = event.target.closest('[data-maint-choose]');
@@ -818,11 +1022,18 @@
       const keep = event.target.closest('[data-maint-keep]');
       const file = event.target.closest('[data-maint-file]');
       const operation = event.target.closest('[data-maint-operation]');
+      const pageLimit = event.target.closest('[data-maint-page-limit]');
+      if (pageLimit) {
+        groupPageLimit = Number(pageLimit.value || 25);
+        groupPageOffset = 0;
+        loadGroupsPage(0);
+        return;
+      }
       if (enabled) {
         const groupId = enabled.getAttribute('data-maint-group-enabled');
-        const state = groupState.get(groupId);
+        const state = ensureGroupState(groupSummaries.get(groupId) || {id: groupId});
         if (state) state.enabled = enabled.checked;
-        invalidatePlan();
+        markGroupDirty(groupId);
         renderGroups(currentScan);
         return;
       }
@@ -833,7 +1044,7 @@
           state.keepId = keep.value;
           state.candidateSignature = '';
         }
-        invalidatePlan();
+        markGroupDirty(groupId);
         renderGroups(currentScan);
         return;
       }
@@ -848,8 +1059,7 @@
             state.includedFileIds.delete(fileId);
           }
         }
-        invalidatePlan();
-        updateSelectedSize();
+        markGroupDirty(groupId);
         return;
       }
       if (operation) {
@@ -863,7 +1073,7 @@
             state.fileOperations.set(fileId, operation.value);
           }
         }
-        invalidatePlan();
+        markGroupDirty(groupId);
       }
     });
 

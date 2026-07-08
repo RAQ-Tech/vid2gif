@@ -1,4 +1,5 @@
 import os
+import time
 
 import pytest
 
@@ -35,6 +36,14 @@ def _scan(lib, target, monkeypatch, metadata_by_name=None, settings_overrides=No
     assert err is None
     assert scan["status"] == "success"
     return scan
+
+
+def _write_duplicate_pair(lib, folder_name, base_name=None):
+    folder = lib / folder_name
+    base_name = base_name or folder_name
+    keep = _write(folder / f"{base_name}.1080p.mkv", b"a" * 200)
+    remove = _write(folder / f"{base_name}.720p.mkv", b"b" * 100)
+    return keep, remove
 
 
 def test_duplicate_name_normalization_removes_quality_tags():
@@ -493,6 +502,7 @@ def test_maintenance_scan_and_status_routes_return_json_settings(monkeypatch, tm
     assert scan["status"] == "success"
     assert scan["settings"]["excluded_folders"] == ["trailer", "trailers"]
     assert isinstance(scan["settings"]["excluded_folders"], list)
+    assert "groups" not in scan
 
     status = client.get(
         "/api/maintenance/duplicates/status",
@@ -502,12 +512,93 @@ def test_maintenance_scan_and_status_routes_return_json_settings(monkeypatch, tm
     assert status.is_json
     status_scan = status.get_json()["scan"]
     assert status_scan["settings"]["excluded_folders"] == ["trailer", "trailers"]
+    assert "groups" not in status_scan
+
+    groups_res = client.get(
+        "/api/maintenance/duplicates/groups",
+        query_string={"scan_id": scan["id"], "offset": 0, "limit": 1},
+    )
+    assert groups_res.status_code == 200
+    groups = groups_res.get_json()
+    assert groups["total"] == 1
+    assert groups["count"] == 1
+    assert "videos" not in groups["groups"][0]
+
+    detail_res = client.get(
+        f"/api/maintenance/duplicates/groups/{groups['groups'][0]['id']}",
+        query_string={"scan_id": scan["id"]},
+    )
+    assert detail_res.status_code == 200
+    detail = detail_res.get_json()["group"]
+    assert len(detail["videos"]) == 2
+
+
+def test_duplicate_groups_payload_caps_large_result_pages(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    for index in range(120):
+        _write_duplicate_pair(lib, f"Movie {index:03d}", f"Movie {index:03d}")
+    scan = _scan(lib, lib, monkeypatch)
+
+    status, err = maintenance.status_payload(scan["id"])
+    payload, err = maintenance.groups_payload(scan["id"], offset=0, limit=999)
+
+    assert err is None
+    assert "groups" not in status["scan"]
+    assert payload["total"] == 120
+    assert payload["limit"] == maintenance.DUPLICATE_GROUP_PAGE_MAX
+    assert payload["count"] == maintenance.DUPLICATE_GROUP_PAGE_MAX
+    assert payload["large_result"] is True
+    assert "videos" not in payload["groups"][0]
+
+
+def test_duplicate_groups_payload_reports_missing_and_expired_scans(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write_duplicate_pair(lib, "Movie")
+    scan = _scan(lib, lib, monkeypatch)
+
+    missing, missing_err = maintenance.groups_payload("missing")
+    monkeypatch.setattr(maintenance, "DUPLICATE_SCAN_MAX_AGE_SECONDS", 1)
+    scan["_finished_ts"] = time.time() - 2
+    expired, expired_err = maintenance.status_payload(scan["id"])
+
+    assert missing is None
+    assert missing_err == "Scan not found"
+    assert expired is None
+    assert expired_err == "Scan not found"
+
+
+def test_cleanup_plan_uses_defaults_for_unvisited_paged_groups(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write_duplicate_pair(lib, "First")
+    _, second_remove = _write_duplicate_pair(lib, "Second")
+    scan = _scan(lib, lib, monkeypatch)
+    first_group = next(group for group in scan["groups"] if group["folder"].endswith("First"))
+    second_group = next(group for group in scan["groups"] if group["folder"].endswith("Second"))
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [{"id": first_group["id"], "enabled": False}],
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    assert first_group["id"] in plan["skipped_groups"]
+    assert plan["file_count"] == 1
+    assert plan["files"][0]["group_id"] == second_group["id"]
+    assert plan["files"][0]["source_path"] == str(second_remove)
 
 
 def test_maintenance_routes_report_missing_scan_and_malformed_plan():
     client = routes.app.test_client()
 
     missing = client.get("/api/maintenance/duplicates/status", query_string={"scan_id": "missing"})
+    missing_groups = client.get(
+        "/api/maintenance/duplicates/groups",
+        query_string={"scan_id": "missing"},
+    )
     malformed = client.post(
         "/api/maintenance/duplicates/plan",
         json={"scan_id": "missing", "groups": "bad"},
@@ -515,6 +606,8 @@ def test_maintenance_routes_report_missing_scan_and_malformed_plan():
 
     assert missing.status_code == 404
     assert missing.get_json()["error"] == "Scan not found"
+    assert missing_groups.status_code == 404
+    assert missing_groups.get_json()["error"] == "Scan not found"
     assert malformed.status_code == 400
     assert malformed.get_json()["error"] == "Group overrides are invalid"
 
@@ -536,11 +629,15 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="maintenanceRefreshLogsButton"' in html
     assert 'src="/static/maintenance.js"' in html
     assert "fetch('/api/maintenance/duplicates/scan'" in script
+    assert "/api/maintenance/duplicates/groups?scan_id=" in script
+    assert "/api/maintenance/duplicates/groups/${encodeURIComponent(groupId)}" in script
     assert "fetch('/api/maintenance/duplicates/plan'" in script
     assert "fetch('/api/maintenance/duplicates/apply'" in script
     assert "fetch('/api/maintenance/duplicates/logs')" in script
     assert "maintenance_active_tab" in script
     assert "readJsonResponse" in script
     assert "data-maint-operation" in script
+    assert "data-maint-expand" in script
+    assert "data-maint-page" in script
     assert "escapeHtml(file.source_path)" in script
     assert "textContent" in script

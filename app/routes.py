@@ -545,6 +545,28 @@ def api_maintenance_duplicates_status():
     return jsonify(payload)
 
 
+@app.route("/api/maintenance/duplicates/groups")
+def api_maintenance_duplicates_groups():
+    payload, err = maintenance.groups_payload(
+        request.args.get("scan_id"),
+        offset=request.args.get("offset"),
+        limit=request.args.get("limit"),
+    )
+    if err:
+        status = 404 if err == "Scan not found" else 400
+        return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/duplicates/groups/<group_id>")
+def api_maintenance_duplicates_group(group_id):
+    payload, err = maintenance.group_payload(request.args.get("scan_id"), group_id)
+    if err:
+        status = 404 if err in {"Scan not found", "Group not found"} else 400
+        return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
 @app.route("/api/maintenance/duplicates/plan", methods=["POST"])
 def api_maintenance_duplicates_plan():
     plan, err = maintenance.build_duplicate_cleanup_plan(

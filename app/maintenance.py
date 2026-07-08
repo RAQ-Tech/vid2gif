@@ -21,6 +21,11 @@ MAINTENANCE_LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "duplicates")
 MAINTENANCE_LOG_INDEX = os.path.join(MAINTENANCE_LOG_DIR, "index.json")
 MAINTENANCE_LOG_RETENTION_COUNT = 25
 MAINTENANCE_LOG_MAX_BYTES = 5 * 1024 * 1024
+DUPLICATE_GROUP_PAGE_DEFAULT = 25
+DUPLICATE_GROUP_PAGE_MAX = 100
+DUPLICATE_GROUP_LARGE_RESULT_COUNT = 100
+DUPLICATE_SCAN_RETENTION_COUNT = 10
+DUPLICATE_SCAN_MAX_AGE_SECONDS = 24 * 60 * 60
 __test__ = False
 
 duplicate_scans = {}
@@ -668,10 +673,27 @@ def _public_group(group):
     }
 
 
-def public_scan(scan):
+def _public_group_summary(group):
+    videos = group.get("videos") or []
+    recommended_id = group.get("recommended_keep_id", "")
+    recommended = next((video for video in videos if video.get("id") == recommended_id), {})
+    return {
+        "id": group.get("id", ""),
+        "folder": group.get("folder", ""),
+        "normalized_name": group.get("normalized_name", ""),
+        "recommended_keep_id": recommended_id,
+        "recommended_keep_name": recommended.get("name", ""),
+        "video_count": len(videos),
+        "accessory_count": group.get("accessory_count", 0),
+        "reclaimable_bytes": group.get("reclaimable_bytes", 0),
+        "reclaimable_label": group.get("reclaimable_label", ""),
+    }
+
+
+def public_scan(scan, include_groups=False):
     if not scan:
         return None
-    return {
+    public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
@@ -686,8 +708,52 @@ def public_scan(scan):
         "reclaimable_bytes": scan.get("reclaimable_bytes", 0),
         "reclaimable_label": format_size(scan.get("reclaimable_bytes", 0)),
         "settings": public_duplicate_settings(scan.get("settings")),
-        "groups": [_public_group(group) for group in scan.get("groups") or []],
+        "results_page_size": DUPLICATE_GROUP_PAGE_DEFAULT,
+        "large_result": len(scan.get("groups") or []) >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
     }
+    if include_groups:
+        public["groups"] = [_public_group(group) for group in scan.get("groups") or []]
+    return public
+
+
+def _coerce_page(offset, limit):
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = DUPLICATE_GROUP_PAGE_DEFAULT
+    offset = max(0, offset)
+    limit = max(1, min(DUPLICATE_GROUP_PAGE_MAX, limit))
+    return offset, limit
+
+
+def _prune_duplicate_scans_locked(now=None):
+    now = now or time.time()
+    terminal_ids = [
+        scan_id
+        for scan_id, scan in duplicate_scans.items()
+        if scan.get("status") in SCAN_TERMINAL_STATUSES
+    ]
+    for scan_id in terminal_ids:
+        scan = duplicate_scans.get(scan_id) or {}
+        finished = scan.get("_finished_ts") or scan.get("_created_ts") or now
+        if now - finished > DUPLICATE_SCAN_MAX_AGE_SECONDS:
+            duplicate_scans.pop(scan_id, None)
+
+    terminal = sorted(
+        (
+            (scan_id, scan)
+            for scan_id, scan in duplicate_scans.items()
+            if scan.get("status") in SCAN_TERMINAL_STATUSES
+        ),
+        key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
+        reverse=True,
+    )
+    for scan_id, _scan in terminal[DUPLICATE_SCAN_RETENTION_COUNT:]:
+        duplicate_scans.pop(scan_id, None)
 
 
 def _run_scan(scan, lib_root):
@@ -779,6 +845,7 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "settings": settings,
     }
     with maintenance_lock:
+        _prune_duplicate_scans_locked()
         duplicate_scans[scan_id] = scan
 
     if synchronous:
@@ -796,6 +863,7 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
 
 def status_payload(scan_id=None):
     with maintenance_lock:
+        _prune_duplicate_scans_locked()
         if scan_id:
             scan = duplicate_scans.get(scan_id)
             if not scan:
@@ -805,6 +873,51 @@ def status_payload(scan_id=None):
         else:
             scan = None
     return {"scan": public_scan(scan)}, None
+
+
+def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
+    offset, limit = _coerce_page(offset, limit)
+    with maintenance_lock:
+        _prune_duplicate_scans_locked()
+        scan = duplicate_scans.get(str(scan_id or ""))
+        if not scan:
+            return None, "Scan not found"
+        if scan.get("status") != "success":
+            return None, "Scan is not complete"
+        groups = list(scan.get("groups") or [])
+
+    total = len(groups)
+    page = groups[offset : offset + limit]
+    return {
+        "scan": public_scan(scan),
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "count": len(page),
+        "has_previous": offset > 0,
+        "has_next": offset + limit < total,
+        "next_offset": offset + limit if offset + limit < total else None,
+        "previous_offset": max(0, offset - limit) if offset > 0 else None,
+        "large_result": total >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
+        "groups": [_public_group_summary(group) for group in page],
+    }, None
+
+
+def group_payload(scan_id, group_id):
+    with maintenance_lock:
+        _prune_duplicate_scans_locked()
+        scan = duplicate_scans.get(str(scan_id or ""))
+        if not scan:
+            return None, "Scan not found"
+        if scan.get("status") != "success":
+            return None, "Scan is not complete"
+        group = next(
+            (item for item in scan.get("groups") or [] if item.get("id") == str(group_id or "")),
+            None,
+        )
+    if not group:
+        return None, "Group not found"
+    return {"group": _public_group(group)}, None
 
 
 def _group_overrides(payload):
@@ -929,6 +1042,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         return None, "Group overrides are invalid"
 
     with maintenance_lock:
+        _prune_duplicate_scans_locked()
         scan = duplicate_scans.get(scan_id)
     if not scan:
         return None, "Scan not found"
