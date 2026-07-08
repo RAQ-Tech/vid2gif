@@ -1,4 +1,4 @@
-from app import jobs, test_lab
+from app import jobs, poster_maintenance, test_lab
 
 
 def test_start_worker_is_idempotent(monkeypatch):
@@ -44,6 +44,33 @@ def test_start_test_lab_worker_is_idempotent(monkeypatch):
 
     assert started == [
         (test_lab.worker, True, "vid2gif-test-lab"),
+    ]
+
+
+def test_start_landscape_poster_worker_is_idempotent(monkeypatch):
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, daemon, name):
+            self.target = target
+            self.daemon = daemon
+            self.name = name
+
+        def start(self):
+            started.append((self.target, self.daemon, self.name))
+
+    monkeypatch.setattr(poster_maintenance, "_worker_started", False)
+    monkeypatch.setattr(poster_maintenance.threading, "Thread", FakeThread)
+
+    poster_maintenance.start_landscape_poster_worker()
+    poster_maintenance.start_landscape_poster_worker()
+
+    assert started == [
+        (
+            poster_maintenance.worker,
+            True,
+            "vid2gif-landscape-poster-worker",
+        ),
     ]
 
 

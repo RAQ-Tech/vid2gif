@@ -38,6 +38,107 @@
     </div>
   </section>
 
+  <section class="workspace-panel maintenance-panel mb-3">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">Landscape Posters</h2>
+        <div class="text-muted small">Copy matching video background images over existing posters, with one preserved backup.</div>
+      </div>
+      <div class="toolbar-row mb-0">
+        <button id="posterRunButton" class="btn btn-primary btn-sm" type="button">
+          <i class="bi bi-play-fill" aria-hidden="true"></i>
+          <span>Run Now</span>
+        </button>
+        <button id="posterRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
+          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+          <span>Refresh</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="metric-band">
+      <div>
+        <div class="metric-label">Automation</div>
+        <div id="posterAutomationState" class="metric-value">Loading</div>
+      </div>
+      <div class="metric-progress">
+        <div class="metric-row mt-0">
+          <span id="posterLastRun">Last run: unknown</span>
+          <span id="posterNextRun">Next run: disabled</span>
+          <span id="posterLastResult">Updated: 0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-grid">
+      <div class="settings-panel">
+        <div class="panel-subheading">
+          <i class="bi bi-sliders" aria-hidden="true"></i>
+          <span>Automation Settings</span>
+        </div>
+        <div class="toolbar-row">
+          <div class="form-check form-switch">
+            <input id="posterAutomationEnabled" class="form-check-input" type="checkbox">
+            <label class="form-check-label" for="posterAutomationEnabled">Run automatically</label>
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label" for="posterScanInterval">Incremental scan seconds</label>
+            <input id="posterScanInterval" class="form-control" type="number" min="60" step="60" value="900">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="posterFullScanInterval">Full scan seconds</label>
+            <input id="posterFullScanInterval" class="form-control" type="number" min="3600" step="3600" value="86400">
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-panel">
+        <div class="panel-subheading">
+          <i class="bi bi-hdd-network" aria-hidden="true"></i>
+          <span>Emby Refresh</span>
+        </div>
+        <div class="form-check form-switch mb-3">
+          <input id="posterEmbyRefreshEnabled" class="form-check-input" type="checkbox">
+          <label class="form-check-label" for="posterEmbyRefreshEnabled">Refresh Emby after changes</label>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-7">
+            <label class="form-label" for="posterEmbyUrl">Emby URL</label>
+            <input id="posterEmbyUrl" class="form-control" placeholder="http://emby:8096">
+          </div>
+          <div class="col-md-5">
+            <label class="form-label" for="posterEmbyApiKey">API key</label>
+            <input id="posterEmbyApiKey" class="form-control" type="password" autocomplete="off" placeholder="Leave blank to keep current">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="toolbar-row mt-3">
+      <button id="posterSaveSettingsButton" class="btn btn-outline-primary btn-sm" type="button">
+        <i class="bi bi-save" aria-hidden="true"></i>
+        <span>Save Settings</span>
+      </button>
+    </div>
+
+    <div class="scan-estimate mt-3" aria-live="polite">
+      <i class="bi bi-info-circle" aria-hidden="true"></i>
+      <div>
+        <div id="posterMessageTitle">Landscape poster status loading.</div>
+        <div id="posterMessageDetail" class="scan-estimate-detail"></div>
+      </div>
+    </div>
+
+    <div id="posterRecentItems" class="table-responsive workspace-table-wrap mt-3">
+      <table class="table table-hover align-middle workspace-table">
+        <thead><tr><th>Status</th><th>Background</th><th>Poster</th><th>Detail</th></tr></thead>
+        <tbody><tr><td colspan="4" class="text-muted text-center py-4">No landscape poster run yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="workspace-panel maintenance-panel">
     <div class="panel-heading">
       <div>

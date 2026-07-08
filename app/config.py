@@ -17,6 +17,9 @@ PROCESS_TMP_ROOT = os.getenv(
     "PROCESS_TMP_ROOT", os.path.join(STATE_ROOT, "processing", "tmp")
 )
 TEST_LAB_ROOT = os.getenv("TEST_LAB_ROOT", os.path.join(STATE_ROOT, "test-lab"))
+LANDSCAPE_POSTER_ROOT = os.getenv(
+    "LANDSCAPE_POSTER_ROOT", os.path.join(STATE_ROOT, "landscape-posters")
+)
 GIF_OPTIMIZE = os.getenv("GIF_OPTIMIZE", "1").strip().lower() in {
     "1",
     "true",
@@ -26,8 +29,12 @@ GIF_OPTIMIZE = os.getenv("GIF_OPTIMIZE", "1").strip().lower() in {
 GIF_OPTIMIZE_LEVEL = os.getenv("GIF_OPTIMIZE_LEVEL", "2")
 GIFSICLE_BIN = os.getenv("GIFSICLE_BIN", "gifsicle")
 GIF_OPTIMIZE_TIMEOUT = _env_int("GIF_OPTIMIZE_TIMEOUT", 600)
+LANDSCAPE_POSTER_INTERVAL_SECONDS = _env_int("LANDSCAPE_POSTER_INTERVAL_SECONDS", 900)
+LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS = _env_int(
+    "LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS", 86400
+)
 
-for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT, TEST_LAB_ROOT):
+for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT, TEST_LAB_ROOT, LANDSCAPE_POSTER_ROOT):
     os.makedirs(path, exist_ok=True)
 
 VIDEO_EXTS = {".mkv",".mp4",".m4v",".mov",".avi",".wmv",".mpg",".mpeg",".webm"}

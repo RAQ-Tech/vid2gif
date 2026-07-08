@@ -5,6 +5,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, R
 from . import app_settings
 from . import estimate_history
 from . import maintenance
+from . import poster_maintenance
 from . import test_lab
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
 from .utils import (
@@ -530,6 +531,38 @@ def api_maintenance_duplicates_apply():
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"result": result})
+
+
+@app.route("/api/maintenance/landscape-posters/status")
+def api_maintenance_landscape_posters_status():
+    return jsonify(poster_maintenance.status_payload())
+
+
+@app.route("/api/maintenance/landscape-posters/run", methods=["POST"])
+def api_maintenance_landscape_posters_run():
+    data = request.get_json(silent=True) or {}
+    run, err = poster_maintenance.start_landscape_poster_run(
+        data.get("path") or LIB_ROOT,
+        mode=data.get("mode") or "full",
+        synchronous=_truthy(data.get("synchronous")),
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"run": poster_maintenance.public_run(run)})
+
+
+@app.route("/api/maintenance/landscape-posters/settings", methods=["POST"])
+def api_maintenance_landscape_posters_settings():
+    settings, err = poster_maintenance.update_settings(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify(
+        {
+            "settings": settings,
+            "status": poster_maintenance.status_payload(),
+        }
+    )
 
 
 @app.route("/api/scan-estimate")

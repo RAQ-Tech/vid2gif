@@ -16,6 +16,9 @@ file names, job status, output paths, and job logs. Only mount directories that
 the container should be allowed to inspect and write to.
 
 The app writes generated GIFs as `poster.gif` next to selected source videos.
+When landscape poster maintenance is enabled, it can also replace matching
+`*-poster.*` image files with `*-background.*` images and create
+`*-poster-backup.*` files in mounted media folders.
 
 ## Reporting Issues
 

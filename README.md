@@ -8,9 +8,10 @@ vid2gif is intended for trusted private networks only. Do not expose it directly
 to the public internet.
 
 The app can browse mounted library directories, shows video paths and file names
-to users of the Web UI, and can write `poster.gif` next to selected videos. Run
-it behind a firewall or private reverse proxy, and only mount media directories
-that the container should be allowed to inspect and write to.
+to users of the Web UI, can write `poster.gif` next to selected videos, and can
+replace matching Emby poster images during library maintenance. Run it behind a
+firewall or private reverse proxy, and only mount media directories that the
+container should be allowed to inspect and write to.
 
 If you need internet-facing access, add authentication, CSRF protection, rate
 limiting, stricter file-serving rules, and reverse-proxy hardening before
@@ -77,11 +78,18 @@ python -m pytest
 | `LOG_DIR` | `/state/logs` | Job log directory |
 | `TMP_ROOT` | `/state/tmp` | General temporary directory |
 | `PROCESS_TMP_ROOT` | `/state/processing/tmp` | Per-job processing directory |
+| `LANDSCAPE_POSTER_ROOT` | `/state/landscape-posters` | State directory for landscape poster automation |
 | `CHOWN_LIBRARY` | `0` | Set to `1` only if the container should recursively take ownership of `/library` at startup |
 | `GIF_OPTIMIZE` | `1` | Run lossless Gifsicle optimization before moving the final `poster.gif` into place |
 | `GIF_OPTIMIZE_LEVEL` | `2` | Gifsicle optimization level, clamped to `1`, `2`, or `3` |
 | `GIFSICLE_BIN` | `gifsicle` | Gifsicle executable path or command name |
 | `GIF_OPTIMIZE_TIMEOUT` | `600` | Maximum seconds allowed for one GIF optimization step |
+| `LANDSCAPE_POSTER_AUTO` | `0` | Enable automatic landscape poster maintenance at startup |
+| `LANDSCAPE_POSTER_INTERVAL_SECONDS` | `900` | Incremental landscape poster scan interval when automation is enabled |
+| `LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS` | `86400` | Maximum interval between full landscape poster reconciliation scans |
+| `EMBY_REFRESH_ENABLED` | `0` | Request an Emby library refresh after landscape poster changes |
+| `EMBY_URL` | empty | Emby server base URL, for example `http://emby:8096` |
+| `EMBY_API_KEY` | empty | Emby API key used for optional library refresh |
 
 These can be overridden when invoking `python -m app.main` or the Docker
 container, for example `docker run -e LIB_ROOT=/media/videos ...`.
@@ -92,6 +100,12 @@ slow startup on large mounted media libraries.
 
 GIF optimization is lossless and keeps the original ffmpeg output if Gifsicle is
 missing, fails, times out, or produces a larger file.
+
+Landscape poster automation is disabled by default. When enabled from the
+Library Maintenance page or environment variables, it copies existing
+`*-background.*` images over matching existing `*-poster.*` files and preserves
+the original poster once as `*-poster-backup.*`. It stores run state under
+`/state` and does not create `.posters_done` marker files.
 
 ## Example Workflow
 
