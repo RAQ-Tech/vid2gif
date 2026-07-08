@@ -840,20 +840,10 @@ def _validate_move_root(move_root, lib_root):
 
 
 def quarantine_destination(path, lib_root, scan_id, used_destinations=None, move_root=None):
-    used_destinations = used_destinations if used_destinations is not None else set()
     lib_real = os.path.realpath(lib_root)
     move_real = os.path.realpath(move_root or os.path.join(lib_real, QUARANTINE_DIRNAME))
     rel = os.path.relpath(os.path.realpath(path), lib_real)
-    base_dest = os.path.realpath(os.path.join(move_real, scan_id, rel))
-    directory = os.path.dirname(base_dest)
-    stem, ext = os.path.splitext(os.path.basename(base_dest))
-    candidate = base_dest
-    index = 1
-    while candidate in used_destinations or os.path.exists(candidate):
-        candidate = os.path.join(directory, f"{stem}.{index}{ext}")
-        index += 1
-    used_destinations.add(candidate)
-    return candidate
+    return os.path.realpath(os.path.join(move_real, rel))
 
 
 def _build_plan_item(
@@ -1059,7 +1049,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "status": "ready",
         "created_at": utc_iso(),
         "lib_root": lib_real,
-        "move_root": os.path.join(move_root, scan_id) if action == "move" else "",
+        "move_root": move_root if action == "move" else "",
         "configured_move_root": move_root,
         "files": files,
         "file_count": len(files),

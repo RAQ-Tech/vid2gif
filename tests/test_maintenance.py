@@ -137,7 +137,6 @@ def test_quarantine_destination_preserves_library_relative_path(tmp_path):
     assert dest.endswith(
         os.path.join(
             ".vid2gif-duplicates",
-            "scan1",
             "Movie",
             "Movie.720p.mkv",
         )
@@ -179,7 +178,7 @@ def test_cleanup_plan_moves_duplicate_video_and_renames_unmatched_accessory(monk
     assert not remove.exists()
     assert not sidecar.exists()
     assert (movie / "Movie.1080p.en.srt").read_bytes() == b"subtitle"
-    assert (lib / ".vid2gif-duplicates" / scan["id"] / "Movie" / "Movie.720p.mkv").is_file()
+    assert (lib / ".vid2gif-duplicates" / "Movie" / "Movie.720p.mkv").is_file()
     assert result["log"]["id"].endswith(".jsonl")
 
 
@@ -205,7 +204,7 @@ def test_cleanup_plan_moves_equivalent_accessory(monkeypatch, tmp_path):
     assert err is None
     assert keeper_sidecar.exists()
     assert not duplicate_sidecar.exists()
-    assert (lib / ".vid2gif-duplicates" / scan["id"] / "Movie" / duplicate_sidecar.name).is_file()
+    assert (lib / ".vid2gif-duplicates" / "Movie" / duplicate_sidecar.name).is_file()
 
 
 def test_cleanup_plan_uses_custom_move_root(monkeypatch, tmp_path):
@@ -227,11 +226,87 @@ def test_cleanup_plan_uses_custom_move_root(monkeypatch, tmp_path):
     )
 
     assert err is None
-    assert plan["move_root"] == str(move_root / scan["id"])
+    assert plan["move_root"] == str(move_root)
     result, err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
     assert err is None
     assert not remove.exists()
-    assert (move_root / scan["id"] / "Movie" / remove.name).is_file()
+    assert (move_root / "Movie" / remove.name).is_file()
+
+
+def test_cleanup_move_creates_missing_destination_folders(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "XXX" / "Blacked" / "Bratty Bitches"
+    _write(movie / "Movie.1080p.mkv", b"a" * 200)
+    remove = _write(movie / "Movie.720p.mkv", b"b" * 100)
+    scan = _scan(lib, lib, monkeypatch)
+    dest = lib / ".vid2gif-duplicates" / "XXX" / "Blacked" / "Bratty Bitches" / remove.name
+    assert not dest.parent.exists()
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {"scan_id": scan["id"], "action": "move", "groups": []},
+        lib_root=str(lib),
+    )
+    assert err is None
+    result, err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert err is None
+    assert result["applied_count"] == 1
+    assert not remove.exists()
+    assert dest.read_bytes() == b"b" * 100
+
+
+def test_cleanup_move_reuses_existing_destination_folders(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "XXX" / "Blacked" / "Bratty Bitches"
+    _write(movie / "Movie.1080p.mkv", b"a" * 200)
+    remove = _write(movie / "Movie.720p.mkv", b"b" * 100)
+    dest_dir = lib / ".vid2gif-duplicates" / "XXX" / "Blacked" / "Bratty Bitches"
+    dest_dir.mkdir(parents=True)
+    scan = _scan(lib, lib, monkeypatch)
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {"scan_id": scan["id"], "action": "move", "groups": []},
+        lib_root=str(lib),
+    )
+    assert err is None
+    result, err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert err is None
+    assert result["applied_count"] == 1
+    assert not remove.exists()
+    assert (dest_dir / remove.name).read_bytes() == b"b" * 100
+
+
+def test_cleanup_move_refuses_existing_destination_file_and_continues(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    first = lib / "First"
+    second = lib / "Second"
+    _write(first / "First.1080p.mkv", b"a" * 200)
+    first_remove = _write(first / "First.720p.mkv", b"b" * 100)
+    _write(second / "Second.1080p.mkv", b"c" * 200)
+    second_remove = _write(second / "Second.720p.mkv", b"d" * 100)
+    conflict = _write(
+        lib / ".vid2gif-duplicates" / "First" / first_remove.name,
+        b"existing",
+    )
+    second_dest = lib / ".vid2gif-duplicates" / "Second" / second_remove.name
+    scan = _scan(lib, lib, monkeypatch)
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {"scan_id": scan["id"], "action": "move", "groups": []},
+        lib_root=str(lib),
+    )
+    assert err is None
+    result, err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert err is None
+    assert result["applied_count"] == 1
+    assert result["refused_count"] == 1
+    assert result["refused"][0]["reason"] == "Destination already exists"
+    assert first_remove.exists()
+    assert conflict.read_bytes() == b"existing"
+    assert not second_remove.exists()
+    assert second_dest.read_bytes() == b"d" * 100
 
 
 def test_cleanup_plan_rejects_move_root_outside_library(monkeypatch, tmp_path):
