@@ -5,6 +5,7 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -20,8 +21,10 @@ from .utils import BACKGROUND_IMAGE_EXTS, path_is_under, resolve_case_insensitiv
 
 SETTINGS_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
+EMBY_STATUS_SCHEMA_VERSION = 1
 SETTINGS_PATH = os.path.join(LANDSCAPE_POSTER_ROOT, "settings.json")
 MANIFEST_PATH = os.path.join(LANDSCAPE_POSTER_ROOT, "manifest.json")
+EMBY_STATUS_PATH = os.path.join(LANDSCAPE_POSTER_ROOT, "emby-status.json")
 BACKGROUND_SUFFIX = "-background"
 POSTER_SUFFIX = "-poster"
 BACKUP_SUFFIX = "-poster-backup"
@@ -31,6 +34,7 @@ __test__ = False
 
 _settings_lock = threading.Lock()
 _manifest_lock = threading.Lock()
+_emby_status_lock = threading.Lock()
 _run_start_lock = threading.Lock()
 _run_execution_lock = threading.Lock()
 _worker_start_lock = threading.Lock()
@@ -251,6 +255,39 @@ def save_manifest(manifest, path=None):
     manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
     with _manifest_lock:
         return _write_json_atomic(path, manifest)
+
+
+def default_emby_status():
+    return {
+        "schema_version": EMBY_STATUS_SCHEMA_VERSION,
+        "last_test": None,
+        "last_refresh": None,
+    }
+
+
+def load_emby_status(path=None):
+    path = path or EMBY_STATUS_PATH
+    data = _read_json(path, {})
+    if not data or data.get("schema_version") != EMBY_STATUS_SCHEMA_VERSION:
+        return default_emby_status()
+    data.setdefault("last_test", None)
+    data.setdefault("last_refresh", None)
+    return data
+
+
+def save_emby_status(status, path=None):
+    path = path or EMBY_STATUS_PATH
+    status = dict(status or {})
+    status["schema_version"] = EMBY_STATUS_SCHEMA_VERSION
+    with _emby_status_lock:
+        return _write_json_atomic(path, status)
+
+
+def _save_emby_status_value(key, result):
+    status = load_emby_status()
+    status[key] = _public_emby_result(result)
+    save_emby_status(status)
+    return status[key]
 
 
 def _candidate_from_background(path):
@@ -522,24 +559,165 @@ def _scan_and_apply(run, lib_root, settings):
     return counters
 
 
-def _emby_refresh_endpoint(settings):
+def _sanitize_secret_text(value, api_key=""):
+    text = str(value or "")
+    secret = str(api_key or "")
+    if not secret:
+        return text
+    encoded = urllib.parse.quote_plus(secret)
+    return text.replace(secret, "[redacted]").replace(encoded, "[redacted]")
+
+
+def _public_emby_result(result):
+    result = result or {}
+    return {
+        "status": str(result.get("status") or ""),
+        "message": str(result.get("message") or ""),
+        "checked_at": result.get("checked_at"),
+        "http_status": result.get("http_status"),
+        "server_name": str(result.get("server_name") or ""),
+        "version": str(result.get("version") or ""),
+    }
+
+
+def _emby_result(
+    status,
+    message,
+    *,
+    api_key="",
+    http_status=None,
+    server_name="",
+    version="",
+):
+    return _public_emby_result(
+        {
+            "status": status,
+            "message": _sanitize_secret_text(message, api_key),
+            "checked_at": utc_iso(),
+            "http_status": http_status,
+            "server_name": server_name,
+            "version": version,
+        }
+    )
+
+
+def _emby_endpoint(settings, api_path):
     base = str(settings.get("emby_url") or "").strip().rstrip("/")
     api_key = str(settings.get("emby_api_key") or "").strip()
     if not base or not api_key:
         return ""
+    api_path = "/" + str(api_path or "").strip("/")
     if base.lower().endswith("/emby"):
-        url = f"{base}/Library/Refresh"
+        url = f"{base}{api_path}"
     else:
-        url = f"{base}/emby/Library/Refresh"
+        url = f"{base}/emby{api_path}"
     return f"{url}?{urllib.parse.urlencode({'api_key': api_key})}"
 
 
-def refresh_emby(settings, opener=None):
-    if not settings.get("emby_refresh_enabled"):
-        return {"status": "disabled", "message": "Emby refresh is disabled"}
-    endpoint = _emby_refresh_endpoint(settings)
+def _emby_refresh_endpoint(settings):
+    return _emby_endpoint(settings, "/Library/Refresh")
+
+
+def _read_response_json(response):
+    if not hasattr(response, "read"):
+        return {}
+    raw = response.read()
+    if not raw:
+        return {}
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _settings_for_emby_test(updates):
+    if not isinstance(updates, dict):
+        return None, "Settings are invalid"
+    settings = load_settings()
+    if "emby_url" in updates:
+        settings["emby_url"] = str(updates.get("emby_url") or "").strip()
+    if updates.get("emby_api_key"):
+        settings["emby_api_key"] = str(updates.get("emby_api_key") or "").strip()
+    return _coerce_settings(settings), None
+
+
+def test_emby_connection(updates=None, opener=None, persist=True):
+    settings, err = _settings_for_emby_test(updates or {})
+    if err:
+        return None, err
+    api_key = str(settings.get("emby_api_key") or "")
+    endpoint = _emby_endpoint(settings, "/System/Info")
     if not endpoint:
-        return {"status": "skipped", "message": "Emby refresh is not configured"}
+        result = _emby_result(
+            "skipped",
+            "Emby URL and API key are required to test the connection",
+            api_key=api_key,
+        )
+        if persist:
+            _save_emby_status_value("last_test", result)
+        return result, None
+
+    opener = opener or urllib.request.urlopen
+    request = urllib.request.Request(endpoint, method="GET", headers={"accept": "application/json"})
+    try:
+        with opener(request, timeout=15) as response:
+            code = getattr(response, "status", None) or getattr(response, "code", 0)
+            data = _read_response_json(response)
+    except urllib.error.HTTPError as exc:
+        result = _emby_result(
+            "failed",
+            f"Emby rejected the request ({getattr(exc, 'code', 'unknown')})",
+            api_key=api_key,
+            http_status=getattr(exc, "code", None),
+        )
+    except Exception as exc:
+        result = _emby_result(
+            "failed",
+            f"Emby connection failed: {_sanitize_secret_text(exc, api_key)}",
+            api_key=api_key,
+        )
+    else:
+        server_name = data.get("ServerName") or data.get("Name") or ""
+        version = data.get("Version") or ""
+        message = (
+            f"Connected to {server_name}"
+            if server_name
+            else "Connected to Emby"
+        )
+        result = _emby_result(
+            "success",
+            message,
+            api_key=api_key,
+            http_status=code,
+            server_name=server_name,
+            version=version,
+        )
+
+    if persist:
+        _save_emby_status_value("last_test", result)
+    return result, None
+
+
+def refresh_emby(settings, opener=None, persist=False):
+    if not settings.get("emby_refresh_enabled"):
+        result = _emby_result("disabled", "Emby refresh is disabled")
+        if persist:
+            _save_emby_status_value("last_refresh", result)
+        return result
+    endpoint = _emby_refresh_endpoint(settings)
+    api_key = str(settings.get("emby_api_key") or "")
+    if not endpoint:
+        result = _emby_result(
+            "skipped",
+            "Emby refresh is not configured",
+            api_key=api_key,
+        )
+        if persist:
+            _save_emby_status_value("last_refresh", result)
+        return result
     opener = opener or urllib.request.urlopen
     request = urllib.request.Request(
         endpoint,
@@ -550,9 +728,29 @@ def refresh_emby(settings, opener=None):
     try:
         with opener(request, timeout=15) as response:
             code = getattr(response, "status", None) or getattr(response, "code", 0)
+    except urllib.error.HTTPError as exc:
+        result = _emby_result(
+            "failed",
+            f"Emby refresh rejected ({getattr(exc, 'code', 'unknown')})",
+            api_key=api_key,
+            http_status=getattr(exc, "code", None),
+        )
     except Exception as exc:
-        return {"status": "failed", "message": str(exc)}
-    return {"status": "success", "message": f"Emby refresh requested ({code})"}
+        result = _emby_result(
+            "failed",
+            f"Emby refresh failed: {_sanitize_secret_text(exc, api_key)}",
+            api_key=api_key,
+        )
+    else:
+        result = _emby_result(
+            "success",
+            f"Emby refresh requested ({code})",
+            api_key=api_key,
+            http_status=code,
+        )
+    if persist:
+        _save_emby_status_value("last_refresh", result)
+    return result
 
 
 def _execute_run(run, lib_root, settings):
@@ -576,7 +774,7 @@ def _execute_run(run, lib_root, settings):
         counters = _scan_and_apply(run, lib_root, settings)
         emby_result = {"status": "skipped", "message": "No poster changes"}
         if counters.get("updated"):
-            emby_result = refresh_emby(settings)
+            emby_result = refresh_emby(settings, persist=True)
         _set_run_state(
             run,
             status="success",
@@ -690,6 +888,22 @@ def _next_run_timestamp(settings, manifest=None, now=None):
     return last_finished + int(settings.get("scan_interval_seconds") or 0)
 
 
+def emby_status_payload(settings=None, latest_run=None):
+    settings = settings or load_settings()
+    stored = load_emby_status()
+    last_refresh = stored.get("last_refresh")
+    if not last_refresh and latest_run:
+        last_refresh = (latest_run.get("emby_refresh") or None)
+    return {
+        "configured": bool(settings.get("emby_url") and settings.get("emby_api_key")),
+        "url_configured": bool(settings.get("emby_url")),
+        "api_key_configured": bool(settings.get("emby_api_key")),
+        "refresh_enabled": bool(settings.get("emby_refresh_enabled")),
+        "last_test": _public_emby_result(stored.get("last_test")),
+        "last_refresh": _public_emby_result(last_refresh),
+    }
+
+
 def status_payload():
     settings = load_settings()
     current, latest, manifest = _latest_run()
@@ -701,6 +915,7 @@ def status_payload():
         "last_run": _run_summary(latest) if latest else None,
         "worker_started": _worker_started,
         "scheduler": dict(_scheduler_state),
+        "emby_status": emby_status_payload(settings=settings, latest_run=latest),
         "manifest_path": MANIFEST_PATH,
     }
 

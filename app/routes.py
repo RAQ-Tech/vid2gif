@@ -565,6 +565,22 @@ def api_maintenance_landscape_posters_settings():
     )
 
 
+@app.route("/api/maintenance/landscape-posters/emby/test", methods=["POST"])
+def api_maintenance_landscape_posters_emby_test():
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    result, err = poster_maintenance.test_emby_connection(data)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify(
+        {
+            "result": result,
+            "status": poster_maintenance.status_payload(),
+        }
+    )
+
+
 @app.route("/api/scan-estimate")
 def api_scan_estimate():
     target = (request.args.get("path") or request.args.get("video") or "").strip()

@@ -1,4 +1,5 @@
 import os
+import urllib.error
 
 from app import poster_maintenance, routes
 
@@ -22,6 +23,11 @@ def _reset_poster_state(monkeypatch, tmp_path):
         poster_maintenance,
         "MANIFEST_PATH",
         str(state_root / "manifest.json"),
+    )
+    monkeypatch.setattr(
+        poster_maintenance,
+        "EMBY_STATUS_PATH",
+        str(state_root / "emby-status.json"),
     )
     poster_maintenance.poster_runs.clear()
     monkeypatch.setattr(poster_maintenance, "_current_run_id", "")
@@ -174,6 +180,111 @@ def test_emby_refresh_posts_to_library_refresh_endpoint():
     assert captured["timeout"] == 15
 
 
+def test_emby_connection_test_reads_system_info_and_persists(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ServerName":"Media Server","Version":"4.8.10"}'
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    result, err = poster_maintenance.test_emby_connection(
+        {"emby_url": "http://emby:8096", "emby_api_key": "abc 123"},
+        opener=fake_open,
+    )
+    status = poster_maintenance.load_emby_status()
+
+    assert err is None
+    assert result["status"] == "success"
+    assert result["server_name"] == "Media Server"
+    assert result["version"] == "4.8.10"
+    assert captured["url"] == "http://emby:8096/emby/System/Info?api_key=abc+123"
+    assert captured["timeout"] == 15
+    assert status["last_test"]["status"] == "success"
+    assert "abc 123" not in str(result)
+
+
+def test_emby_connection_test_handles_base_url_ending_in_emby(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    result, err = poster_maintenance.test_emby_connection(
+        {"emby_url": "http://emby:8096/emby", "emby_api_key": "secret"},
+        opener=fake_open,
+    )
+
+    assert err is None
+    assert result["status"] == "success"
+    assert captured["url"] == "http://emby:8096/emby/System/Info?api_key=secret"
+
+
+def test_emby_connection_test_skips_missing_config(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    called = False
+
+    def fake_open(request, timeout):
+        nonlocal called
+        called = True
+
+    result, err = poster_maintenance.test_emby_connection({}, opener=fake_open)
+
+    assert err is None
+    assert result["status"] == "skipped"
+    assert called is False
+
+
+def test_emby_connection_test_redacts_failed_http_response(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    def fake_open(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized secret",
+            hdrs=None,
+            fp=None,
+        )
+
+    result, err = poster_maintenance.test_emby_connection(
+        {"emby_url": "http://emby:8096", "emby_api_key": "secret"},
+        opener=fake_open,
+    )
+
+    assert err is None
+    assert result["status"] == "failed"
+    assert result["http_status"] == 401
+    assert "secret" not in str(result)
+
+
 def test_landscape_poster_routes_run_and_report_status(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
@@ -248,6 +359,91 @@ def test_landscape_poster_settings_save_without_exposing_api_key(monkeypatch, tm
     assert "secret" not in str(payload)
 
 
+def test_landscape_poster_emby_test_route_uses_saved_key_fallback(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    poster_maintenance.save_settings(
+        _settings(emby_url="http://saved:8096", emby_api_key="saved-secret")
+    )
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ServerName":"Saved Emby","Version":"4.9.0"}'
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    monkeypatch.setattr(poster_maintenance.urllib.request, "urlopen", fake_open)
+
+    res = routes.app.test_client().post(
+        "/api/maintenance/landscape-posters/emby/test",
+        json={"emby_url": "http://saved:8096"},
+    )
+    payload = res.get_json()
+
+    assert res.status_code == 200
+    assert payload["result"]["status"] == "success"
+    assert captured["url"] == "http://saved:8096/emby/System/Info?api_key=saved-secret"
+    assert payload["status"]["emby_status"]["last_test"]["server_name"] == "Saved Emby"
+    assert "saved-secret" not in str(payload)
+
+
+def test_landscape_poster_emby_test_route_allows_unsaved_values(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ServerName":"Unsaved Emby"}'
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    monkeypatch.setattr(poster_maintenance.urllib.request, "urlopen", fake_open)
+
+    res = routes.app.test_client().post(
+        "/api/maintenance/landscape-posters/emby/test",
+        json={"emby_url": "http://unsaved:8096", "emby_api_key": "unsaved-secret"},
+    )
+    status_res = routes.app.test_client().get("/api/maintenance/landscape-posters/status")
+
+    assert res.status_code == 200
+    assert captured["url"] == "http://unsaved:8096/emby/System/Info?api_key=unsaved-secret"
+    assert poster_maintenance.load_settings()["emby_api_key"] == ""
+    assert status_res.get_json()["emby_status"]["last_test"]["server_name"] == "Unsaved Emby"
+    assert "unsaved-secret" not in str(res.get_json())
+
+
+def test_landscape_poster_emby_test_route_rejects_malformed_payload(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    res = routes.app.test_client().post(
+        "/api/maintenance/landscape-posters/emby/test",
+        json=["bad"],
+    )
+
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "Settings are invalid"
+
+
 def test_landscape_poster_ui_assets_render():
     client = routes.app.test_client()
 
@@ -264,8 +460,13 @@ def test_landscape_poster_ui_assets_render():
     assert res.status_code == 200
     assert "Landscape Posters" in html
     assert 'id="posterRunButton"' in html
+    assert 'id="posterEmbyTestButton"' in html
+    assert 'id="posterEmbyLastTest"' in html
+    assert 'id="posterEmbyLastRefresh"' in html
     assert "fetch('/api/maintenance/landscape-posters/status')" in script
     assert "fetch('/api/maintenance/landscape-posters/run'" in script
     assert "fetch('/api/maintenance/landscape-posters/settings'" in script
+    assert "fetch('/api/maintenance/landscape-posters/emby/test'" in script
+    assert "server.textContent" in script
     assert "escapeHtml(item.source)" in script
     assert "escapeHtml(item.poster)" in script

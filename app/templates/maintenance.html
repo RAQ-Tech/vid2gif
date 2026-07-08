@@ -113,6 +113,19 @@
             <input id="posterEmbyApiKey" class="form-control" type="password" autocomplete="off" placeholder="Leave blank to keep current">
           </div>
         </div>
+        <div class="toolbar-row mt-3 mb-2">
+          <button id="posterEmbyTestButton" class="btn btn-outline-secondary btn-sm" type="button">
+            <i class="bi bi-plug" aria-hidden="true"></i>
+            <span>Test Emby</span>
+          </button>
+          <span id="posterEmbyConfigured" class="badge text-bg-secondary">Not configured</span>
+        </div>
+        <div class="metric-row mt-0">
+          <span id="posterEmbyLastTest">Last test: never</span>
+          <span id="posterEmbyLastRefresh">Last refresh: never</span>
+        </div>
+        <div id="posterEmbyServer" class="scan-estimate-detail mt-1">Server: unknown</div>
+        <div id="posterEmbyStatusMessage" class="scan-estimate-detail mt-1"></div>
       </div>
     </div>
 

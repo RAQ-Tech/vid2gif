@@ -411,6 +411,47 @@
     return date.toLocaleString();
   }
 
+  function embyResultLabel(result, emptyValue) {
+    if (!result || !result.status) return emptyValue || 'never';
+    const date = formatDateLabel(result.checked_at, 'unknown time');
+    return `${result.status}: ${date}`;
+  }
+
+  function renderEmbyStatus(status) {
+    const configured = byId('posterEmbyConfigured');
+    const lastTest = byId('posterEmbyLastTest');
+    const lastRefresh = byId('posterEmbyLastRefresh');
+    const server = byId('posterEmbyServer');
+    const message = byId('posterEmbyStatusMessage');
+    const lastTestResult = status?.last_test || {};
+    const lastRefreshResult = status?.last_refresh || {};
+
+    if (configured) {
+      configured.className = `badge ${status?.configured ? 'text-bg-success' : 'text-bg-secondary'}`;
+      configured.textContent = status?.configured ? 'Configured' : 'Not configured';
+    }
+    if (lastTest) {
+      lastTest.textContent = `Last test: ${embyResultLabel(lastTestResult, 'never')}`;
+    }
+    if (lastRefresh) {
+      lastRefresh.textContent = `Last refresh: ${embyResultLabel(lastRefreshResult, 'never')}`;
+    }
+    if (server) {
+      const serverName = lastTestResult.server_name || '';
+      const version = lastTestResult.version || '';
+      server.textContent = serverName
+        ? `Server: ${serverName}${version ? ` (${version})` : ''}`
+        : 'Server: unknown';
+    }
+    if (message) {
+      const detail = lastTestResult.message || lastRefreshResult.message || '';
+      message.textContent = detail;
+      if (lastTestResult.status) {
+        message.className = `scan-estimate-detail mt-1 ${lastTestResult.status === 'failed' ? 'text-danger' : ''}`;
+      }
+    }
+  }
+
   function applyPosterSettings(settings) {
     if (!settings) return;
     const enabled = byId('posterAutomationEnabled');
@@ -490,6 +531,7 @@
     } else {
       setPosterMessage('Landscape poster automation is disabled', 'Run manually or enable automatic scans.');
     }
+    renderEmbyStatus(data?.emby_status);
     renderPosterItems(last);
   }
 
@@ -548,6 +590,39 @@
     }
   }
 
+  async function testEmbyConnection() {
+    const button = byId('posterEmbyTestButton');
+    const message = byId('posterEmbyStatusMessage');
+    if (button) button.disabled = true;
+    if (message) {
+      message.className = 'scan-estimate-detail mt-1';
+      message.textContent = 'Testing Emby connection...';
+    }
+    setPosterMessage('Testing Emby connection', '');
+    try {
+      const res = await fetch('/api/maintenance/landscape-posters/emby/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(collectPosterSettings())
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPosterMessage(data.error || 'Emby connection test failed', '');
+        return;
+      }
+      renderPosterStatus(data.status);
+      setPosterMessage('Emby connection test complete', data.result?.message || '');
+    } catch (e) {
+      setPosterMessage('Emby connection test failed', e.message || '');
+      if (message) {
+        message.className = 'scan-estimate-detail mt-1 text-danger';
+        message.textContent = e.message || '';
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function runLandscapePosters() {
     const button = byId('posterRunButton');
     if (button) button.disabled = true;
@@ -582,6 +657,7 @@
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
     byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);
+    byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
     byId('posterRefreshButton')?.addEventListener('click', refreshPosterStatus);
     byId('maintenanceAction')?.addEventListener('change', () => {

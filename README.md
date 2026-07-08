@@ -105,7 +105,8 @@ Landscape poster automation is disabled by default. When enabled from the
 Library Maintenance page or environment variables, it copies existing
 `*-background.*` images over matching existing `*-poster.*` files and preserves
 the original poster once as `*-poster-backup.*`. It stores run state under
-`/state` and does not create `.posters_done` marker files.
+`/state` and does not create `.posters_done` marker files. Optional Emby refresh
+settings can be tested from the same page before automatic refresh is enabled.
 
 ## Example Workflow
 
