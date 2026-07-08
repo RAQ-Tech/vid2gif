@@ -326,6 +326,54 @@ body {
   gap: 12px;
 }
 
+.maintenance-panel {
+  border-radius: 8px;
+}
+
+.maintenance-status-strip {
+  grid-template-columns: minmax(150px, 0.7fr) minmax(280px, 1.7fr) minmax(140px, 0.6fr) minmax(160px, 0.8fr);
+}
+
+.maintenance-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.maintenance-group {
+  padding: 14px;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  background: var(--bs-body-bg);
+}
+
+.maintenance-group-heading,
+.maintenance-group-summary {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.maintenance-group-title {
+  min-width: min(100%, 320px);
+  flex: 1;
+}
+
+.maintenance-group-summary {
+  margin-top: 10px;
+  color: var(--bs-secondary-color);
+  font-size: 0.875rem;
+}
+
+.maintenance-table td,
+.maintenance-table th {
+  white-space: nowrap;
+}
+
+.maintenance-plan-list {
+  margin-bottom: 0;
+}
+
 .test-lab-variant {
   padding: 12px;
 }
@@ -616,6 +664,7 @@ body {
   }
 
   .status-strip,
+  .maintenance-status-strip,
   .settings-grid,
   .log-metrics,
   .test-lab-grid {

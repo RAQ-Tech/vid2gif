@@ -4,6 +4,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, R
 
 from . import app_settings
 from . import estimate_history
+from . import maintenance
 from . import test_lab
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
 from .utils import (
@@ -272,6 +273,11 @@ def settings_page():
     )
 
 
+@app.route("/maintenance")
+def maintenance_page():
+    return render_template("maintenance.html", lib_root=LIB_ROOT)
+
+
 @app.route("/queue")
 def queue_page():
     limit = _queue_limit() if "limit" in request.args else None
@@ -473,6 +479,57 @@ def api_media_browser():
             "files": files,
         }
     )
+
+
+def _json_or_form_data():
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+    elif request.form:
+        data = request.form.to_dict(flat=True)
+    else:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+@app.route("/api/maintenance/duplicates/scan", methods=["POST"])
+def api_maintenance_duplicates_scan():
+    data = _json_or_form_data()
+    scan, err = maintenance.start_duplicate_scan(
+        data.get("path"),
+        lib_root=LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/duplicates/status")
+def api_maintenance_duplicates_status():
+    payload, err = maintenance.status_payload(request.args.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/duplicates/plan", methods=["POST"])
+def api_maintenance_duplicates_plan():
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        request.get_json(silent=True) or {},
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/duplicates/apply", methods=["POST"])
+def api_maintenance_duplicates_apply():
+    data = request.get_json(silent=True) or {}
+    result, err = maintenance.apply_duplicate_cleanup_plan(data.get("plan_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"result": result})
 
 
 @app.route("/api/scan-estimate")

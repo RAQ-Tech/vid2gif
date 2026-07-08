@@ -1,0 +1,120 @@
+{% extends 'base.html' %}
+
+{% block title %}vid2gif Library Maintenance{% endblock %}
+
+{% block content %}
+<div class="workspace-shell">
+  <div class="workspace-heading">
+    <div>
+      <h1 class="h3 mb-1">Library Maintenance</h1>
+      <div class="text-muted small">Scan media folders, review duplicate candidates, and clean only confirmed files.</div>
+    </div>
+  </div>
+
+  <section class="status-strip maintenance-status-strip" aria-label="Duplicate cleanup status">
+    <div class="status-tile">
+      <div class="metric-label">Scan</div>
+      <div id="maintenanceScanState" class="metric-value">Idle</div>
+    </div>
+    <div class="status-tile status-tile-wide">
+      <div class="d-flex justify-content-between gap-3">
+        <div>
+          <div class="metric-label">Progress</div>
+          <div id="maintenanceProgressLabel" class="metric-value">Choose a folder</div>
+        </div>
+        <span id="maintenanceProgressPercent" class="small text-muted">0%</span>
+      </div>
+      <div class="progress progress-thin mt-2" role="progressbar" aria-label="Duplicate scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="maintenanceProgressBar" class="progress-bar" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Groups</div>
+      <div id="maintenanceGroupCount" class="metric-value">0</div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Selected Size</div>
+      <div id="maintenanceSelectedSize" class="metric-value">0 B</div>
+    </div>
+  </section>
+
+  <section class="workspace-panel maintenance-panel">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">Duplicate Identification</h2>
+        <div class="text-muted small">Only videos in the same folder with matching cleaned names are grouped.</div>
+      </div>
+    </div>
+
+    <div class="settings-panel">
+      <div class="panel-subheading">
+        <i class="bi bi-folder2-open" aria-hidden="true"></i>
+        <span>Scan Source</span>
+      </div>
+      <label class="form-label" for="maintenancePath">Library path</label>
+      <div class="input-group">
+        <input id="maintenancePath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
+        <button id="maintenanceBrowseButton" class="btn btn-outline-secondary" type="button">
+          <i class="bi bi-search" aria-hidden="true"></i>
+          <span>Browse</span>
+        </button>
+        <button id="maintenanceScanButton" class="btn btn-primary" type="button">
+          <i class="bi bi-search" aria-hidden="true"></i>
+          <span>Scan</span>
+        </button>
+      </div>
+      <div id="maintenanceBrowser" class="media-browser mt-3"></div>
+    </div>
+  </section>
+
+  <section class="workspace-panel maintenance-panel mt-3">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">Review Cleanup</h2>
+        <div class="text-muted small">Choose the keeper for each group, then confirm the exact file action plan.</div>
+      </div>
+      <div class="toolbar-row mb-0">
+        <label class="form-label mb-0 compact-control" for="maintenanceAction">
+          Action
+          <select id="maintenanceAction" class="form-select form-select-sm">
+            <option value="move" selected>Move to quarantine</option>
+            <option value="delete">Delete immediately</option>
+          </select>
+        </label>
+        <button id="maintenancePlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
+          <i class="bi bi-list-check" aria-hidden="true"></i>
+          <span>Review Plan</span>
+        </button>
+        <button id="maintenanceApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+          <i class="bi bi-check2-circle" aria-hidden="true"></i>
+          <span>Apply</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="maintenanceMessage" class="scan-estimate" aria-live="polite">
+      <i class="bi bi-info-circle" aria-hidden="true"></i>
+      <div>
+        <div id="maintenanceMessageTitle">No scan results yet.</div>
+        <div id="maintenanceMessageDetail" class="scan-estimate-detail"></div>
+      </div>
+    </div>
+
+    <div id="maintenanceGroups" class="maintenance-groups mt-3">
+      <div class="text-muted text-center py-4">Duplicate groups will appear here after a scan.</div>
+    </div>
+
+    <div id="maintenancePlanSummary" class="maintenance-plan-summary mt-3"></div>
+  </section>
+</div>
+
+<script>
+  window.vid2gifMaintenanceConfig = {
+    libRoot: {{ lib_root|tojson }}
+  };
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='maintenance.js') }}"></script>
+{% endblock %}
