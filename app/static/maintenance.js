@@ -5,10 +5,12 @@
   const groupSummaries = new Map();
   let currentScan = null;
   let currentPlan = null;
+  let currentApply = null;
   let currentGroupsPage = null;
   let groupPageOffset = 0;
   let groupPageLimit = 25;
   let pollTimer = null;
+  let applyPollTimer = null;
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
 
@@ -79,6 +81,11 @@
       bar.parentElement.setAttribute('aria-valuenow', pct);
     }
     if (groups) groups.textContent = String(scan?.duplicate_group_count || 0);
+    const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
+    const scanButton = byId('maintenanceScanButton');
+    const cancelButton = byId('maintenanceCancelScanButton');
+    if (scanButton) scanButton.disabled = active;
+    if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
   }
 
   function invalidatePlan() {
@@ -430,6 +437,13 @@
     }
   }
 
+  function stopApplyPolling() {
+    if (applyPollTimer) {
+      clearInterval(applyPollTimer);
+      applyPollTimer = null;
+    }
+  }
+
   function handleScan(scan) {
     currentScan = scan;
     setProgress(scan);
@@ -450,10 +464,12 @@
       }
     } else if (scan.status === 'failed') {
       setMessage('Scan failed', scan.error || '');
+    } else if (scan.status === 'cancelled') {
+      setMessage('Scan cancelled', '');
     } else {
       setMessage(scan.progress_label || 'Scanning', '');
     }
-    if (scan && (scan.status === 'success' || scan.status === 'failed')) {
+    if (scan && ['success', 'failed', 'cancelled'].includes(scan.status)) {
       stopPolling();
     }
   }
@@ -487,6 +503,8 @@
     currentGroupsPage = null;
     groupPageOffset = 0;
     currentPlan = null;
+    currentApply = null;
+    stopApplyPolling();
     invalidatePlan();
     setMessage('Starting scan', '');
     setProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued', duplicate_group_count: 0});
@@ -508,7 +526,29 @@
     } catch (e) {
       setMessage('Scan could not start', e.message || '');
     } finally {
-      if (button) button.disabled = false;
+      if (button) button.disabled = Boolean(currentScan?.active);
+    }
+  }
+
+  async function cancelScan() {
+    if (!currentScan?.id) return;
+    const cancelButton = byId('maintenanceCancelScanButton');
+    if (cancelButton) cancelButton.disabled = true;
+    setMessage('Cancelling scan', 'The current scan will stop after the active folder or file check finishes.');
+    try {
+      const res = await fetch('/api/maintenance/duplicates/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: currentScan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setMessage(data.error || 'Scan could not be cancelled', '');
+        return;
+      }
+      handleScan(data.scan);
+    } catch (e) {
+      setMessage('Scan could not be cancelled', e.message || '');
     }
   }
 
@@ -587,9 +627,61 @@
       currentPlan = data.plan;
       renderPlan(currentPlan);
       byId('maintenanceApplyButton').disabled = !currentPlan.file_count;
-      setMessage('Review the cleanup plan before applying', currentPlan.total_size_label || '');
+      setMessage(
+        'Review the cleanup plan before applying',
+        Number(currentPlan.file_count || 0) >= 100
+          ? `${currentPlan.file_count} files selected. This can take a while and will continue in the background.`
+          : (currentPlan.total_size_label || '')
+      );
     } catch (e) {
       setMessage('Plan could not be built', e.message || '');
+    }
+  }
+
+  function handleApply(apply) {
+    currentApply = apply;
+    const button = byId('maintenanceApplyButton');
+    const running = apply && ['queued', 'running'].includes(apply.status || '');
+    if (button) button.disabled = running || !currentPlan;
+    if (!apply) return;
+    if (running) {
+      const counts = `${apply.processed_count || 0} of ${apply.file_count || 0} files`;
+      const detail = `${counts}, ${apply.applied_count || 0} applied, ${apply.missing_count || 0} missing, ${apply.refused_count || 0} refused`;
+      setMessage(apply.progress_label || 'Cleanup running', apply.large_operation ? `${detail}. Large cleanup is running in the background.` : detail);
+      return;
+    }
+    if (apply.status === 'success') {
+      stopApplyPolling();
+      const result = apply.result || {};
+      setMessage(
+        `${result.applied_count || apply.applied_count || 0} files processed`,
+        `${result.total_applied_label || '0 B'} cleaned, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused`
+      );
+      refreshMaintenanceLogs();
+      currentPlan = null;
+      if (button) button.disabled = true;
+      return;
+    }
+    if (apply.status === 'failed') {
+      stopApplyPolling();
+      setMessage('Cleanup failed', apply.error || '');
+    }
+  }
+
+  async function pollApply(applyId) {
+    if (!applyId) return;
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/apply/status?apply_id=${encodeURIComponent(applyId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setMessage(data.error || 'Cleanup status unavailable', '');
+        stopApplyPolling();
+        return;
+      }
+      handleApply(data.apply);
+    } catch (e) {
+      setMessage('Cleanup status unavailable', e.message || '');
+      stopApplyPolling();
     }
   }
 
@@ -616,13 +708,13 @@
         setMessage(data.error || 'Cleanup failed', '');
         return;
       }
-      const result = data.result || {};
-      setMessage(
-        `${result.applied_count || 0} files processed`,
-        `${result.total_applied_label || '0 B'} cleaned, ${result.missing_count || 0} missing, ${result.refused_count || 0} refused`
-      );
-      refreshMaintenanceLogs();
-      currentPlan = null;
+      handleApply(data.apply);
+      stopApplyPolling();
+      if (data.apply?.id && ['queued', 'running'].includes(data.apply.status || '')) {
+        applyPollTimer = setInterval(() => pollApply(data.apply.id), 1000);
+      } else if (data.apply?.id) {
+        pollApply(data.apply.id);
+      }
     } catch (e) {
       setMessage('Cleanup failed', e.message || '');
     }
@@ -969,6 +1061,7 @@
       openBrowser(byId('maintenancePath')?.value.trim() || config.libRoot || '/library');
     });
     byId('maintenanceScanButton')?.addEventListener('click', startScan);
+    byId('maintenanceCancelScanButton')?.addEventListener('click', cancelScan);
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
     byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);

@@ -118,6 +118,36 @@ def test_queue_status_reports_overall_batch_progress():
     _clear_jobs()
 
 
+def test_completed_job_and_log_retention(monkeypatch, tmp_path):
+    _clear_jobs()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    old_log = logs / "old.txt"
+    keep_log = logs / "keep.txt"
+    old_log.write_text("old", encoding="utf-8")
+    keep_log.write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(jobs, "LOG_DIR", str(logs))
+    monkeypatch.setattr(jobs, "JOB_RETENTION_COUNT", 1)
+    monkeypatch.setattr(jobs, "JOB_MAX_AGE_SECONDS", 60)
+    monkeypatch.setattr(jobs, "JOB_LOG_RETENTION_COUNT", 1)
+    monkeypatch.setattr(jobs, "JOB_LOG_MAX_AGE_SECONDS", 60)
+    keep_ts = jobs.time.time()
+    old_ts = keep_ts - 120
+    jobs.os.utime(old_log, (old_ts, old_ts))
+    jobs.os.utime(keep_log, (keep_ts, keep_ts))
+    jobs.jobs["old"] = _make_job(job_id="old", status="success", log_path=str(old_log))
+    jobs.jobs["old"].update({"_finished_ts": old_ts, "_created_ts": old_ts})
+    jobs.jobs["keep"] = _make_job(job_id="keep", status="success", log_path=str(keep_log))
+    jobs.jobs["keep"].update({"_finished_ts": keep_ts, "_created_ts": keep_ts})
+
+    jobs.prune_job_history()
+
+    assert list(jobs.jobs) == ["keep"]
+    assert keep_log.exists()
+    assert not old_log.exists()
+    _clear_jobs()
+
+
 def test_listdir_rejects_prefix_sibling(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     sibling = tmp_path / "library2"

@@ -26,6 +26,7 @@ from .jobs import (
     emit_queue_status,
     new_queue_batch_id,
     public_job,
+    prune_job_history,
     queue_status_payload,
 )
 from .progress import format_duration, format_size, mark_job_finished
@@ -148,6 +149,7 @@ def _compatible_file_count(real_path):
 
 
 def _gifs_workspace_context(limit):
+    prune_job_history()
     with lock:
         running_jobs = [
             public_job(j) for j in jobs.values() if j.get("status") == "running"
@@ -438,6 +440,7 @@ def api_logs(job_id):
 
 @app.route("/api/status")
 def api_status():
+    prune_job_history()
     with lock:
         return jsonify([public_job(j) for j in jobs.values()])
 
@@ -545,6 +548,15 @@ def api_maintenance_duplicates_status():
     return jsonify(payload)
 
 
+@app.route("/api/maintenance/duplicates/cancel", methods=["POST"])
+def api_maintenance_duplicates_cancel():
+    data = request.get_json(silent=True) or {}
+    scan, err = maintenance.cancel_duplicate_scan(data.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"scan": maintenance.public_scan(scan)})
+
+
 @app.route("/api/maintenance/duplicates/groups")
 def api_maintenance_duplicates_groups():
     payload, err = maintenance.groups_payload(
@@ -581,10 +593,18 @@ def api_maintenance_duplicates_plan():
 @app.route("/api/maintenance/duplicates/apply", methods=["POST"])
 def api_maintenance_duplicates_apply():
     data = request.get_json(silent=True) or {}
-    result, err = maintenance.apply_duplicate_cleanup_plan(data.get("plan_id"))
+    run, err = maintenance.start_duplicate_apply(data.get("plan_id"))
     if err:
         return jsonify({"error": err}), 400
-    return jsonify({"result": result})
+    return jsonify({"apply": maintenance.public_apply_run(run)})
+
+
+@app.route("/api/maintenance/duplicates/apply/status")
+def api_maintenance_duplicates_apply_status():
+    payload, err = maintenance.duplicate_apply_status(request.args.get("apply_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
 
 
 @app.route("/api/maintenance/duplicates/logs")

@@ -47,6 +47,13 @@ from .progress import (
 from .utils import find_background_image, path_is_under
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 SCHEMA_VERSION = 1
 MIN_VARIANTS = 2
 MAX_VARIANTS = 4
@@ -54,6 +61,12 @@ MAX_DISPLAY_NAME_LENGTH = 80
 PREVIEW_DIR_NAME = "_previews"
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 LAB_TERMINAL_STATUSES = TERMINAL_STATUSES | {"partial"}
+TEST_LAB_RUN_RETENTION_COUNT = max(1, _env_int("TEST_LAB_RUN_RETENTION_COUNT", 100))
+TEST_LAB_RUN_MAX_AGE_SECONDS = max(
+    60,
+    _env_int("TEST_LAB_RUN_MAX_AGE_SECONDS", 14 * 24 * 60 * 60),
+)
+TEST_LAB_INVENTORY_LIMIT = max(1, _env_int("TEST_LAB_INVENTORY_LIMIT", 200))
 __test__ = False
 
 test_lab_runs = {}
@@ -1023,13 +1036,45 @@ def start_test_lab_worker():
         _worker_started = True
 
 
-def _inventory_items():
+def _run_sort_ts(run):
+    return run.get("_finished_ts") or run.get("_created_ts") or 0
+
+
+def _prune_test_lab_runs_locked(now=None):
+    now = now or time.time()
+    terminal = [
+        (run_id, run)
+        for run_id, run in test_lab_runs.items()
+        if run.get("status") in LAB_TERMINAL_STATUSES
+    ]
+    for run_id, run in terminal:
+        finished = run.get("_finished_ts") or run.get("_created_ts") or now
+        if now - finished > TEST_LAB_RUN_MAX_AGE_SECONDS:
+            test_lab_runs.pop(run_id, None)
+
+    terminal = sorted(
+        (
+            (run_id, run)
+            for run_id, run in test_lab_runs.items()
+            if run.get("status") in LAB_TERMINAL_STATUSES
+        ),
+        key=lambda item: _run_sort_ts(item[1]),
+        reverse=True,
+    )
+    for run_id, _run in terminal[TEST_LAB_RUN_RETENTION_COUNT:]:
+        test_lab_runs.pop(run_id, None)
+
+
+def _inventory_items(limit=None):
+    if limit is None:
+        limit = TEST_LAB_INVENTORY_LIMIT
     items = []
     total_size = 0
+    file_count = 0
     try:
         run_ids = sorted(os.listdir(TEST_LAB_ROOT), reverse=True)
     except Exception:
-        return [], 0
+        return [], 0, 0
 
     for run_id in run_ids:
         if not _safe_name(run_id):
@@ -1057,6 +1102,9 @@ def _inventory_items():
             stat = os.stat(path)
             size = stat.st_size
             total_size += size
+            file_count += 1
+            if limit and len(items) >= limit:
+                continue
             meta = variants.get(filename) or {}
             display = _display_metadata(run_id, filename, path)
             items.append(
@@ -1075,14 +1123,15 @@ def _inventory_items():
                     **display,
                 }
             )
-    return items, total_size
+    return items, total_size, file_count
 
 
 def status_payload():
     with test_lab_lock:
+        _prune_test_lab_runs_locked()
         runs = [_public_run(run) for run in test_lab_runs.values()]
     runs.sort(key=lambda run: run.get("id", ""), reverse=True)
-    items, total_size = _inventory_items()
+    items, total_size, file_count = _inventory_items()
     return {
         "runs": runs,
         "active_run": next(
@@ -1094,6 +1143,9 @@ def status_payload():
             runs[0] if runs else None,
         ),
         "files": items,
+        "file_count": file_count,
+        "files_truncated": file_count > len(items),
+        "file_limit": TEST_LAB_INVENTORY_LIMIT,
         "total_size_bytes": total_size,
         "total_size_label": format_size(total_size),
         "test_lab_root": TEST_LAB_ROOT,

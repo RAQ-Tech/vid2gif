@@ -1,4 +1,5 @@
 import os
+import subprocess
 import time
 
 import pytest
@@ -9,6 +10,7 @@ from app import app_settings, maintenance, routes
 def _reset_maintenance(monkeypatch, metadata_by_name=None, settings_overrides=None):
     maintenance.duplicate_scans.clear()
     maintenance.cleanup_plans.clear()
+    maintenance.duplicate_apply_runs.clear()
     metadata_by_name = metadata_by_name or {}
     settings = app_settings.default_settings()
     settings.update(settings_overrides or {})
@@ -567,6 +569,59 @@ def test_duplicate_groups_payload_reports_missing_and_expired_scans(monkeypatch,
     assert expired_err == "Scan not found"
 
 
+def test_duplicate_scan_reuses_active_scan_and_can_cancel(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    _reset_maintenance(monkeypatch)
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(maintenance.threading, "Thread", FakeThread)
+
+    first, err = maintenance.start_duplicate_scan(str(lib), lib_root=str(lib))
+    second, err2 = maintenance.start_duplicate_scan(str(lib), lib_root=str(lib))
+    cancelled, cancel_err = maintenance.cancel_duplicate_scan(first["id"])
+
+    assert err is None
+    assert err2 is None
+    assert second["id"] == first["id"]
+    assert cancel_err is None
+    assert cancelled["status"] == "cancelled"
+
+
+def test_duplicate_scan_cancel_route_returns_json(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    _reset_maintenance(monkeypatch)
+    monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(maintenance.threading, "Thread", FakeThread)
+    client = routes.app.test_client()
+
+    scan_res = client.post("/api/maintenance/duplicates/scan", json={"path": str(lib)})
+    scan_id = scan_res.get_json()["scan"]["id"]
+    cancel_res = client.post(
+        "/api/maintenance/duplicates/cancel",
+        json={"scan_id": scan_id},
+    )
+
+    assert cancel_res.status_code == 200
+    assert cancel_res.is_json
+    assert cancel_res.get_json()["scan"]["status"] == "cancelled"
+
+
 def test_cleanup_plan_uses_defaults_for_unvisited_paged_groups(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write_duplicate_pair(lib, "First")
@@ -589,6 +644,75 @@ def test_cleanup_plan_uses_defaults_for_unvisited_paged_groups(monkeypatch, tmp_
     assert plan["file_count"] == 1
     assert plan["files"][0]["group_id"] == second_group["id"]
     assert plan["files"][0]["source_path"] == str(second_remove)
+
+
+def test_duplicate_apply_can_run_in_background_and_report_status(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write_duplicate_pair(lib, "Movie")
+    scan = _scan(lib, lib, monkeypatch)
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {"scan_id": scan["id"], "action": "move", "groups": []},
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    class ImmediateThread:
+        def __init__(self, target=None, args=(), **kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(maintenance.threading, "Thread", ImmediateThread)
+
+    run, err = maintenance.start_duplicate_apply(plan["id"])
+    status, status_err = maintenance.duplicate_apply_status(run["id"])
+
+    assert err is None
+    assert status_err is None
+    assert status["apply"]["status"] == "success"
+    assert status["apply"]["processed_count"] == plan["file_count"]
+    assert status["apply"]["result"]["applied_count"] == plan["file_count"]
+    assert status["apply"]["result"]["log"]["id"].endswith(".jsonl")
+
+
+def test_duplicate_apply_route_starts_background_run(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write_duplicate_pair(lib, "Movie")
+    scan = _scan(lib, lib, monkeypatch)
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {"scan_id": scan["id"], "action": "delete", "groups": []},
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(maintenance.threading, "Thread", FakeThread)
+
+    res = routes.app.test_client().post(
+        "/api/maintenance/duplicates/apply",
+        json={"plan_id": plan["id"]},
+    )
+
+    assert res.status_code == 200
+    assert res.is_json
+    assert res.get_json()["apply"]["status"] == "queued"
+
+
+def test_duplicate_probe_timeout_returns_empty_metadata(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+
+    monkeypatch.setattr(maintenance.subprocess, "run", fake_run)
+
+    assert maintenance.probe_video_metadata("/library/bad.mkv") == {}
 
 
 def test_maintenance_routes_report_missing_scan_and_malformed_plan():
@@ -626,13 +750,16 @@ def test_maintenance_page_and_static_assets_render():
     assert 'data-maint-tab-hash="posters"' in html
     assert 'data-maint-tab-hash="duplicates"' in html
     assert 'id="maintenanceScanButton"' in html
+    assert 'id="maintenanceCancelScanButton"' in html
     assert 'id="maintenanceRefreshLogsButton"' in html
     assert 'src="/static/maintenance.js"' in html
     assert "fetch('/api/maintenance/duplicates/scan'" in script
+    assert "fetch('/api/maintenance/duplicates/cancel'" in script
     assert "/api/maintenance/duplicates/groups?scan_id=" in script
     assert "/api/maintenance/duplicates/groups/${encodeURIComponent(groupId)}" in script
     assert "fetch('/api/maintenance/duplicates/plan'" in script
     assert "fetch('/api/maintenance/duplicates/apply'" in script
+    assert "/api/maintenance/duplicates/apply/status?apply_id=" in script
     assert "fetch('/api/maintenance/duplicates/logs')" in script
     assert "maintenance_active_tab" in script
     assert "readJsonResponse" in script

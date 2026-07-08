@@ -119,6 +119,32 @@ def test_landscape_poster_run_skips_when_poster_already_matches(monkeypatch, tmp
     assert not (movie / "Movie-poster-backup.jpg").exists()
 
 
+def test_landscape_poster_status_prunes_old_memory_runs(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(poster_maintenance, "POSTER_RUN_RETENTION_COUNT", 1)
+    poster_maintenance.poster_runs["old"] = {
+        "id": "old",
+        "status": "success",
+        "created_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:00Z",
+        "counters": {},
+        "items": [],
+    }
+    poster_maintenance.poster_runs["new"] = {
+        "id": "new",
+        "status": "success",
+        "created_at": "2026-01-02T00:00:00Z",
+        "finished_at": "2026-01-02T00:00:00Z",
+        "counters": {},
+        "items": [],
+    }
+
+    payload = poster_maintenance.status_payload()
+
+    assert payload["last_run"]["id"] == "new"
+    assert list(poster_maintenance.poster_runs) == ["new"]
+
+
 def test_landscape_poster_manifest_skips_unchanged_folders_incrementally(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"

@@ -19,6 +19,13 @@ from .progress import format_duration, utc_iso
 from .utils import BACKGROUND_IMAGE_EXTS, path_is_under, resolve_case_insensitive
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 SETTINGS_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
 EMBY_STATUS_SCHEMA_VERSION = 1
@@ -30,6 +37,8 @@ POSTER_SUFFIX = "-poster"
 BACKUP_SUFFIX = "-poster-backup"
 MIN_SCAN_INTERVAL_SECONDS = 60
 MIN_FULL_SCAN_INTERVAL_SECONDS = 3600
+POSTER_RUN_RETENTION_COUNT = max(1, _env_int("POSTER_RUN_RETENTION_COUNT", 25))
+POSTER_RUN_ITEM_RETENTION_COUNT = max(50, _env_int("POSTER_RUN_ITEM_RETENTION_COUNT", 200))
 __test__ = False
 
 _settings_lock = threading.Lock()
@@ -465,10 +474,26 @@ def public_run(run):
     return _run_summary(run) if run else None
 
 
+def _prune_poster_runs_locked():
+    current_id = _current_run_id
+    terminal = sorted(
+        (
+            (run_id, run)
+            for run_id, run in poster_runs.items()
+            if run_id != current_id and run.get("status") in {"success", "failed"}
+        ),
+        key=lambda item: item[1].get("finished_at") or item[1].get("created_at") or "",
+        reverse=True,
+    )
+    for run_id, _run in terminal[POSTER_RUN_RETENTION_COUNT:]:
+        poster_runs.pop(run_id, None)
+
+
 def _set_run_state(run, **values):
     run.update(values)
     with _run_start_lock:
         poster_runs[run["id"]] = run
+        _prune_poster_runs_locked()
 
 
 def _normalize_scan_path(path, lib_root):
@@ -541,6 +566,8 @@ def _scan_and_apply(run, lib_root, settings):
             key = _path_key(candidate["background_path"], root)
             records[key] = _record_for(candidate, root, status, message)
             items.append(_public_item(candidate, root, status, message))
+            if len(items) > POSTER_RUN_ITEM_RETENTION_COUNT:
+                del items[: len(items) - POSTER_RUN_ITEM_RETENTION_COUNT]
         try:
             current_files = os.listdir(base)
         except OSError:
@@ -907,6 +934,8 @@ def emby_status_payload(settings=None, latest_run=None):
 def status_payload():
     settings = load_settings()
     current, latest, manifest = _latest_run()
+    with _run_start_lock:
+        _prune_poster_runs_locked()
     next_ts = _next_run_timestamp(settings, manifest)
     _scheduler_state["next_run_at"] = utc_iso(next_ts) if next_ts else None
     return {

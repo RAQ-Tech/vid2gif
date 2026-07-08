@@ -1,6 +1,7 @@
 import subprocess
 import shlex
 import json
+import os
 import time
 from collections import deque
 
@@ -23,6 +24,23 @@ FFMPEG_PROGRESS_KEYS = {
 }
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+FFPROBE_TIMEOUT_SECONDS = max(1, _env_int("FFPROBE_TIMEOUT_SECONDS", 30))
+
+
+def _check_output_with_timeout(cmd, **kwargs):
+    try:
+        return subprocess.check_output(cmd, timeout=FFPROBE_TIMEOUT_SECONDS, **kwargs)
+    except TypeError:
+        return subprocess.check_output(cmd, **kwargs)
+
+
 def ffmpeg_version():
     try:
         return subprocess.check_output(["ffmpeg", "-version"]).decode().splitlines()[0]
@@ -42,7 +60,15 @@ def get_duration(video_path):
         video_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=FFPROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, f"Command {cmd_str} timed out after {FFPROBE_TIMEOUT_SECONDS}s"
     except Exception as e:
         cmd_str = " ".join(shlex.quote(c) for c in cmd)
         return None, f"Command {cmd_str} failed: {e}"
@@ -76,7 +102,15 @@ def probe_video_details(video_path):
         video_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=FFPROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        return None, f"Command {cmd_str} timed out after {FFPROBE_TIMEOUT_SECONDS}s"
     except Exception as e:
         cmd_str = " ".join(shlex.quote(c) for c in cmd)
         return None, f"Command {cmd_str} failed: {e}"
@@ -204,7 +238,7 @@ def _first_video_stream_index(video, logger):
         video,
     ]
     try:
-        info = json.loads(subprocess.check_output(cmd, text=True))
+        info = json.loads(_check_output_with_timeout(cmd, text=True))
         streams = info.get("streams", [])
         idx = 0
         for i, s in enumerate(streams):
@@ -235,7 +269,15 @@ def _get_source_fps(video):
         video,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=FFPROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    try:
         if proc.returncode != 0:
             return None
         rate = proc.stdout.strip()

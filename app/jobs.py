@@ -30,6 +30,18 @@ from .progress import (
 from .utils import find_background_image, path_is_under
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+JOB_RETENTION_COUNT = max(1, _env_int("JOB_RETENTION_COUNT", 500))
+JOB_MAX_AGE_SECONDS = max(60, _env_int("JOB_MAX_AGE_SECONDS", 7 * 24 * 60 * 60))
+JOB_LOG_RETENTION_COUNT = max(1, _env_int("JOB_LOG_RETENTION_COUNT", 500))
+JOB_LOG_MAX_AGE_SECONDS = max(60, _env_int("JOB_LOG_MAX_AGE_SECONDS", 30 * 24 * 60 * 60))
+
 jobs = {}
 job_queue = queue.Queue()
 lock = threading.Lock()
@@ -64,6 +76,82 @@ def public_job(job):
         "gif_optimization_seconds": job.get("gif_optimization_seconds"),
         "gif_optimization_label": job.get("gif_optimization_label", ""),
     }
+
+
+def _job_sort_ts(job):
+    return job.get("_finished_ts") or job.get("_created_ts") or 0
+
+
+def _prune_completed_jobs_locked(now=None):
+    now = now or time.time()
+    active_batch_ids = {
+        job.get("batch_id")
+        for job in jobs.values()
+        if job.get("status") not in TERMINAL_STATUSES and job.get("batch_id")
+    }
+    terminal = [
+        (job_id, job)
+        for job_id, job in jobs.items()
+        if job.get("status") in TERMINAL_STATUSES
+    ]
+    for job_id, job in terminal:
+        if job.get("batch_id") in active_batch_ids:
+            continue
+        finished = job.get("_finished_ts") or job.get("_created_ts") or now
+        if now - finished > JOB_MAX_AGE_SECONDS:
+            jobs.pop(job_id, None)
+
+    terminal = sorted(
+        (
+            (job_id, job)
+            for job_id, job in jobs.items()
+            if job.get("status") in TERMINAL_STATUSES
+            and job.get("batch_id") not in active_batch_ids
+        ),
+        key=lambda item: _job_sort_ts(item[1]),
+        reverse=True,
+    )
+    for job_id, _job in terminal[JOB_RETENTION_COUNT:]:
+        jobs.pop(job_id, None)
+
+
+def _prune_job_logs(active_log_paths, now=None):
+    now = now or time.time()
+    try:
+        names = os.listdir(LOG_DIR)
+    except OSError:
+        return
+    paths = []
+    for name in names:
+        path = os.path.realpath(os.path.join(LOG_DIR, name))
+        if path in active_log_paths or not os.path.isfile(path):
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        paths.append((path, stat.st_mtime))
+
+    paths.sort(key=lambda item: item[1], reverse=True)
+    keep = {path for path, _mtime in paths[:JOB_LOG_RETENTION_COUNT]}
+    for path, mtime in paths:
+        if path in keep and now - mtime <= JOB_LOG_MAX_AGE_SECONDS:
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def prune_job_history():
+    with lock:
+        _prune_completed_jobs_locked()
+        active_log_paths = {
+            os.path.realpath(job.get("log_path", ""))
+            for job in jobs.values()
+            if job.get("log_path")
+        }
+    _prune_job_logs(active_log_paths)
 
 
 def _queue_summary(all_jobs):
@@ -148,6 +236,7 @@ def _queue_summary(all_jobs):
 
 
 def queue_status_payload():
+    prune_job_history()
     with lock:
         running = [
             public_job(j) for j in jobs.values() if j.get("status") == "running"

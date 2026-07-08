@@ -408,6 +408,39 @@ def test_test_lab_inventory_uses_ready_preview_and_excludes_it_from_total(monkey
     assert item["preview_height"] == 720
 
 
+def test_test_lab_status_caps_inventory_payload(monkeypatch, tmp_path):
+    lab_root = _reset_lab_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(test_lab, "TEST_LAB_INVENTORY_LIMIT", 2)
+    monkeypatch.setattr(
+        test_lab.app_settings,
+        "load_settings",
+        lambda: {"schema_version": 1, "test_lab_preview_height": None},
+    )
+    for index in range(3):
+        run_dir = lab_root / f"run{index}"
+        run_dir.mkdir()
+        (run_dir / f"variant-{index}.gif").write_bytes(_gif_bytes())
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": f"run{index}",
+                    "variants": [
+                        {"id": f"variant-{index}", "filename": f"variant-{index}.gif"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    payload = test_lab.status_payload()
+
+    assert payload["file_count"] == 3
+    assert len(payload["files"]) == 2
+    assert payload["files_truncated"] is True
+    assert payload["file_limit"] == 2
+
+
 def test_test_lab_delete_removes_associated_previews(monkeypatch, tmp_path):
     lab_root = _reset_lab_roots(monkeypatch, tmp_path)
     run_dir = lab_root / "run1"

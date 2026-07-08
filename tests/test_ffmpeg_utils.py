@@ -366,3 +366,15 @@ def test_first_video_stream_index_skips_attached_picture(monkeypatch):
 
     assert idx == 1
     assert logger.info_msgs
+
+
+def test_get_duration_timeout_returns_error(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(ffmpeg_utils.subprocess, "run", fake_run)
+
+    duration, err = ffmpeg_utils.get_duration("input.mp4")
+
+    assert duration is None
+    assert "timed out" in err

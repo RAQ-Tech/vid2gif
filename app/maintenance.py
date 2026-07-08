@@ -14,8 +14,16 @@ from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 QUARANTINE_DIRNAME = ".vid2gif-duplicates"
-SCAN_TERMINAL_STATUSES = {"success", "failed"}
+SCAN_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+SCAN_TERMINAL_STATUSES = {"success", "failed", "cancelled"}
 PLAN_ACTIONS = {"move", "delete"}
 MAINTENANCE_LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "duplicates")
 MAINTENANCE_LOG_INDEX = os.path.join(MAINTENANCE_LOG_DIR, "index.json")
@@ -26,11 +34,20 @@ DUPLICATE_GROUP_PAGE_MAX = 100
 DUPLICATE_GROUP_LARGE_RESULT_COUNT = 100
 DUPLICATE_SCAN_RETENTION_COUNT = 10
 DUPLICATE_SCAN_MAX_AGE_SECONDS = 24 * 60 * 60
+DUPLICATE_APPLY_RETENTION_COUNT = 10
+DUPLICATE_APPLY_MAX_AGE_SECONDS = 24 * 60 * 60
+DUPLICATE_APPLY_LARGE_FILE_COUNT = 100
+FFPROBE_TIMEOUT_SECONDS = max(1, _env_int("FFPROBE_TIMEOUT_SECONDS", 30))
 __test__ = False
 
 duplicate_scans = {}
 cleanup_plans = {}
+duplicate_apply_runs = {}
 maintenance_lock = threading.Lock()
+
+
+class _ScanCancelled(Exception):
+    pass
 
 _QUALITY_PATTERNS = [
     r"\b(?:4320p|2160p|1440p|1080p|720p|576p|540p|480p|360p|4k|8k|uhd|fhd|hd)\b",
@@ -258,7 +275,14 @@ def probe_video_metadata(video_path):
         video_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=FFPROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {}
     except Exception:
         return {}
     if proc.returncode != 0:
@@ -419,12 +443,25 @@ def find_accessory_files(video_path, lib_root):
     return accessories
 
 
-def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT):
+def _scan_cancel_requested(scan):
+    if not scan:
+        return False
+    with maintenance_lock:
+        return bool(scan.get("cancel_requested"))
+
+
+def _check_scan_cancelled(scan):
+    if _scan_cancel_requested(scan):
+        raise _ScanCancelled()
+
+
+def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
     settings = settings or duplicate_settings()
     excluded = {str(item).lower() for item in settings.get("excluded_folders") or set()}
     move_root = os.path.realpath(_effective_move_root(settings, lib_root) or "")
     videos = []
     for base, dirs, files in os.walk(root_path, followlinks=False):
+        _check_scan_cancelled(scan)
         dirs[:] = [
             d
             for d in dirs
@@ -438,6 +475,7 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT):
             )
         ]
         for filename in files:
+            _check_scan_cancelled(scan)
             path = os.path.join(base, filename)
             if os.path.islink(path) or not os.path.isfile(path):
                 continue
@@ -703,6 +741,8 @@ def public_scan(scan, include_groups=False):
         "created_at": scan.get("created_at"),
         "started_at": scan.get("started_at"),
         "finished_at": scan.get("finished_at"),
+        "active": scan.get("status") in SCAN_ACTIVE_STATUSES,
+        "cancel_requested": bool(scan.get("cancel_requested")),
         "scanned_video_count": scan.get("scanned_video_count", 0),
         "duplicate_group_count": len(scan.get("groups") or []),
         "reclaimable_bytes": scan.get("reclaimable_bytes", 0),
@@ -756,9 +796,21 @@ def _prune_duplicate_scans_locked(now=None):
         duplicate_scans.pop(scan_id, None)
 
 
+def _active_duplicate_scan_locked():
+    active = [
+        scan
+        for scan in duplicate_scans.values()
+        if scan.get("status") in SCAN_ACTIVE_STATUSES
+    ]
+    if not active:
+        return None
+    return max(active, key=lambda item: item.get("_created_ts") or 0)
+
+
 def _run_scan(scan, lib_root):
     try:
         settings = scan.get("settings") or duplicate_settings()
+        _check_scan_cancelled(scan)
         now = time.time()
         _set_scan_progress(
             scan,
@@ -768,7 +820,13 @@ def _run_scan(scan, lib_root):
             _started_ts=now,
             started_at=utc_iso(now),
         )
-        videos = _collect_videos(scan["path"], settings=settings, lib_root=lib_root)
+        videos = _collect_videos(
+            scan["path"],
+            settings=settings,
+            lib_root=lib_root,
+            scan=scan,
+        )
+        _check_scan_cancelled(scan)
         _set_scan_progress(
             scan,
             10,
@@ -781,6 +839,7 @@ def _run_scan(scan, lib_root):
         total = len(candidates)
         group_index = 1
         for index, paths in enumerate(candidates, start=1):
+            _check_scan_cancelled(scan)
             built_groups = _build_groups(paths, group_index, lib_root, settings)
             if built_groups:
                 groups.extend(built_groups)
@@ -792,6 +851,7 @@ def _run_scan(scan, lib_root):
                 f"Checked {index} of {total} duplicate candidate groups",
             )
 
+        _check_scan_cancelled(scan)
         reclaimable = sum(group.get("reclaimable_bytes") or 0 for group in groups)
         finished = time.time()
         _set_scan_progress(
@@ -801,6 +861,17 @@ def _run_scan(scan, lib_root):
             status="success",
             groups=groups,
             reclaimable_bytes=reclaimable,
+            _finished_ts=finished,
+            finished_at=utc_iso(finished),
+        )
+    except _ScanCancelled:
+        finished = time.time()
+        _set_scan_progress(
+            scan,
+            100,
+            "Scan cancelled",
+            status="cancelled",
+            error="",
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -838,6 +909,7 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "created_at": utc_iso(created),
         "started_at": None,
         "finished_at": None,
+        "cancel_requested": False,
         "scanned_video_count": 0,
         "groups": [],
         "reclaimable_bytes": 0,
@@ -846,6 +918,9 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
     }
     with maintenance_lock:
         _prune_duplicate_scans_locked()
+        active_scan = _active_duplicate_scan_locked()
+        if active_scan:
+            return active_scan, None
         duplicate_scans[scan_id] = scan
 
     if synchronous:
@@ -858,6 +933,40 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
             name=f"vid2gif-maintenance-scan-{scan_id}",
         )
         thread.start()
+    return scan, None
+
+
+def cancel_duplicate_scan(scan_id=None):
+    target_id = str(scan_id or "")
+    now = time.time()
+    with maintenance_lock:
+        _prune_duplicate_scans_locked(now)
+        if target_id:
+            scan = duplicate_scans.get(target_id)
+        else:
+            scan = _active_duplicate_scan_locked()
+        if not scan:
+            return None, "Scan not found"
+        if scan.get("status") in SCAN_TERMINAL_STATUSES:
+            return scan, None
+        scan["cancel_requested"] = True
+        if scan.get("status") == "queued":
+            scan.update(
+                {
+                    "status": "cancelled",
+                    "progress_percent": 100,
+                    "progress_label": "Scan cancelled",
+                    "_finished_ts": now,
+                    "finished_at": utc_iso(now),
+                }
+            )
+        else:
+            scan.update(
+                {
+                    "status": "cancelling",
+                    "progress_label": "Cancelling scan",
+                }
+            )
     return scan, None
 
 
@@ -1333,7 +1442,180 @@ def read_duplicate_cleanup_log(log_id):
         }, None
 
 
-def apply_duplicate_cleanup_plan(plan_id):
+def _prune_duplicate_apply_runs_locked(now=None):
+    now = now or time.time()
+    terminal = [
+        (apply_id, run)
+        for apply_id, run in duplicate_apply_runs.items()
+        if run.get("status") in {"success", "failed"}
+    ]
+    for apply_id, run in terminal:
+        finished = run.get("_finished_ts") or run.get("_created_ts") or now
+        if now - finished > DUPLICATE_APPLY_MAX_AGE_SECONDS:
+            duplicate_apply_runs.pop(apply_id, None)
+
+    terminal = sorted(
+        (
+            (apply_id, run)
+            for apply_id, run in duplicate_apply_runs.items()
+            if run.get("status") in {"success", "failed"}
+        ),
+        key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
+        reverse=True,
+    )
+    for apply_id, _run in terminal[DUPLICATE_APPLY_RETENTION_COUNT:]:
+        duplicate_apply_runs.pop(apply_id, None)
+
+
+def _set_apply_progress(run, **values):
+    if not run:
+        return
+    with maintenance_lock:
+        run.update(values)
+
+
+def _public_apply_result(result):
+    result = result or {}
+    log = result.get("log") or {}
+    return {
+        "plan_id": result.get("plan_id", ""),
+        "scan_id": result.get("scan_id", ""),
+        "action": result.get("action", ""),
+        "applied_count": result.get("applied_count", 0),
+        "missing_count": result.get("missing_count", 0),
+        "refused_count": result.get("refused_count", 0),
+        "total_applied_bytes": result.get("total_applied_bytes", 0),
+        "total_applied_label": result.get("total_applied_label", "0 B"),
+        "log": {key: value for key, value in log.items() if key != "path"},
+    }
+
+
+def public_apply_run(run):
+    if not run:
+        return None
+    result = run.get("result") or {}
+    return {
+        "id": run.get("id", ""),
+        "plan_id": run.get("plan_id", ""),
+        "scan_id": run.get("scan_id", ""),
+        "action": run.get("action", ""),
+        "status": run.get("status", ""),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "progress_percent": run.get("progress_percent", 0),
+        "progress_label": run.get("progress_label", ""),
+        "file_count": run.get("file_count", 0),
+        "processed_count": run.get("processed_count", 0),
+        "applied_count": run.get("applied_count", 0),
+        "missing_count": run.get("missing_count", 0),
+        "refused_count": run.get("refused_count", 0),
+        "current_path": run.get("current_path", ""),
+        "current_name": run.get("current_name", ""),
+        "error": run.get("error", ""),
+        "large_operation": bool(run.get("large_operation")),
+        "result": _public_apply_result(result) if result else None,
+        "log": (result.get("log") or None) if result else None,
+    }
+
+
+def _active_apply_for_plan_locked(plan_id):
+    for run in duplicate_apply_runs.values():
+        if run.get("plan_id") == plan_id and run.get("status") in {"queued", "running"}:
+            return run
+    return None
+
+
+def start_duplicate_apply(plan_id):
+    plan_id = str(plan_id or "")
+    with maintenance_lock:
+        _prune_duplicate_apply_runs_locked()
+        plan = cleanup_plans.get(plan_id)
+        if not plan:
+            return None, "Plan not found"
+        active = _active_apply_for_plan_locked(plan_id)
+        if active:
+            return active, None
+        if plan.get("status") == "applied":
+            return None, "Plan already applied"
+        if plan.get("status") == "applying":
+            return None, "Plan is already applying"
+        run_id = _now_id()
+        created = time.time()
+        run = {
+            "id": run_id,
+            "plan_id": plan_id,
+            "scan_id": plan.get("scan_id", ""),
+            "action": plan.get("action", ""),
+            "status": "queued",
+            "created_at": utc_iso(created),
+            "started_at": None,
+            "finished_at": None,
+            "_created_ts": created,
+            "_started_ts": None,
+            "_finished_ts": None,
+            "progress_percent": 0,
+            "progress_label": "Queued",
+            "file_count": len(plan.get("files") or []),
+            "processed_count": 0,
+            "applied_count": 0,
+            "missing_count": 0,
+            "refused_count": 0,
+            "current_path": "",
+            "current_name": "",
+            "error": "",
+            "result": None,
+            "large_operation": len(plan.get("files") or []) >= DUPLICATE_APPLY_LARGE_FILE_COUNT,
+        }
+        duplicate_apply_runs[run_id] = run
+        plan["status"] = "applying"
+
+    thread = threading.Thread(
+        target=_execute_duplicate_apply,
+        args=(run_id,),
+        daemon=True,
+        name=f"vid2gif-maintenance-apply-{run_id}",
+    )
+    thread.start()
+    return run, None
+
+
+def _execute_duplicate_apply(apply_id):
+    with maintenance_lock:
+        run = duplicate_apply_runs.get(apply_id)
+    if not run:
+        return
+    result, err = apply_duplicate_cleanup_plan(run.get("plan_id"), apply_run=run)
+    if err:
+        finished = time.time()
+        _set_apply_progress(
+            run,
+            status="failed",
+            error=err,
+            progress_label="Cleanup failed",
+            _finished_ts=finished,
+            finished_at=utc_iso(finished),
+        )
+
+
+def duplicate_apply_status(apply_id=None):
+    with maintenance_lock:
+        _prune_duplicate_apply_runs_locked()
+        if apply_id:
+            run = duplicate_apply_runs.get(str(apply_id or ""))
+            if not run:
+                return None, "Apply run not found"
+        elif duplicate_apply_runs:
+            run = max(
+                duplicate_apply_runs.values(),
+                key=lambda item: item.get("_created_ts") or 0,
+            )
+        else:
+            run = None
+    return {"apply": public_apply_run(run)}, None
+
+
+def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
     with maintenance_lock:
         plan = cleanup_plans.get(str(plan_id or ""))
     if not plan:
@@ -1347,20 +1629,58 @@ def apply_duplicate_cleanup_plan(plan_id):
     refused = []
     log_records = []
     total = 0
+    files = list(plan.get("files") or [])
+    file_count = len(files)
+    if apply_run:
+        started = time.time()
+        _set_apply_progress(
+            apply_run,
+            status="running",
+            started_at=utc_iso(started),
+            _started_ts=started,
+            progress_percent=0,
+            progress_label=f"Processing 0 of {file_count} files",
+            file_count=file_count,
+        )
 
-    for item in plan.get("files") or []:
+    def _finish_item(index, source):
+        if not apply_run:
+            return
+        pct = int(100 * index / max(file_count, 1))
+        _set_apply_progress(
+            apply_run,
+            processed_count=index,
+            applied_count=len(applied),
+            missing_count=len(missing),
+            refused_count=len(refused),
+            progress_percent=pct,
+            progress_label=f"Processed {index} of {file_count} files",
+            current_path=source if index < file_count else "",
+            current_name=os.path.basename(source) if source and index < file_count else "",
+        )
+
+    for index, item in enumerate(files, start=1):
         source = item.get("source_path", "")
         file_id = item.get("file_id", "")
         operation = item.get("operation") or action
+        if apply_run:
+            _set_apply_progress(
+                apply_run,
+                current_path=source,
+                current_name=os.path.basename(source),
+                progress_label=f"Processing {index} of {file_count} files",
+            )
         if not source or not path_is_under(source, lib_root):
             refusal = _refusal(file_id, source, "Source is outside the library")
             refused.append(refusal)
             log_records.append({"type": "file", "result": "refused", **refusal})
+            _finish_item(index, source)
             continue
         if os.path.islink(source):
             refusal = _refusal(file_id, source, "Symlinks are not cleaned")
             refused.append(refusal)
             log_records.append({"type": "file", "result": "refused", **refusal})
+            _finish_item(index, source)
             continue
         if not os.path.exists(source):
             missing.append(file_id)
@@ -1374,11 +1694,13 @@ def apply_duplicate_cleanup_plan(plan_id):
                     "operation": operation,
                 }
             )
+            _finish_item(index, source)
             continue
         if not _identity_matches(source, item.get("identity")):
             refusal = _refusal(file_id, source, "File changed after scan")
             refused.append(refusal)
             log_records.append({"type": "file", "result": "refused", **refusal})
+            _finish_item(index, source)
             continue
 
         try:
@@ -1390,11 +1712,13 @@ def apply_duplicate_cleanup_plan(plan_id):
                     refusal = _refusal(file_id, source, "Destination is outside quarantine")
                     refused.append(refusal)
                     log_records.append({"type": "file", "result": "refused", **refusal})
+                    _finish_item(index, source)
                     continue
                 if os.path.exists(dest):
                     refusal = _refusal(file_id, source, "Destination already exists")
                     refused.append(refusal)
                     log_records.append({"type": "file", "result": "refused", **refusal})
+                    _finish_item(index, source)
                     continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 shutil.move(source, dest)
@@ -1403,22 +1727,26 @@ def apply_duplicate_cleanup_plan(plan_id):
                     refusal = _refusal(file_id, source, "Rename target is outside the library")
                     refused.append(refusal)
                     log_records.append({"type": "file", "result": "refused", **refusal})
+                    _finish_item(index, source)
                     continue
                 if os.path.exists(dest):
                     refusal = _refusal(file_id, source, "Rename target already exists")
                     refused.append(refusal)
                     log_records.append({"type": "file", "result": "refused", **refusal})
+                    _finish_item(index, source)
                     continue
                 os.rename(source, dest)
             else:
                 refusal = _refusal(file_id, source, "Unsupported operation")
                 refused.append(refusal)
                 log_records.append({"type": "file", "result": "refused", **refusal})
+                _finish_item(index, source)
                 continue
         except Exception as exc:
             refusal = _refusal(file_id, source, str(exc))
             refused.append(refusal)
             log_records.append({"type": "file", "result": "refused", **refusal})
+            _finish_item(index, source)
             continue
 
         applied_item = {
@@ -1448,6 +1776,7 @@ def apply_duplicate_cleanup_plan(plan_id):
             }
         )
         total += item.get("size_bytes") or 0
+        _finish_item(index, source)
 
     result = {
         "plan_id": plan.get("id", ""),
@@ -1468,4 +1797,21 @@ def apply_duplicate_cleanup_plan(plan_id):
         plan["status"] = "applied"
         plan["applied_at"] = utc_iso()
         plan["last_result"] = result
+    if apply_run:
+        finished = time.time()
+        _set_apply_progress(
+            apply_run,
+            status="success",
+            result=result,
+            progress_percent=100,
+            progress_label="Cleanup complete",
+            processed_count=file_count,
+            applied_count=len(applied),
+            missing_count=len(missing),
+            refused_count=len(refused),
+            current_path="",
+            current_name="",
+            _finished_ts=finished,
+            finished_at=utc_iso(finished),
+        )
     return result, None
