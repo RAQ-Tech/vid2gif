@@ -748,7 +748,10 @@ def test_maintenance_page_and_static_assets_render():
     assert res.status_code == 200
     assert "Library Maintenance" in html
     assert 'data-maint-tab-hash="posters"' in html
+    assert 'data-maint-tab-hash="video-previews"' in html
     assert 'data-maint-tab-hash="duplicates"' in html
+    assert 'id="previewScanButton"' in html
+    assert 'id="previewRunExtractionButton"' in html
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
     assert 'id="maintenanceRefreshLogsButton"' in html
@@ -761,6 +764,10 @@ def test_maintenance_page_and_static_assets_render():
     assert "fetch('/api/maintenance/duplicates/apply'" in script
     assert "/api/maintenance/duplicates/apply/status?apply_id=" in script
     assert "fetch('/api/maintenance/duplicates/logs')" in script
+    assert "fetch('/api/maintenance/video-previews/scan'" in script
+    assert "/api/maintenance/video-previews/items?scan_id=" in script
+    assert "fetch('/api/maintenance/video-previews/emby/tasks')" in script
+    assert "fetch('/api/maintenance/video-previews/emby/run-extraction'" in script
     assert "maintenance_active_tab" in script
     assert "readJsonResponse" in script
     assert "data-maint-operation" in script

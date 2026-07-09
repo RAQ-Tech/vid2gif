@@ -7,6 +7,7 @@ from . import estimate_history
 from . import maintenance
 from . import poster_maintenance
 from . import test_lab
+from . import video_preview_maintenance
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
 from .utils import (
     parse_float,
@@ -666,6 +667,64 @@ def api_maintenance_landscape_posters_emby_test():
             "status": poster_maintenance.status_payload(),
         }
     )
+
+
+@app.route("/api/maintenance/video-previews/scan", methods=["POST"])
+def api_maintenance_video_previews_scan():
+    data = _json_or_form_data()
+    scan, err = video_preview_maintenance.start_scan(
+        data.get("path"),
+        lib_root=LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": video_preview_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/video-previews/status")
+def api_maintenance_video_previews_status():
+    payload, err = video_preview_maintenance.status_payload(request.args.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/video-previews/cancel", methods=["POST"])
+def api_maintenance_video_previews_cancel():
+    data = request.get_json(silent=True) or {}
+    scan, err = video_preview_maintenance.cancel_scan(data.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"scan": video_preview_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/video-previews/items")
+def api_maintenance_video_previews_items():
+    payload, err = video_preview_maintenance.items_payload(
+        request.args.get("scan_id"),
+        status=request.args.get("status"),
+        offset=request.args.get("offset"),
+        limit=request.args.get("limit"),
+    )
+    if err:
+        status = 404 if err == "Scan not found" else 400
+        return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/video-previews/emby/tasks")
+def api_maintenance_video_previews_emby_tasks():
+    return jsonify(video_preview_maintenance.discover_thumbnail_tasks())
+
+
+@app.route("/api/maintenance/video-previews/emby/run-extraction", methods=["POST"])
+def api_maintenance_video_previews_emby_run_extraction():
+    payload, err = video_preview_maintenance.run_thumbnail_extraction()
+    if err:
+        return jsonify({"error": err}), 400
+    status = 200 if (payload.get("result") or {}).get("status") == "success" else 400
+    return jsonify(payload), status
 
 
 @app.route("/api/scan-estimate")

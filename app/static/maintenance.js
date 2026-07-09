@@ -1,6 +1,6 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
-  const maintenanceTabHashes = ['posters', 'duplicates'];
+  const maintenanceTabHashes = ['posters', 'duplicates', 'video-previews'];
   const groupState = new Map();
   const groupSummaries = new Map();
   let currentScan = null;
@@ -11,6 +11,12 @@
   let groupPageLimit = 25;
   let pollTimer = null;
   let applyPollTimer = null;
+  let previewScan = null;
+  let previewPollTimer = null;
+  let previewItemsPage = null;
+  let previewPageOffset = 0;
+  let previewPageLimit = 25;
+  let previewLastPath = '';
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
 
@@ -430,6 +436,34 @@
     }
   }
 
+  async function openPreviewBrowser(path) {
+    const browser = byId('previewBrowser');
+    if (!browser) return;
+    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
+    try {
+      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
+        return;
+      }
+      const folders = (data.folders || []).map(folder =>
+        `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-folder="${escapeHtml(folder.path)}">` +
+        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
+      ).join('');
+      const parent = data.parent
+        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
+        : '';
+      browser.innerHTML =
+        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
+        `<div class="media-browser-actions">${parent}` +
+        `<button class="btn btn-primary btn-sm" type="button" data-preview-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
+        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
+    } catch (e) {
+      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
+    }
+  }
+
   function stopPolling() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -441,6 +475,13 @@
     if (applyPollTimer) {
       clearInterval(applyPollTimer);
       applyPollTimer = null;
+    }
+  }
+
+  function stopPreviewPolling() {
+    if (previewPollTimer) {
+      clearInterval(previewPollTimer);
+      previewPollTimer = null;
     }
   }
 
@@ -773,6 +814,266 @@
     }
   }
 
+  function setPreviewMessage(title, detail) {
+    const titleEl = byId('previewMessageTitle');
+    const detailEl = byId('previewMessageDetail');
+    if (titleEl) titleEl.textContent = title || '';
+    if (detailEl) detailEl.textContent = detail || '';
+  }
+
+  function setPreviewProgress(scan) {
+    const state = byId('previewScanState');
+    const label = byId('previewProgressLabel');
+    const percent = byId('previewProgressPercent');
+    const bar = byId('previewProgressBar');
+    const missing = byId('previewMissingCount');
+    const stale = byId('previewStaleCount');
+    const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
+    if (state) state.textContent = scan?.status || 'Idle';
+    if (label) label.textContent = scan?.progress_label || 'Choose a folder';
+    if (percent) percent.textContent = `${pct}%`;
+    if (bar) {
+      bar.style.width = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+    }
+    if (missing) missing.textContent = String(scan?.missing_count || 0);
+    if (stale) stale.textContent = String(scan?.stale_count || 0);
+    const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
+    const scanButton = byId('previewScanButton');
+    const cancelButton = byId('previewCancelScanButton');
+    const verifyButton = byId('previewVerifyButton');
+    if (scanButton) scanButton.disabled = active;
+    if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
+    if (verifyButton) verifyButton.disabled = active || !previewLastPath;
+  }
+
+  function previewPageRangeText(page) {
+    const total = Number(page?.total || 0);
+    if (!total) return '0 of 0';
+    const start = Number(page.offset || 0) + 1;
+    const end = Math.min(total, Number(page.offset || 0) + Number(page.count || 0));
+    return `${start}-${end} of ${total}`;
+  }
+
+  function previewPager(page) {
+    if (!page) return '';
+    return `<div class="maintenance-pager">` +
+      `<div class="text-muted small">${escapeHtml(previewPageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
+      `<div class="toolbar-row mb-0">` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
+      `</div>` +
+      `</div>`;
+  }
+
+  function previewStatusBadge(status) {
+    if (status === 'missing') return '<span class="badge text-bg-warning">Missing</span>';
+    if (status === 'stale') return '<span class="badge text-bg-info">Interval</span>';
+    if (status === 'present') return '<span class="badge text-bg-success">Present</span>';
+    return `<span class="badge text-bg-secondary">${escapeHtml(status || 'Unknown')}</span>`;
+  }
+
+  function renderPreviewItems(page) {
+    const target = byId('previewItems');
+    if (!target) return;
+    if (!previewScan || previewScan.status !== 'success') {
+      target.innerHTML = '<div class="text-muted text-center py-4">Missing video previews will appear here after a scan.</div>';
+      return;
+    }
+    if (!page || !(page.items || []).length) {
+      target.innerHTML = `${page ? previewPager(page) : ''}<div class="text-muted text-center py-4">No videos in this view.</div>`;
+      return;
+    }
+    const rows = (page.items || []).map(item => {
+      const bifNames = (item.bifs || []).map(bif => bif.interval_seconds
+        ? `${bif.name} (${bif.interval_seconds}s)`
+        : bif.name
+      ).join(', ');
+      return `<tr>` +
+        `<td>${previewStatusBadge(item.status)}</td>` +
+        `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
+        `<td>${escapeHtml(item.size_label || '')}</td>` +
+        `<td>${escapeHtml(item.detail || '')}</td>` +
+        `<td class="path-cell"><code title="${escapeHtml(bifNames)}">${escapeHtml(bifNames || 'none')}</code></td>` +
+        `</tr>`;
+    }).join('');
+    target.innerHTML =
+      `${previewPager(page)}` +
+      `<div class="table-responsive workspace-table-wrap">` +
+      `<table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th>Status</th><th>Video</th><th>Size</th><th>Detail</th><th>BIF files</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      `${previewPager(page)}`;
+  }
+
+  async function loadPreviewItems(offset = previewPageOffset) {
+    if (!previewScan?.id || previewScan.status !== 'success') return;
+    const status = byId('previewItemStatus')?.value || 'missing';
+    const target = byId('previewItems');
+    if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading video preview results...</div>';
+    try {
+      const res = await fetch(`/api/maintenance/video-previews/items?scan_id=${encodeURIComponent(previewScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(previewPageLimit)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setPreviewMessage(data.error || 'Video preview results unavailable', '');
+        return;
+      }
+      previewItemsPage = data;
+      previewPageOffset = Number(data.offset || 0);
+      renderPreviewItems(data);
+      if (data.large_result) {
+        setPreviewMessage(`${data.total || 0} results in this view`, `Large result set loaded ${data.limit || previewPageLimit} items at a time.`);
+      }
+    } catch (e) {
+      setPreviewMessage('Video preview results unavailable', e.message || '');
+    }
+  }
+
+  function handlePreviewScan(scan) {
+    previewScan = scan;
+    setPreviewProgress(scan);
+    const terminal = scan && ['success', 'failed', 'cancelled'].includes(scan.status || '');
+    if (!scan) {
+      setPreviewMessage('No video preview scan yet.', '');
+    } else if (scan.status === 'success') {
+      setPreviewMessage(
+        `${scan.missing_count || 0} missing video preview${(scan.missing_count || 0) === 1 ? '' : 's'}`,
+        `${scan.present_count || 0} covered, ${scan.stale_count || 0} interval mismatch${(scan.stale_count || 0) === 1 ? '' : 'es'}`
+      );
+      if (previewItemsPage?.scan?.id !== scan.id) {
+        loadPreviewItems(0);
+      }
+    } else if (scan.status === 'failed') {
+      setPreviewMessage('Video preview scan failed', scan.error || '');
+    } else if (scan.status === 'cancelled') {
+      setPreviewMessage('Video preview scan cancelled', '');
+    } else {
+      setPreviewMessage(scan.progress_label || 'Scanning video previews', 'Large libraries can take a while.');
+    }
+    if (terminal) {
+      stopPreviewPolling();
+    }
+  }
+
+  async function pollPreviewScan(scanId) {
+    if (!scanId) return;
+    try {
+      const res = await fetch(`/api/maintenance/video-previews/status?scan_id=${encodeURIComponent(scanId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setPreviewMessage(data.error || 'Video preview scan unavailable', '');
+        stopPreviewPolling();
+        return;
+      }
+      handlePreviewScan(data.scan);
+    } catch (e) {
+      setPreviewMessage('Video preview scan unavailable', e.message || '');
+      stopPreviewPolling();
+    }
+  }
+
+  async function startPreviewScan(pathOverride) {
+    const path = (pathOverride || byId('previewPath')?.value || '').trim();
+    if (!path) {
+      setPreviewMessage('Choose a folder under the library', '');
+      return;
+    }
+    stopPreviewPolling();
+    previewItemsPage = null;
+    previewPageOffset = 0;
+    previewLastPath = path;
+    setPreviewMessage('Starting video preview scan', '');
+    setPreviewProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
+    try {
+      const res = await fetch('/api/maintenance/video-previews/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setPreviewMessage(data.error || 'Video preview scan could not start', '');
+        return;
+      }
+      handlePreviewScan(data.scan);
+      previewPollTimer = setInterval(() => pollPreviewScan(data.scan.id), 1000);
+    } catch (e) {
+      setPreviewMessage('Video preview scan could not start', e.message || '');
+    }
+  }
+
+  async function cancelPreviewScan() {
+    if (!previewScan?.id) return;
+    setPreviewMessage('Cancelling video preview scan', '');
+    try {
+      const res = await fetch('/api/maintenance/video-previews/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: previewScan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setPreviewMessage(data.error || 'Video preview scan could not be cancelled', '');
+        return;
+      }
+      handlePreviewScan(data.scan);
+    } catch (e) {
+      setPreviewMessage('Video preview scan could not be cancelled', e.message || '');
+    }
+  }
+
+  function renderPreviewEmbyTasks(data) {
+    const configured = byId('previewEmbyConfigured');
+    const task = byId('previewEmbyTask');
+    const last = byId('previewEmbyLastResult');
+    const message = byId('previewEmbyMessage');
+    const result = data?.result || {};
+    const thumbnailTask = data?.thumbnail_task || {};
+    if (configured) configured.textContent = data?.configured ? 'Emby: configured' : 'Emby: not configured';
+    if (task) task.textContent = thumbnailTask.id ? `Task: ${thumbnailTask.name || thumbnailTask.id}` : 'Task: not found';
+    if (last) last.textContent = `Last action: ${result.status || 'never'}`;
+    if (message) {
+      message.className = `scan-estimate-detail mt-1 ${result.status === 'failed' ? 'text-danger' : ''}`;
+      message.textContent = result.message || 'Uses the Emby settings from the Landscape Posters panel.';
+    }
+  }
+
+  async function refreshPreviewTasks() {
+    try {
+      const res = await fetch('/api/maintenance/video-previews/emby/tasks');
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        renderPreviewEmbyTasks({result: {status: 'failed', message: data.error || 'Task status unavailable'}});
+        return;
+      }
+      renderPreviewEmbyTasks(data);
+    } catch (e) {
+      renderPreviewEmbyTasks({result: {status: 'failed', message: e.message || 'Task status unavailable'}});
+    }
+  }
+
+  async function runPreviewExtraction() {
+    const button = byId('previewRunExtractionButton');
+    if (button) button.disabled = true;
+    setPreviewMessage('Requesting Emby thumbnail extraction', 'Emby will handle the actual BIF generation.');
+    try {
+      const res = await fetch('/api/maintenance/video-previews/emby/run-extraction', {method: 'POST'});
+      const data = await readJsonResponse(res);
+      renderPreviewEmbyTasks(data.tasks || {});
+      const result = data.result || {};
+      if (!res.ok) {
+        setPreviewMessage('Emby thumbnail extraction could not start', result.message || data.error || '');
+        return;
+      }
+      setPreviewMessage('Emby thumbnail extraction started', result.message || '');
+      refreshPreviewTasks();
+    } catch (e) {
+      setPreviewMessage('Emby thumbnail extraction could not start', e.message || '');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   function setPosterMessage(title, detail) {
     const titleEl = byId('posterMessageTitle');
     const detailEl = byId('posterMessageDetail');
@@ -1064,6 +1365,18 @@
     byId('maintenanceCancelScanButton')?.addEventListener('click', cancelScan);
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
+    byId('previewBrowseButton')?.addEventListener('click', () => {
+      openPreviewBrowser(byId('previewPath')?.value.trim() || config.libRoot || '/library');
+    });
+    byId('previewScanButton')?.addEventListener('click', () => startPreviewScan());
+    byId('previewCancelScanButton')?.addEventListener('click', cancelPreviewScan);
+    byId('previewVerifyButton')?.addEventListener('click', () => startPreviewScan(previewLastPath || byId('previewPath')?.value || config.libRoot || '/library'));
+    byId('previewRefreshTasksButton')?.addEventListener('click', refreshPreviewTasks);
+    byId('previewRunExtractionButton')?.addEventListener('click', runPreviewExtraction);
+    byId('previewItemStatus')?.addEventListener('change', () => {
+      previewPageOffset = 0;
+      loadPreviewItems(0);
+    });
     byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);
     byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
@@ -1107,6 +1420,28 @@
       } else if (choose) {
         const path = choose.getAttribute('data-maint-choose') || '';
         if (byId('maintenancePath')) byId('maintenancePath').value = path;
+      }
+    });
+
+    byId('previewBrowser')?.addEventListener('click', event => {
+      const folder = event.target.closest('[data-preview-folder]');
+      const choose = event.target.closest('[data-preview-choose]');
+      if (folder) {
+        openPreviewBrowser(folder.getAttribute('data-preview-folder'));
+      } else if (choose) {
+        const path = choose.getAttribute('data-preview-choose') || '';
+        if (byId('previewPath')) byId('previewPath').value = path;
+      }
+    });
+
+    byId('previewItems')?.addEventListener('click', event => {
+      const page = event.target.closest('[data-preview-page]');
+      if (!page) return;
+      const direction = page.getAttribute('data-preview-page');
+      if (direction === 'next' && previewItemsPage?.has_next) {
+        loadPreviewItems(previewItemsPage.next_offset);
+      } else if (direction === 'prev' && previewItemsPage?.has_previous) {
+        loadPreviewItems(previewItemsPage.previous_offset);
       }
     });
 
@@ -1181,8 +1516,11 @@
     initMaintenanceTabs();
     initEvents();
     setProgress(null);
+    setPreviewProgress(null);
     openBrowser(config.libRoot || '/library');
+    openPreviewBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
+    refreshPreviewTasks();
     refreshPosterStatus();
     posterPollTimer = setInterval(refreshPosterStatus, 10000);
   });

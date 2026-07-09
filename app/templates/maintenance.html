@@ -18,6 +18,10 @@
         <i class="bi bi-files" aria-hidden="true"></i>
         <span>Duplicates</span>
       </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#video-previews" data-maint-tab-shortcut="video-previews">
+        <i class="bi bi-film" aria-hidden="true"></i>
+        <span>Video Previews</span>
+      </a>
     </div>
   </div>
 
@@ -32,6 +36,12 @@
       <button class="nav-link" id="tab-duplicates" data-bs-toggle="tab" data-bs-target="#pane-duplicates" type="button" role="tab" aria-controls="pane-duplicates" aria-selected="false" data-maint-tab-hash="duplicates">
         <i class="bi bi-files" aria-hidden="true"></i>
         <span>Duplicates</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-video-previews" data-bs-toggle="tab" data-bs-target="#pane-video-previews" type="button" role="tab" aria-controls="pane-video-previews" aria-selected="false" data-maint-tab-hash="video-previews">
+        <i class="bi bi-film" aria-hidden="true"></i>
+        <span>Video Previews</span>
       </button>
     </li>
   </ul>
@@ -151,6 +161,119 @@
           </table>
         </div>
       </div>
+    </section>
+
+    <section class="tab-pane fade" id="pane-video-previews" role="tabpanel" aria-labelledby="tab-video-previews" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Video preview scan status">
+        <div class="status-tile">
+          <div class="metric-label">Scan</div>
+          <div id="previewScanState" class="metric-value">Idle</div>
+        </div>
+        <div class="status-tile status-tile-wide">
+          <div class="d-flex justify-content-between gap-3">
+            <div>
+              <div class="metric-label">Progress</div>
+              <div id="previewProgressLabel" class="metric-value">Choose a folder</div>
+            </div>
+            <span id="previewProgressPercent" class="small text-muted">0%</span>
+          </div>
+          <div class="progress progress-thin mt-2" role="progressbar" aria-label="Video preview scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="previewProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Missing</div>
+          <div id="previewMissingCount" class="metric-value">0</div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Interval Mismatch</div>
+          <div id="previewStaleCount" class="metric-value">0</div>
+        </div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Video Preview Repair</h2>
+            <div class="text-muted small">Find videos missing media-folder BIF previews and trigger Emby thumbnail extraction manually.</div>
+          </div>
+          <div class="toolbar-row mb-0">
+            <button id="previewRefreshTasksButton" class="btn btn-outline-secondary btn-sm" type="button">
+              <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+              <span>Refresh Emby Task</span>
+            </button>
+            <button id="previewRunExtractionButton" class="btn btn-outline-primary btn-sm" type="button">
+              <i class="bi bi-play-fill" aria-hidden="true"></i>
+              <span>Run Emby Extraction</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-panel">
+          <div class="panel-subheading">
+            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+            <span>Scan Source</span>
+          </div>
+          <label class="form-label" for="previewPath">Library path</label>
+          <div class="input-group">
+            <input id="previewPath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
+            <button id="previewBrowseButton" class="btn btn-outline-secondary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Browse</span>
+            </button>
+            <button id="previewScanButton" class="btn btn-primary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Scan</span>
+            </button>
+            <button id="previewCancelScanButton" class="btn btn-outline-danger" type="button" disabled>
+              <i class="bi bi-x-circle" aria-hidden="true"></i>
+              <span>Cancel</span>
+            </button>
+            <button id="previewVerifyButton" class="btn btn-outline-primary" type="button" disabled>
+              <i class="bi bi-check2-circle" aria-hidden="true"></i>
+              <span>Verify Again</span>
+            </button>
+          </div>
+          <div id="previewBrowser" class="media-browser mt-3"></div>
+        </div>
+
+        <div id="previewMessage" class="scan-estimate mt-3" aria-live="polite">
+          <i class="bi bi-info-circle" aria-hidden="true"></i>
+          <div>
+            <div id="previewMessageTitle">No video preview scan yet.</div>
+            <div id="previewMessageDetail" class="scan-estimate-detail"></div>
+          </div>
+        </div>
+
+        <div class="settings-panel mt-3">
+          <div class="panel-subheading">
+            <i class="bi bi-hdd-network" aria-hidden="true"></i>
+            <span>Emby Thumbnail Extraction</span>
+          </div>
+          <div class="metric-row mt-0">
+            <span id="previewEmbyConfigured">Emby: unknown</span>
+            <span id="previewEmbyTask">Task: unknown</span>
+            <span id="previewEmbyLastResult">Last action: never</span>
+          </div>
+          <div id="previewEmbyMessage" class="scan-estimate-detail mt-1"></div>
+        </div>
+
+        <div class="toolbar-row mt-3">
+          <label class="form-label mb-0 compact-control" for="previewItemStatus">
+            Show
+            <select id="previewItemStatus" class="form-select form-select-sm">
+              <option value="missing" selected>Missing BIFs</option>
+              <option value="stale">Interval mismatches</option>
+              <option value="present">Present BIFs</option>
+              <option value="all">All videos</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="previewItems" class="maintenance-groups mt-3">
+          <div class="text-muted text-center py-4">Missing video previews will appear here after a scan.</div>
+        </div>
+      </section>
     </section>
 
     <section class="tab-pane fade" id="pane-duplicates" role="tabpanel" aria-labelledby="tab-duplicates" tabindex="0">

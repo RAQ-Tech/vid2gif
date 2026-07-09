@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import emby_client
 from .config import (
     LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
     LANDSCAPE_POSTER_INTERVAL_SECONDS,
@@ -587,24 +588,11 @@ def _scan_and_apply(run, lib_root, settings):
 
 
 def _sanitize_secret_text(value, api_key=""):
-    text = str(value or "")
-    secret = str(api_key or "")
-    if not secret:
-        return text
-    encoded = urllib.parse.quote_plus(secret)
-    return text.replace(secret, "[redacted]").replace(encoded, "[redacted]")
+    return emby_client.sanitize_secret_text(value, api_key)
 
 
 def _public_emby_result(result):
-    result = result or {}
-    return {
-        "status": str(result.get("status") or ""),
-        "message": str(result.get("message") or ""),
-        "checked_at": result.get("checked_at"),
-        "http_status": result.get("http_status"),
-        "server_name": str(result.get("server_name") or ""),
-        "version": str(result.get("version") or ""),
-    }
+    return emby_client.public_result(result)
 
 
 def _emby_result(
@@ -616,29 +604,18 @@ def _emby_result(
     server_name="",
     version="",
 ):
-    return _public_emby_result(
-        {
-            "status": status,
-            "message": _sanitize_secret_text(message, api_key),
-            "checked_at": utc_iso(),
-            "http_status": http_status,
-            "server_name": server_name,
-            "version": version,
-        }
+    return emby_client.result(
+        status,
+        message,
+        api_key=api_key,
+        http_status=http_status,
+        server_name=server_name,
+        version=version,
     )
 
 
 def _emby_endpoint(settings, api_path):
-    base = str(settings.get("emby_url") or "").strip().rstrip("/")
-    api_key = str(settings.get("emby_api_key") or "").strip()
-    if not base or not api_key:
-        return ""
-    api_path = "/" + str(api_path or "").strip("/")
-    if base.lower().endswith("/emby"):
-        url = f"{base}{api_path}"
-    else:
-        url = f"{base}/emby{api_path}"
-    return f"{url}?{urllib.parse.urlencode({'api_key': api_key})}"
+    return emby_client.endpoint(settings, api_path)
 
 
 def _emby_refresh_endpoint(settings):
@@ -646,17 +623,7 @@ def _emby_refresh_endpoint(settings):
 
 
 def _read_response_json(response):
-    if not hasattr(response, "read"):
-        return {}
-    raw = response.read()
-    if not raw:
-        return {}
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", errors="replace")
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
+    data = emby_client.read_response_json(response)
     return data if isinstance(data, dict) else {}
 
 
