@@ -17,6 +17,14 @@
   let previewPageOffset = 0;
   let previewPageLimit = 25;
   let previewLastPath = '';
+  let qualityScan = null;
+  let qualityPollTimer = null;
+  let qualityItemsPage = null;
+  let qualityPageOffset = 0;
+  let qualityPageLimit = 25;
+  let qualityPlan = null;
+  let qualityApply = null;
+  let qualityApplyPollTimer = null;
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
 
@@ -482,6 +490,20 @@
     if (previewPollTimer) {
       clearInterval(previewPollTimer);
       previewPollTimer = null;
+    }
+  }
+
+  function stopQualityPolling() {
+    if (qualityPollTimer) {
+      clearInterval(qualityPollTimer);
+      qualityPollTimer = null;
+    }
+  }
+
+  function stopQualityApplyPolling() {
+    if (qualityApplyPollTimer) {
+      clearInterval(qualityApplyPollTimer);
+      qualityApplyPollTimer = null;
     }
   }
 
@@ -1074,6 +1096,372 @@
     }
   }
 
+  function setQualityMessage(title, detail) {
+    const titleEl = byId('qualityMessageTitle');
+    const detailEl = byId('qualityMessageDetail');
+    if (titleEl) titleEl.textContent = title || '';
+    if (detailEl) detailEl.textContent = detail || '';
+  }
+
+  function setQualityProgress(scan) {
+    const state = byId('qualityScanState');
+    const label = byId('qualityProgressLabel');
+    const percent = byId('qualityProgressPercent');
+    const bar = byId('qualityProgressBar');
+    const bad = byId('qualityBadCount');
+    const warnings = byId('qualityWarningCount');
+    const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
+    if (state) state.textContent = scan?.status || 'Idle';
+    if (label) label.textContent = scan?.progress_label || 'Choose a folder';
+    if (percent) percent.textContent = `${pct}%`;
+    if (bar) {
+      bar.style.width = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+    }
+    if (bad) bad.textContent = String(scan?.bad_count || 0);
+    if (warnings) warnings.textContent = String(scan?.warning_count || 0);
+    const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
+    const scanButton = byId('qualityScanButton');
+    const cancelButton = byId('qualityCancelButton');
+    const planButton = byId('qualityPlanButton');
+    if (scanButton) scanButton.disabled = active;
+    if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
+    if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.repairable_count || 0);
+  }
+
+  function qualityPageRangeText(page) {
+    const total = Number(page?.total || 0);
+    if (!total) return '0 of 0';
+    const start = Number(page.offset || 0) + 1;
+    const end = Math.min(total, Number(page.offset || 0) + Number(page.count || 0));
+    return `${start}-${end} of ${total}`;
+  }
+
+  function qualityPager(page) {
+    if (!page) return '';
+    return `<div class="maintenance-pager">` +
+      `<div class="text-muted small">${escapeHtml(qualityPageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
+      `<div class="toolbar-row mb-0">` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-quality-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-quality-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
+      `</div>` +
+      `</div>`;
+  }
+
+  function qualityStatusBadge(status) {
+    if (status === 'bad') return '<span class="badge text-bg-danger">Bad</span>';
+    if (status === 'warning') return '<span class="badge text-bg-warning">Warning</span>';
+    if (status === 'ok') return '<span class="badge text-bg-success">Passed</span>';
+    return `<span class="badge text-bg-secondary">${escapeHtml(status || 'Unknown')}</span>`;
+  }
+
+  function qualitySampleSummary(item) {
+    const sample = item.sample_summary || {};
+    const parts = [
+      `${sample.sampled_frames || 0} sampled`,
+      `${sample.unique_raw_frames || 0} unique`,
+      `${sample.max_repeated_run || 0} max run`
+    ];
+    if (sample.decode_available) {
+      parts.push(`${sample.blank_frames || 0} blank`);
+    }
+    return parts.join(', ');
+  }
+
+  function renderQualityItems(page) {
+    const target = byId('qualityItems');
+    if (!target) return;
+    if (!qualityScan || qualityScan.status !== 'success') {
+      target.innerHTML = '<div class="text-muted text-center py-4">BIF quality results will appear here after a scan.</div>';
+      return;
+    }
+    if (!page || !(page.items || []).length) {
+      target.innerHTML = `${page ? qualityPager(page) : ''}<div class="text-muted text-center py-4">No BIF files in this view.</div>`;
+      return;
+    }
+    const rows = (page.items || []).map(item =>
+      `<tr>` +
+      `<td>${qualityStatusBadge(item.status)}</td>` +
+      `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
+      `<td class="path-cell"><code title="${escapeHtml(item.video_path)}">${escapeHtml(item.video_relative_path || item.video_name || '')}</code></td>` +
+      `<td>${escapeHtml(item.confidence || 0)}%</td>` +
+      `<td>${escapeHtml(item.frame_count || 0)} / ${escapeHtml(item.expected_frame_count || 'unknown')}</td>` +
+      `<td>${escapeHtml(item.interval_seconds || '')}s</td>` +
+      `<td>${escapeHtml(qualitySampleSummary(item))}</td>` +
+      `<td class="path-cell"><code title="${escapeHtml(item.reason || '')}">${escapeHtml(item.reason || '')}</code></td>` +
+      `<td>${escapeHtml(item.size_label || formatSize(item.size_bytes))}</td>` +
+      `</tr>`
+    ).join('');
+    target.innerHTML =
+      `${qualityPager(page)}` +
+      `<div class="table-responsive workspace-table-wrap">` +
+      `<table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th>Status</th><th>BIF</th><th>Video</th><th>Confidence</th><th>Frames</th><th>Interval</th><th>Sample</th><th>Reason</th><th>Size</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      `${qualityPager(page)}`;
+  }
+
+  async function loadQualityItems(offset = qualityPageOffset) {
+    if (!qualityScan?.id || qualityScan.status !== 'success') return;
+    const status = byId('qualityItemStatus')?.value || 'problem';
+    const target = byId('qualityItems');
+    if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading BIF quality results...</div>';
+    try {
+      const res = await fetch(`/api/maintenance/video-previews/quality/items?scan_id=${encodeURIComponent(qualityScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(qualityPageLimit)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF quality results unavailable', '');
+        return;
+      }
+      qualityItemsPage = data;
+      qualityPageOffset = Number(data.offset || 0);
+      renderQualityItems(data);
+      if (data.large_result) {
+        setQualityMessage(`${data.total || 0} BIF results in this view`, `Large result set loaded ${data.limit || qualityPageLimit} items at a time.`);
+      }
+    } catch (e) {
+      setQualityMessage('BIF quality results unavailable', e.message || '');
+    }
+  }
+
+  function handleQualityScan(scan) {
+    qualityScan = scan;
+    setQualityProgress(scan);
+    const terminal = scan && ['success', 'failed', 'cancelled'].includes(scan.status || '');
+    if (!scan) {
+      setQualityMessage('No BIF quality scan yet.', '');
+    } else if (scan.status === 'success') {
+      setQualityMessage(
+        `${scan.bad_count || 0} bad BIF file${(scan.bad_count || 0) === 1 ? '' : 's'}`,
+        `${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed`
+      );
+      if (qualityItemsPage?.scan?.id !== scan.id) {
+        loadQualityItems(0);
+      }
+    } else if (scan.status === 'failed') {
+      setQualityMessage('BIF quality scan failed', scan.error || '');
+    } else if (scan.status === 'cancelled') {
+      setQualityMessage('BIF quality scan cancelled', '');
+    } else {
+      setQualityMessage(scan.progress_label || 'Checking BIF quality', 'Large libraries can take a while.');
+    }
+    if (terminal) {
+      stopQualityPolling();
+    }
+  }
+
+  async function pollQualityScan(scanId) {
+    if (!scanId) return;
+    try {
+      const res = await fetch(`/api/maintenance/video-previews/quality/status?scan_id=${encodeURIComponent(scanId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF quality scan unavailable', '');
+        stopQualityPolling();
+        return;
+      }
+      handleQualityScan(data.scan);
+    } catch (e) {
+      setQualityMessage('BIF quality scan unavailable', e.message || '');
+      stopQualityPolling();
+    }
+  }
+
+  async function startQualityScan() {
+    const path = (byId('previewPath')?.value || config.libRoot || '/library').trim();
+    if (!path) {
+      setQualityMessage('Choose a folder under the library', '');
+      return;
+    }
+    stopQualityPolling();
+    stopQualityApplyPolling();
+    qualityItemsPage = null;
+    qualityPageOffset = 0;
+    qualityPlan = null;
+    qualityApply = null;
+    const summary = byId('qualityPlanSummary');
+    if (summary) summary.innerHTML = '';
+    const applyButton = byId('qualityApplyButton');
+    if (applyButton) applyButton.disabled = true;
+    setQualityMessage('Starting BIF quality scan', '');
+    setQualityProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
+    try {
+      const res = await fetch('/api/maintenance/video-previews/quality/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF quality scan could not start', '');
+        return;
+      }
+      handleQualityScan(data.scan);
+      qualityPollTimer = setInterval(() => pollQualityScan(data.scan.id), 1000);
+    } catch (e) {
+      setQualityMessage('BIF quality scan could not start', e.message || '');
+    }
+  }
+
+  async function cancelQualityScan() {
+    if (!qualityScan?.id) return;
+    setQualityMessage('Cancelling BIF quality scan', '');
+    try {
+      const res = await fetch('/api/maintenance/video-previews/quality/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: qualityScan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF quality scan could not be cancelled', '');
+        return;
+      }
+      handleQualityScan(data.scan);
+    } catch (e) {
+      setQualityMessage('BIF quality scan could not be cancelled', e.message || '');
+    }
+  }
+
+  function renderQualityPlan(plan) {
+    const summary = byId('qualityPlanSummary');
+    if (!summary) return;
+    const sample = (plan.files || []).slice(0, 8).map(file =>
+      `<li><strong>move</strong> <code title="${escapeHtml(file.source_path)}">${escapeHtml(file.relative_path || file.source_path)}</code> -> <code title="${escapeHtml(file.destination_path)}">${escapeHtml(file.destination_path || '')}</code><div class="text-muted small">${escapeHtml(file.confidence || 0)}% confidence - ${escapeHtml(file.reason || '')}</div></li>`
+    ).join('');
+    const review = (plan.manual_review || []).length
+      ? `<div class="text-muted mt-2">${escapeHtml((plan.manual_review || []).length)} file(s) kept for manual review.</div>`
+      : '';
+    summary.innerHTML =
+      `<div class="settings-panel">` +
+      `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>BIF Repair Plan</span></div>` +
+      `<div class="metric-row mt-0"><span>Move ${escapeHtml(plan.file_count || 0)} BIF files</span><span>${escapeHtml(plan.total_size_label || '0 B')}</span>` +
+      `<span>Quarantine: <code>${escapeHtml(plan.move_root || '')}</code></span>` +
+      `<span>Emby: ${plan.trigger_emby ? 'trigger after move' : 'no automatic trigger'}</span></div>` +
+      `${sample ? `<ul class="maintenance-plan-list mt-2">${sample}${(plan.files || []).length > 8 ? '<li class="text-muted">Additional files are included in the plan.</li>' : ''}</ul>` : '<div class="text-muted mt-2">No files selected.</div>'}` +
+      `${review}` +
+      `</div>`;
+  }
+
+  async function reviewQualityPlan() {
+    if (!qualityScan || qualityScan.status !== 'success') {
+      setQualityMessage('Run a BIF quality scan first', '');
+      return;
+    }
+    setQualityMessage('Building BIF repair plan', '');
+    try {
+      const res = await fetch('/api/maintenance/video-previews/quality/plan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          scan_id: qualityScan.id,
+          move_root: byId('qualityMoveRoot')?.value || '',
+          trigger_emby: Boolean(byId('qualityTriggerEmby')?.checked)
+        })
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF repair plan could not be built', '');
+        return;
+      }
+      qualityPlan = data.plan;
+      renderQualityPlan(qualityPlan);
+      const applyButton = byId('qualityApplyButton');
+      if (applyButton) applyButton.disabled = !qualityPlan.file_count;
+      setQualityMessage(
+        'Review the BIF repair plan before applying',
+        Number(qualityPlan.file_count || 0) >= 100
+          ? `${qualityPlan.file_count} BIF files selected. This can take a while and will continue in the background.`
+          : (qualityPlan.total_size_label || '')
+      );
+    } catch (e) {
+      setQualityMessage('BIF repair plan could not be built', e.message || '');
+    }
+  }
+
+  function handleQualityApply(apply) {
+    qualityApply = apply;
+    const button = byId('qualityApplyButton');
+    const running = apply && ['queued', 'running'].includes(apply.status || '');
+    if (button) button.disabled = running || !qualityPlan;
+    if (!apply) return;
+    if (running) {
+      const counts = `${apply.processed_count || 0} of ${apply.file_count || 0} BIF files`;
+      const detail = `${counts}, ${apply.applied_count || 0} moved, ${apply.missing_count || 0} missing, ${apply.refused_count || 0} refused`;
+      setQualityMessage(apply.progress_label || 'BIF repair running', apply.large_operation ? `${detail}. Large repair is running in the background.` : detail);
+      return;
+    }
+    if (apply.status === 'success') {
+      stopQualityApplyPolling();
+      const result = apply.result || {};
+      const emby = result.emby || {};
+      const extraction = emby.extraction || {};
+      setQualityMessage(
+        `${result.applied_count || apply.applied_count || 0} BIF files moved`,
+        `${result.total_applied_label || '0 B'} quarantined, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused${extraction.status ? `. Emby extraction: ${extraction.status}` : ''}`
+      );
+      refreshPreviewTasks();
+      qualityPlan = null;
+      if (button) button.disabled = true;
+      return;
+    }
+    if (apply.status === 'failed') {
+      stopQualityApplyPolling();
+      setQualityMessage('BIF repair failed', apply.error || '');
+    }
+  }
+
+  async function pollQualityApply(applyId) {
+    if (!applyId) return;
+    try {
+      const res = await fetch(`/api/maintenance/video-previews/quality/apply/status?apply_id=${encodeURIComponent(applyId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF repair status unavailable', '');
+        stopQualityApplyPolling();
+        return;
+      }
+      handleQualityApply(data.apply);
+    } catch (e) {
+      setQualityMessage('BIF repair status unavailable', e.message || '');
+      stopQualityApplyPolling();
+    }
+  }
+
+  async function applyQualityPlan() {
+    if (!qualityPlan) {
+      setQualityMessage('Review a BIF repair plan first', '');
+      return;
+    }
+    if (!window.confirm(`Move ${qualityPlan.file_count} bad BIF file(s) to the repair quarantine?`)) {
+      return;
+    }
+    const button = byId('qualityApplyButton');
+    if (button) button.disabled = true;
+    setQualityMessage('Applying BIF repair plan', '');
+    try {
+      const res = await fetch('/api/maintenance/video-previews/quality/apply', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plan_id: qualityPlan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setQualityMessage(data.error || 'BIF repair failed', '');
+        return;
+      }
+      handleQualityApply(data.apply);
+      stopQualityApplyPolling();
+      if (data.apply?.id && ['queued', 'running'].includes(data.apply.status || '')) {
+        qualityApplyPollTimer = setInterval(() => pollQualityApply(data.apply.id), 1000);
+      } else if (data.apply?.id) {
+        pollQualityApply(data.apply.id);
+      }
+    } catch (e) {
+      setQualityMessage('BIF repair failed', e.message || '');
+    }
+  }
+
   function setPosterMessage(title, detail) {
     const titleEl = byId('posterMessageTitle');
     const detailEl = byId('posterMessageDetail');
@@ -1377,6 +1765,14 @@
       previewPageOffset = 0;
       loadPreviewItems(0);
     });
+    byId('qualityScanButton')?.addEventListener('click', startQualityScan);
+    byId('qualityCancelButton')?.addEventListener('click', cancelQualityScan);
+    byId('qualityPlanButton')?.addEventListener('click', reviewQualityPlan);
+    byId('qualityApplyButton')?.addEventListener('click', applyQualityPlan);
+    byId('qualityItemStatus')?.addEventListener('change', () => {
+      qualityPageOffset = 0;
+      loadQualityItems(0);
+    });
     byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);
     byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
@@ -1442,6 +1838,17 @@
         loadPreviewItems(previewItemsPage.next_offset);
       } else if (direction === 'prev' && previewItemsPage?.has_previous) {
         loadPreviewItems(previewItemsPage.previous_offset);
+      }
+    });
+
+    byId('qualityItems')?.addEventListener('click', event => {
+      const page = event.target.closest('[data-quality-page]');
+      if (!page) return;
+      const direction = page.getAttribute('data-quality-page');
+      if (direction === 'next' && qualityItemsPage?.has_next) {
+        loadQualityItems(qualityItemsPage.next_offset);
+      } else if (direction === 'prev' && qualityItemsPage?.has_previous) {
+        loadQualityItems(qualityItemsPage.previous_offset);
       }
     });
 
@@ -1517,6 +1924,7 @@
     initEvents();
     setProgress(null);
     setPreviewProgress(null);
+    setQualityProgress(null);
     openBrowser(config.libRoot || '/library');
     openPreviewBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();

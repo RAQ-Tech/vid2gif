@@ -727,6 +727,78 @@ def api_maintenance_video_previews_emby_run_extraction():
     return jsonify(payload), status
 
 
+@app.route("/api/maintenance/video-previews/quality/scan", methods=["POST"])
+def api_maintenance_video_previews_quality_scan():
+    data = _json_or_form_data()
+    scan, err = video_preview_maintenance.start_quality_scan(
+        data.get("path"),
+        lib_root=LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": video_preview_maintenance.public_quality_scan(scan)})
+
+
+@app.route("/api/maintenance/video-previews/quality/status")
+def api_maintenance_video_previews_quality_status():
+    payload, err = video_preview_maintenance.quality_status_payload(request.args.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/video-previews/quality/cancel", methods=["POST"])
+def api_maintenance_video_previews_quality_cancel():
+    data = request.get_json(silent=True) or {}
+    scan, err = video_preview_maintenance.cancel_quality_scan(data.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"scan": video_preview_maintenance.public_quality_scan(scan)})
+
+
+@app.route("/api/maintenance/video-previews/quality/items")
+def api_maintenance_video_previews_quality_items():
+    payload, err = video_preview_maintenance.quality_items_payload(
+        request.args.get("scan_id"),
+        status=request.args.get("status"),
+        offset=request.args.get("offset"),
+        limit=request.args.get("limit"),
+    )
+    if err:
+        status = 404 if err == "Scan not found" else 400
+        return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/video-previews/quality/plan", methods=["POST"])
+def api_maintenance_video_previews_quality_plan():
+    plan, err = video_preview_maintenance.build_quality_repair_plan(
+        request.get_json(silent=True) or {},
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/video-previews/quality/apply", methods=["POST"])
+def api_maintenance_video_previews_quality_apply():
+    data = request.get_json(silent=True) or {}
+    run, err = video_preview_maintenance.start_quality_repair_apply(data.get("plan_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"apply": video_preview_maintenance.public_quality_apply_run(run)})
+
+
+@app.route("/api/maintenance/video-previews/quality/apply/status")
+def api_maintenance_video_previews_quality_apply_status():
+    payload, err = video_preview_maintenance.quality_apply_status(request.args.get("apply_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
 @app.route("/api/scan-estimate")
 def api_scan_estimate():
     target = (request.args.get("path") or request.args.get("video") or "").strip()
