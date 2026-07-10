@@ -33,7 +33,6 @@ def _truthy(value, default=True):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-EXPECTED_INTERVAL_SECONDS = max(1, _env_int("VIDEO_PREVIEW_INTERVAL_SECONDS", 180))
 DEFAULT_REPAIR_ROOT = os.getenv("VIDEO_PREVIEW_REPAIR_ROOT", "/library/.vid2gif-video-preview-repairs")
 SCAN_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
 SCAN_TERMINAL_STATUSES = {"success", "failed", "cancelled"}
@@ -201,19 +200,11 @@ def _video_item(video_path, folder_files, lib_root):
         if bif_matches_video(entry, stem):
             bifs.append(_public_bif(full_path, stem))
     bifs.sort(key=lambda item: item["name"].lower())
-    intervals = [
-        item.get("interval_seconds")
-        for item in bifs
-        if item.get("interval_seconds") is not None
-    ]
     status = "present"
     detail = "Preview BIF found"
     if not bifs:
         status = "missing"
         detail = "No matching BIF file found beside the video"
-    elif intervals and EXPECTED_INTERVAL_SECONDS not in intervals:
-        status = "stale"
-        detail = f"BIF interval does not match {EXPECTED_INTERVAL_SECONDS} seconds"
     stat = _safe_stat(video_path)
     return {
         "id": _path_id(video_path, lib_root),
@@ -280,13 +271,11 @@ def _scan_videos(scan, lib_root):
 
 def _counts(items):
     missing = sum(1 for item in items if item.get("status") == "missing")
-    stale = sum(1 for item in items if item.get("status") == "stale")
     present = sum(1 for item in items if item.get("status") != "missing")
     return {
         "scanned_video_count": len(items),
         "present_count": present,
         "missing_count": missing,
-        "stale_count": stale,
     }
 
 
@@ -295,7 +284,6 @@ def public_scan(scan):
         return None
     counts = scan.get("counts") or {}
     missing_count = counts.get("missing_count", 0)
-    stale_count = counts.get("stale_count", 0)
     return {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
@@ -311,10 +299,8 @@ def public_scan(scan):
         "scanned_video_count": counts.get("scanned_video_count", scan.get("scanned_video_count", 0)),
         "present_count": counts.get("present_count", 0),
         "missing_count": missing_count,
-        "stale_count": stale_count,
-        "expected_interval_seconds": scan.get("expected_interval_seconds", EXPECTED_INTERVAL_SECONDS),
         "results_page_size": ITEM_PAGE_DEFAULT,
-        "large_result": missing_count + stale_count >= LARGE_RESULT_COUNT,
+        "large_result": missing_count >= LARGE_RESULT_COUNT,
         "recent_logs": list_recent_logs(),
     }
 
@@ -366,10 +352,7 @@ def _run_scan(scan, lib_root):
         items = _scan_videos(scan, lib_root)
         counts = _counts(items)
         finished = time.time()
-        label = (
-            f"{counts['missing_count']} missing, "
-            f"{counts['stale_count']} interval mismatches"
-        )
+        label = f"{counts['missing_count']} missing, {counts['present_count']} present"
         _set_scan_progress(
             scan,
             100,
@@ -387,7 +370,6 @@ def _run_scan(scan, lib_root):
                 "scan_id": scan["id"],
                 "path": scan["path"],
                 "counts": counts,
-                "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
             },
         )
     except ScanCancelled:
@@ -408,7 +390,6 @@ def _run_scan(scan, lib_root):
                 "path": scan["path"],
                 "status": "cancelled",
                 "scanned_video_count": scan.get("scanned_video_count", 0),
-                "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
             },
         )
     except Exception as exc:
@@ -430,7 +411,6 @@ def _run_scan(scan, lib_root):
                 "status": "failed",
                 "error": str(exc),
                 "scanned_video_count": scan.get("scanned_video_count", 0),
-                "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
             },
         )
 
@@ -458,7 +438,6 @@ def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "scanned_video_count": 0,
         "items": [],
         "counts": {},
-        "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
     }
     with preview_lock:
         _prune_scans_locked()
@@ -521,7 +500,7 @@ def status_payload(scan_id=None):
 def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT):
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "missing").lower()
-    if status not in {"missing", "stale", "present", "all"}:
+    if status not in {"missing", "present", "all"}:
         status = "missing"
     with preview_lock:
         _prune_scans_locked()
@@ -807,12 +786,6 @@ def _max_equal_run(values):
     return best
 
 
-def _expected_frame_count(duration_seconds, interval_seconds):
-    if not duration_seconds or not interval_seconds:
-        return 0
-    return max(1, int(duration_seconds // interval_seconds) + 1)
-
-
 def _quality_counts(items):
     bad = sum(1 for item in items if item.get("status") == "bad")
     warning = sum(1 for item in items if item.get("status") == "warning")
@@ -833,7 +806,6 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
     interval_from_name = bif_interval_seconds(os.path.basename(bif_path), os.path.splitext(os.path.basename(video_path))[0])
     interval_seconds = interval_from_name or max(1, int(round((parsed.get("timestamp_multiplier_ms") or 1000) / 1000)))
     duration = _probe_video_duration(video_path)
-    expected_count = _expected_frame_count(duration, interval_seconds or EXPECTED_INTERVAL_SECONDS)
     reasons = []
     confidence = 0
     sample_summary = {
@@ -872,13 +844,6 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
             "blank_frames": blank_count,
             "decode_available": bool(decoded),
         }
-        image_count = parsed.get("image_count") or 0
-        if expected_count and image_count < max(2, int(expected_count * 0.50)):
-            reasons.append(f"BIF has {image_count} frames; expected about {expected_count}")
-            confidence = max(confidence, 95)
-        elif expected_count and image_count < max(2, int(expected_count * 0.75)):
-            reasons.append(f"BIF frame count is lower than expected ({image_count} of about {expected_count})")
-            confidence = max(confidence, 70)
         if len(samples) >= 5 and unique_raw <= max(2, int(len(samples) * 0.20)):
             reasons.append("Most sampled BIF frames are byte-identical")
             confidence = max(confidence, 95)
@@ -914,7 +879,6 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
         "video_relative_path": _relative_path(video_path, lib_root),
         "video_name": os.path.basename(video_path),
         "frame_count": parsed.get("image_count") or 0,
-        "expected_frame_count": expected_count,
         "duration_seconds": duration,
         "interval_seconds": interval_seconds,
         "timestamp_multiplier_ms": parsed.get("timestamp_multiplier_ms") or 0,
@@ -1250,7 +1214,6 @@ def _public_quality_item(item):
             "video_relative_path",
             "video_name",
             "frame_count",
-            "expected_frame_count",
             "duration_seconds",
             "interval_seconds",
             "timestamp_multiplier_ms",

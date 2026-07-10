@@ -186,8 +186,8 @@
           <div id="previewMissingCount" class="metric-value">0</div>
         </div>
         <div class="status-tile">
-          <div class="metric-label">Interval Mismatch</div>
-          <div id="previewStaleCount" class="metric-value">0</div>
+          <div class="metric-label">Present</div>
+          <div id="previewPresentCount" class="metric-value">0</div>
         </div>
       </section>
 
@@ -263,7 +263,6 @@
             Show
             <select id="previewItemStatus" class="form-select form-select-sm">
               <option value="missing" selected>Missing BIFs</option>
-              <option value="stale">Interval mismatches</option>
               <option value="present">Present BIFs</option>
               <option value="all">All videos</option>
             </select>
@@ -279,7 +278,7 @@
         <div class="panel-heading">
           <div>
             <h2 class="h5 mb-1">BIF Quality Check</h2>
-            <div class="text-muted small">Inspect existing preview archives for corrupt, repeated, blank, or obviously incomplete frame sets.</div>
+            <div class="text-muted small">Inspect existing preview archives for corrupt, repeated, blank, or invalid frame data.</div>
           </div>
           <div class="toolbar-row mb-0">
             <button id="qualityScanButton" class="btn btn-outline-primary btn-sm" type="button">

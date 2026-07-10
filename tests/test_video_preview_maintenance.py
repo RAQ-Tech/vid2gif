@@ -102,26 +102,29 @@ def test_bif_filename_matching_and_interval_parsing():
     assert video_preview_maintenance.bif_interval_seconds("Movie-320-10.bif", "Movie") == 10
 
 
-def test_video_preview_scan_classifies_missing_present_and_stale(monkeypatch, tmp_path):
+def test_video_preview_scan_counts_any_stem_matched_bif_as_present(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write(lib / "Present" / "Present.mkv")
     _write(lib / "Present" / "Present-320-180.bif")
     _write(lib / "Missing" / "Missing.mp4")
-    _write(lib / "Stale" / "Stale.mkv")
-    _write(lib / "Stale" / "Stale-320-10.bif")
+    _write(lib / "TenSecond" / "TenSecond.mkv")
+    _write(lib / "TenSecond" / "TenSecond-320-10.bif")
 
     scan = _scan(lib, monkeypatch, tmp_path)
     missing, err = video_preview_maintenance.items_payload(scan["id"], status="missing")
-    stale, err2 = video_preview_maintenance.items_payload(scan["id"], status="stale")
+    present, err2 = video_preview_maintenance.items_payload(scan["id"], status="present")
 
     assert err is None
     assert err2 is None
     assert scan["counts"]["scanned_video_count"] == 3
     assert scan["counts"]["present_count"] == 2
     assert scan["counts"]["missing_count"] == 1
-    assert scan["counts"]["stale_count"] == 1
+    assert "stale_count" not in scan["counts"]
     assert missing["items"][0]["name"] == "Missing.mp4"
-    assert stale["items"][0]["name"] == "Stale.mkv"
+    assert {item["name"] for item in present["items"]} == {"Present.mkv", "TenSecond.mkv"}
+    ten_second = next(item for item in present["items"] if item["name"] == "TenSecond.mkv")
+    assert ten_second["status"] == "present"
+    assert ten_second["bifs"][0]["interval_seconds"] == 10
 
 
 def test_video_preview_scan_skips_quarantine_and_symlinked_files(monkeypatch, tmp_path):
@@ -293,7 +296,7 @@ def test_bif_quality_flags_repeated_frames(monkeypatch, tmp_path):
     assert "byte-identical" in item["reason"]
 
 
-def test_bif_quality_flags_too_few_frames(monkeypatch, tmp_path):
+def test_bif_quality_does_not_flag_low_frame_count_by_itself(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     video = _write(lib / "Movie" / "Movie.mkv")
     bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"one"), _jpeg(b"two")]))
@@ -302,9 +305,10 @@ def test_bif_quality_flags_too_few_frames(monkeypatch, tmp_path):
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
-    assert item["status"] == "bad"
-    assert item["expected_frame_count"] == 21
-    assert "expected about" in item["reason"]
+    assert item["status"] == "ok"
+    assert item["repairable"] is False
+    assert "expected_frame_count" not in item
+    assert item["reason"] == "BIF passed quality checks"
 
 
 def test_bif_quality_flags_blank_decoded_frames(monkeypatch, tmp_path):
@@ -679,6 +683,9 @@ def test_video_preview_ui_assets_render():
     assert 'data-maint-tab-hash="video-previews"' in html
     assert 'id="previewScanButton"' in html
     assert 'id="previewRunExtractionButton"' in html
+    assert 'id="previewPresentCount"' in html
+    assert "Interval Mismatch" not in html
+    assert "Interval mismatches" not in html
     assert 'id="qualityScanButton"' in html
     assert 'id="qualityApplyButton"' in html
     assert "fetch('/api/maintenance/video-previews/scan'" in script
@@ -692,3 +699,5 @@ def test_video_preview_ui_assets_render():
     assert "/api/maintenance/video-previews/quality/apply/status?apply_id=" in script
     assert "escapeHtml(item.relative_path" in script
     assert "escapeHtml(file.source_path)" in script
+    assert "expected_frame_count" not in script
+    assert "interval mismatch" not in script

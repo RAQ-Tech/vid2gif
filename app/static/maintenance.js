@@ -849,7 +849,7 @@
     const percent = byId('previewProgressPercent');
     const bar = byId('previewProgressBar');
     const missing = byId('previewMissingCount');
-    const stale = byId('previewStaleCount');
+    const present = byId('previewPresentCount');
     const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
     if (state) state.textContent = scan?.status || 'Idle';
     if (label) label.textContent = scan?.progress_label || 'Choose a folder';
@@ -859,7 +859,7 @@
       bar.parentElement.setAttribute('aria-valuenow', pct);
     }
     if (missing) missing.textContent = String(scan?.missing_count || 0);
-    if (stale) stale.textContent = String(scan?.stale_count || 0);
+    if (present) present.textContent = String(scan?.present_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
     const scanButton = byId('previewScanButton');
     const cancelButton = byId('previewCancelScanButton');
@@ -890,7 +890,6 @@
 
   function previewStatusBadge(status) {
     if (status === 'missing') return '<span class="badge text-bg-warning">Missing</span>';
-    if (status === 'stale') return '<span class="badge text-bg-info">Interval</span>';
     if (status === 'present') return '<span class="badge text-bg-success">Present</span>';
     return `<span class="badge text-bg-secondary">${escapeHtml(status || 'Unknown')}</span>`;
   }
@@ -960,7 +959,7 @@
     } else if (scan.status === 'success') {
       setPreviewMessage(
         `${scan.missing_count || 0} missing video preview${(scan.missing_count || 0) === 1 ? '' : 's'}`,
-        `${scan.present_count || 0} covered, ${scan.stale_count || 0} interval mismatch${(scan.stale_count || 0) === 1 ? '' : 'es'}`
+        `${scan.present_count || 0} present`
       );
       if (previewItemsPage?.scan?.id !== scan.id) {
         loadPreviewItems(0);
@@ -1168,6 +1167,11 @@
     return parts.join(', ');
   }
 
+  function formatIntervalSeconds(value) {
+    if (value === null || value === undefined || value === '') return '';
+    return `${value}s`;
+  }
+
   function renderQualityItems(page) {
     const target = byId('qualityItems');
     if (!target) return;
@@ -1185,8 +1189,8 @@
       `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.video_path)}">${escapeHtml(item.video_relative_path || item.video_name || '')}</code></td>` +
       `<td>${escapeHtml(item.confidence || 0)}%</td>` +
-      `<td>${escapeHtml(item.frame_count || 0)} / ${escapeHtml(item.expected_frame_count || 'unknown')}</td>` +
-      `<td>${escapeHtml(item.interval_seconds || '')}s</td>` +
+      `<td>${escapeHtml(item.frame_count || 0)}</td>` +
+      `<td>${escapeHtml(formatIntervalSeconds(item.interval_seconds))}</td>` +
       `<td>${escapeHtml(qualitySampleSummary(item))}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.reason || '')}">${escapeHtml(item.reason || '')}</code></td>` +
       `<td>${escapeHtml(item.size_label || formatSize(item.size_bytes))}</td>` +
