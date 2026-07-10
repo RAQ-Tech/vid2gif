@@ -296,7 +296,7 @@ def test_bif_quality_flags_repeated_frames(monkeypatch, tmp_path):
     assert "byte-identical" in item["reason"]
 
 
-def test_bif_quality_does_not_flag_low_frame_count_by_itself(monkeypatch, tmp_path):
+def test_bif_quality_flags_severe_frame_count_shortfall(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     video = _write(lib / "Movie" / "Movie.mkv")
     bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"one"), _jpeg(b"two")]))
@@ -305,9 +305,78 @@ def test_bif_quality_does_not_flag_low_frame_count_by_itself(monkeypatch, tmp_pa
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
+    assert item["status"] == "bad"
+    assert item["repairable"] is True
+    assert item["expected_frame_count"] == 20
+    assert item["frame_count"] == 2
+    assert item["frame_count_ratio"] == 0.1
+    assert item["frame_count_detail"] == "2 / 20"
+    assert "fewer frames than expected" in item["reason"]
+
+
+def test_bif_quality_warns_for_moderate_frame_count_shortfall(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    frames = [_jpeg(f"frame-{index}".encode()) for index in range(16)]
+    bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes(frames))
+    monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 3600)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+
+    item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
+
+    assert item["status"] == "warning"
+    assert item["repairable"] is False
+    assert item["expected_frame_count"] == 20
+    assert item["frame_count_ratio"] == 0.8
+    assert "lower than expected" in item["reason"]
+
+
+def test_bif_quality_accepts_matching_ten_second_bif(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    frames = [_jpeg(f"frame-{index}".encode()) for index in range(90)]
+    bif = _write(lib / "Movie" / "Movie-320-10.bif", _bif_bytes(frames, multiplier=10000))
+    monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 900)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+
+    item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
+
     assert item["status"] == "ok"
     assert item["repairable"] is False
-    assert "expected_frame_count" not in item
+    assert item["interval_seconds"] == 10
+    assert item["expected_frame_count"] == 90
+    assert item["frame_count_detail"] == "90 / 90"
+    assert "interval" not in item["reason"].lower()
+
+
+def test_bif_quality_uses_header_multiplier_when_name_has_no_interval(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    frames = [_jpeg(f"frame-{index}".encode()) for index in range(12)]
+    bif = _write(lib / "Movie" / "Movie.bif", _bif_bytes(frames, multiplier=60000))
+    monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 720)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+
+    item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
+
+    assert item["status"] == "ok"
+    assert item["interval_seconds"] == 60
+    assert item["expected_frame_count"] == 12
+    assert item["frame_count_detail"] == "12 / 12"
+
+
+def test_bif_quality_skips_expected_count_without_duration(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"one"), _jpeg(b"two")]))
+    monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+
+    item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
+
+    assert item["status"] == "ok"
+    assert item["expected_frame_count"] is None
+    assert item["frame_count_detail"] == "2"
     assert item["reason"] == "BIF passed quality checks"
 
 
@@ -699,5 +768,6 @@ def test_video_preview_ui_assets_render():
     assert "/api/maintenance/video-previews/quality/apply/status?apply_id=" in script
     assert "escapeHtml(item.relative_path" in script
     assert "escapeHtml(file.source_path)" in script
-    assert "expected_frame_count" not in script
+    assert "frame_count_detail" in script
+    assert "Frames Actual / Expected" in script
     assert "interval mismatch" not in script

@@ -1487,7 +1487,7 @@
       `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.video_path)}">${escapeHtml(item.video_relative_path || item.video_name || '')}</code></td>` +
       `<td>${escapeHtml(item.confidence || 0)}%</td>` +
-      `<td>${escapeHtml(item.frame_count || 0)}</td>` +
+      `<td>${escapeHtml(item.frame_count_detail || item.frame_count || 0)}</td>` +
       `<td>${escapeHtml(formatIntervalSeconds(item.interval_seconds))}</td>` +
       `<td>${escapeHtml(qualitySampleSummary(item))}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.reason || '')}">${escapeHtml(item.reason || '')}</code></td>` +
@@ -1498,7 +1498,7 @@
       `${qualityPager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
       `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Status</th><th>BIF</th><th>Video</th><th>Confidence</th><th>Frames</th><th>Interval</th><th>Sample</th><th>Reason</th><th>Size</th></tr></thead>` +
+      `<thead><tr><th>Status</th><th>BIF</th><th>Video</th><th>Confidence</th><th>Frames Actual / Expected</th><th>Interval</th><th>Sample</th><th>Reason</th><th>Size</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${qualityPager(page)}`;
   }

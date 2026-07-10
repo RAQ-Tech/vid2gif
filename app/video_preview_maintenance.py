@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -799,13 +800,38 @@ def _quality_counts(items):
     }
 
 
+def _expected_bif_frame_count(duration_seconds, interval_seconds):
+    try:
+        duration = float(duration_seconds)
+        interval = float(interval_seconds)
+    except (TypeError, ValueError):
+        return None
+    if duration <= 0 or interval <= 0:
+        return None
+    return max(1, int(math.ceil(duration / interval)))
+
+
 def analyze_bif_quality(bif_path, video_path, lib_root):
     parsed = parse_bif(bif_path)
     stat = _safe_stat(bif_path)
     identity = _stat_identity(bif_path) or {}
     interval_from_name = bif_interval_seconds(os.path.basename(bif_path), os.path.splitext(os.path.basename(video_path))[0])
-    interval_seconds = interval_from_name or max(1, int(round((parsed.get("timestamp_multiplier_ms") or 1000) / 1000)))
+    timestamp_multiplier_ms = parsed.get("timestamp_multiplier_ms") or 0
+    interval_from_header = max(1, int(round(timestamp_multiplier_ms / 1000))) if timestamp_multiplier_ms else None
+    interval_seconds = interval_from_name or interval_from_header
     duration = _probe_video_duration(video_path)
+    frame_count = parsed.get("image_count") or 0
+    expected_frame_count = _expected_bif_frame_count(duration, interval_seconds)
+    frame_count_ratio = (
+        round(frame_count / expected_frame_count, 3)
+        if expected_frame_count
+        else None
+    )
+    frame_count_detail = (
+        f"{frame_count} / {expected_frame_count}"
+        if expected_frame_count
+        else str(frame_count)
+    )
     reasons = []
     confidence = 0
     sample_summary = {
@@ -856,6 +882,20 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
         if decoded and blank_count >= max(3, int(len(decoded) * 0.80)):
             reasons.append("Most sampled BIF frames are blank")
             confidence = max(confidence, 90)
+        if expected_frame_count and expected_frame_count >= 6:
+            missing_frames = max(0, expected_frame_count - frame_count)
+            severe_missing = max(3, int(math.ceil(expected_frame_count * 0.25)))
+            warning_missing = max(4, int(math.ceil(expected_frame_count * 0.10)))
+            if frame_count_ratio is not None and frame_count_ratio <= 0.60 and missing_frames >= severe_missing:
+                reasons.append(
+                    f"BIF has fewer frames than expected for this video ({frame_count} of {expected_frame_count})"
+                )
+                confidence = max(confidence, 90)
+            elif frame_count_ratio is not None and frame_count_ratio <= 0.85 and missing_frames >= warning_missing:
+                reasons.append(
+                    f"BIF frame count is lower than expected for this video ({frame_count} of {expected_frame_count})"
+                )
+                confidence = max(confidence, 65)
 
     status = "ok"
     if confidence >= 90:
@@ -878,10 +918,13 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
         "video_path": os.path.realpath(video_path),
         "video_relative_path": _relative_path(video_path, lib_root),
         "video_name": os.path.basename(video_path),
-        "frame_count": parsed.get("image_count") or 0,
+        "frame_count": frame_count,
+        "expected_frame_count": expected_frame_count,
+        "frame_count_ratio": frame_count_ratio,
+        "frame_count_detail": frame_count_detail,
         "duration_seconds": duration,
         "interval_seconds": interval_seconds,
-        "timestamp_multiplier_ms": parsed.get("timestamp_multiplier_ms") or 0,
+        "timestamp_multiplier_ms": timestamp_multiplier_ms,
         "sample_summary": sample_summary,
         "size_bytes": stat.st_size if stat else 0,
         "size_label": format_size(stat.st_size if stat else 0),
@@ -1214,6 +1257,9 @@ def _public_quality_item(item):
             "video_relative_path",
             "video_name",
             "frame_count",
+            "expected_frame_count",
+            "frame_count_ratio",
+            "frame_count_detail",
             "duration_seconds",
             "interval_seconds",
             "timestamp_multiplier_ms",
