@@ -1,6 +1,6 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
-  const maintenanceTabHashes = ['posters', 'duplicates', 'video-previews'];
+  const maintenanceTabHashes = ['posters', 'duplicates', 'video-previews', 'actor-images'];
   const groupState = new Map();
   const groupSummaries = new Map();
   let currentScan = null;
@@ -25,6 +25,15 @@
   let qualityPlan = null;
   let qualityApply = null;
   let qualityApplyPollTimer = null;
+  let actorScan = null;
+  let actorPollTimer = null;
+  let actorItemsPage = null;
+  let actorPageOffset = 0;
+  let actorPageLimit = 25;
+  let actorPlan = null;
+  let actorApply = null;
+  let actorApplyPollTimer = null;
+  const actorSelected = new Set();
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
 
@@ -472,6 +481,34 @@
     }
   }
 
+  async function openActorBrowser(path) {
+    const browser = byId('actorBrowser');
+    if (!browser) return;
+    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
+    try {
+      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
+        return;
+      }
+      const folders = (data.folders || []).map(folder =>
+        `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-folder="${escapeHtml(folder.path)}">` +
+        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
+      ).join('');
+      const parent = data.parent
+        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
+        : '';
+      browser.innerHTML =
+        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
+        `<div class="media-browser-actions">${parent}` +
+        `<button class="btn btn-primary btn-sm" type="button" data-actor-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
+        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
+    } catch (e) {
+      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
+    }
+  }
+
   function stopPolling() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -504,6 +541,20 @@
     if (qualityApplyPollTimer) {
       clearInterval(qualityApplyPollTimer);
       qualityApplyPollTimer = null;
+    }
+  }
+
+  function stopActorPolling() {
+    if (actorPollTimer) {
+      clearInterval(actorPollTimer);
+      actorPollTimer = null;
+    }
+  }
+
+  function stopActorApplyPolling() {
+    if (actorApplyPollTimer) {
+      clearInterval(actorApplyPollTimer);
+      actorApplyPollTimer = null;
     }
   }
 
@@ -1466,6 +1517,461 @@
     }
   }
 
+  function setActorMessage(title, detail) {
+    const titleEl = byId('actorMessageTitle');
+    const detailEl = byId('actorMessageDetail');
+    if (titleEl) titleEl.textContent = title || '';
+    if (detailEl) detailEl.textContent = detail || '';
+  }
+
+  function setActorProgress(scan) {
+    const state = byId('actorScanState');
+    const label = byId('actorProgressLabel');
+    const percent = byId('actorProgressPercent');
+    const bar = byId('actorProgressBar');
+    const missing = byId('actorMissingCount');
+    const ready = byId('actorReadyCount');
+    const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
+    if (state) state.textContent = scan?.status || 'Idle';
+    if (label) label.textContent = scan?.progress_label || 'Choose a folder';
+    if (percent) percent.textContent = `${pct}%`;
+    if (bar) {
+      bar.style.width = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+    }
+    if (missing) missing.textContent = String(scan?.missing_actor_count || 0);
+    if (ready) ready.textContent = String(scan?.ready_count || 0);
+    const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
+    const scanButton = byId('actorScanButton');
+    const cancelButton = byId('actorCancelScanButton');
+    const planButton = byId('actorPlanButton');
+    if (scanButton) scanButton.disabled = active;
+    if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
+    if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.ready_count || 0);
+  }
+
+  function renderActorEmbyStatus(status) {
+    const configured = byId('actorEmbyConfigured');
+    const lastTest = byId('actorEmbyLastTest');
+    const result = status?.last_test || {};
+    if (configured) configured.textContent = status?.configured ? 'Emby: configured' : 'Emby: not configured';
+    if (lastTest) lastTest.textContent = `Last test: ${embyResultLabel(result, 'never')}`;
+  }
+
+  function actorPageRangeText(page) {
+    const total = Number(page?.total || 0);
+    if (!total) return '0 of 0';
+    const start = Number(page.offset || 0) + 1;
+    const end = Math.min(total, Number(page.offset || 0) + Number(page.count || 0));
+    return `${start}-${end} of ${total}`;
+  }
+
+  function actorPager(page) {
+    if (!page) return '';
+    return `<div class="maintenance-pager">` +
+      `<div class="text-muted small">${escapeHtml(actorPageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
+      `<div class="toolbar-row mb-0">` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
+      `</div>` +
+      `</div>`;
+  }
+
+  function actorStatusBadge(status) {
+    const labels = {
+      ready: ['Ready', 'text-bg-success'],
+      ambiguous: ['Ambiguous', 'text-bg-warning'],
+      no_candidate: ['No local image', 'text-bg-secondary'],
+      ignored: ['Ignored', 'text-bg-secondary'],
+      manual: ['Manual needed', 'text-bg-info'],
+      blocked: ['Do not import', 'text-bg-dark'],
+      imported: ['Imported', 'text-bg-success'],
+      failed: ['Failed', 'text-bg-danger']
+    };
+    const [label, klass] = labels[status] || [status || 'Unknown', 'text-bg-secondary'];
+    return `<span class="badge ${klass}">${escapeHtml(label)}</span>`;
+  }
+
+  function actorCandidateCell(item) {
+    const candidates = item.candidates || [];
+    if (!candidates.length) return '<span class="text-muted">No local image found</span>';
+    return candidates.slice(0, 3).map(candidate =>
+      `<div class="d-flex align-items-center gap-2 mb-1">` +
+      `<img src="${escapeHtml(candidate.preview_url || '')}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:4px">` +
+      `<code class="path-cell" title="${escapeHtml(candidate.path || '')}">${escapeHtml(candidate.relative_path || candidate.name || '')}</code>` +
+      `</div>`
+    ).join('') + (candidates.length > 3 ? `<div class="text-muted small">${candidates.length - 3} more candidate(s)</div>` : '');
+  }
+
+  function actorRelatedCell(item) {
+    const videos = item.related_videos || [];
+    if (!videos.length) return '<span class="text-muted">No local video path matched</span>';
+    const first = videos[0] || {};
+    const extra = Number(item.related_video_count || videos.length) - 1;
+    return `<code class="path-cell" title="${escapeHtml(first.path || '')}">${escapeHtml(first.relative_path || first.name || '')}</code>` +
+      (extra > 0 ? `<div class="text-muted small">${extra} more related video${extra === 1 ? '' : 's'}</div>` : '');
+  }
+
+  function renderActorItems(page) {
+    const target = byId('actorItems');
+    if (!target) return;
+    if (!actorScan || actorScan.status !== 'success') {
+      target.innerHTML = '<div class="text-muted text-center py-4">Actor image results will appear here after a scan.</div>';
+      return;
+    }
+    if (!page || !(page.items || []).length) {
+      target.innerHTML = `${page ? actorPager(page) : ''}<div class="text-muted text-center py-4">No actors in this view.</div>`;
+      return;
+    }
+    const rows = (page.items || []).map(item => {
+      const checked = actorSelected.has(item.id) || (item.status === 'ready' && !actorSelected.size);
+      const selectable = item.status === 'ready';
+      return `<tr>` +
+        `<td><input class="form-check-input" type="checkbox" data-actor-select="${escapeHtml(item.id)}"${checked && selectable ? ' checked' : ''}${selectable ? '' : ' disabled'}></td>` +
+        `<td>${actorStatusBadge(item.status)}<div class="fw-semibold mt-1">${escapeHtml(item.name || '')}</div><div class="text-muted small">${escapeHtml(item.person_id || '')}</div></td>` +
+        `<td>${actorCandidateCell(item)}</td>` +
+        `<td>${actorRelatedCell(item)}</td>` +
+        `<td><div class="toolbar-row mb-0">` +
+        `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-exception="manual" data-actor-id="${escapeHtml(item.id)}">Manual</button>` +
+        `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-exception="ignored" data-actor-id="${escapeHtml(item.id)}">Ignore</button>` +
+        `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-exception="blocked" data-actor-id="${escapeHtml(item.id)}">Block</button>` +
+        `${item.exception ? `<button class="btn btn-outline-primary btn-sm" type="button" data-actor-exception="clear" data-actor-id="${escapeHtml(item.id)}">Clear</button>` : ''}` +
+        `</div></td>` +
+        `</tr>`;
+    }).join('');
+    target.innerHTML =
+      `${actorPager(page)}` +
+      `<div class="table-responsive workspace-table-wrap">` +
+      `<table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th>Import</th><th>Actor</th><th>Candidate Image</th><th>Related Video</th><th>Exception</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      `${actorPager(page)}`;
+  }
+
+  async function loadActorItems(offset = actorPageOffset) {
+    if (!actorScan?.id || actorScan.status !== 'success') return;
+    const status = byId('actorItemStatus')?.value || 'ready';
+    const target = byId('actorItems');
+    if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading actor image results...</div>';
+    try {
+      const res = await fetch(`/api/maintenance/actor-images/items?scan_id=${encodeURIComponent(actorScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(actorPageLimit)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image results unavailable', '');
+        return;
+      }
+      actorItemsPage = data;
+      actorPageOffset = Number(data.offset || 0);
+      if (!actorSelected.size && status === 'ready') {
+        (data.items || []).forEach(item => {
+          if (item.status === 'ready') actorSelected.add(item.id);
+        });
+      }
+      renderActorItems(data);
+      if (data.large_result) {
+        setActorMessage(`${data.total || 0} actors in this view`, `Large result set loaded ${data.limit || actorPageLimit} items at a time.`);
+      }
+    } catch (e) {
+      setActorMessage('Actor image results unavailable', e.message || '');
+    }
+  }
+
+  function handleActorScan(scan, embyStatus) {
+    actorScan = scan;
+    setActorProgress(scan);
+    renderActorEmbyStatus(embyStatus);
+    const terminal = scan && ['success', 'failed', 'cancelled'].includes(scan.status || '');
+    if (!scan) {
+      setActorMessage('No actor image scan yet.', '');
+    } else if (scan.status === 'success') {
+      setActorMessage(
+        `${scan.missing_actor_count || 0} missing actor image${(scan.missing_actor_count || 0) === 1 ? '' : 's'}`,
+        `${scan.ready_count || 0} ready, ${scan.ambiguous_count || 0} ambiguous, ${scan.no_candidate_count || 0} without local images`
+      );
+      if (actorItemsPage?.scan?.id !== scan.id) {
+        loadActorItems(0);
+      }
+    } else if (scan.status === 'failed') {
+      setActorMessage('Actor image scan failed', scan.error || '');
+    } else if (scan.status === 'cancelled') {
+      setActorMessage('Actor image scan cancelled', '');
+    } else {
+      setActorMessage(scan.progress_label || 'Scanning actor images', 'Large libraries can take a while.');
+    }
+    if (terminal) {
+      stopActorPolling();
+    }
+  }
+
+  async function pollActorScan(scanId) {
+    if (!scanId) return;
+    try {
+      const res = await fetch(`/api/maintenance/actor-images/status?scan_id=${encodeURIComponent(scanId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image scan unavailable', '');
+        stopActorPolling();
+        return;
+      }
+      handleActorScan(data.scan, data.emby_status);
+    } catch (e) {
+      setActorMessage('Actor image scan unavailable', e.message || '');
+      stopActorPolling();
+    }
+  }
+
+  async function refreshActorStatus() {
+    try {
+      const res = await fetch('/api/maintenance/actor-images/status');
+      const data = await readJsonResponse(res);
+      if (res.ok) {
+        handleActorScan(data.scan, data.emby_status);
+      }
+    } catch (_e) {
+      // Status refresh is best-effort on page load.
+    }
+  }
+
+  async function startActorScan() {
+    const path = (byId('actorPath')?.value || config.libRoot || '/library').trim();
+    if (!path) {
+      setActorMessage('Choose a folder under the library', '');
+      return;
+    }
+    stopActorPolling();
+    stopActorApplyPolling();
+    actorItemsPage = null;
+    actorPageOffset = 0;
+    actorSelected.clear();
+    actorPlan = null;
+    actorApply = null;
+    const summary = byId('actorPlanSummary');
+    if (summary) summary.innerHTML = '';
+    const applyButton = byId('actorApplyButton');
+    if (applyButton) applyButton.disabled = true;
+    setActorMessage('Starting actor image scan', '');
+    setActorProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
+    try {
+      const res = await fetch('/api/maintenance/actor-images/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image scan could not start', '');
+        return;
+      }
+      handleActorScan(data.scan);
+      actorPollTimer = setInterval(() => pollActorScan(data.scan.id), 1000);
+    } catch (e) {
+      setActorMessage('Actor image scan could not start', e.message || '');
+    }
+  }
+
+  async function cancelActorScan() {
+    if (!actorScan?.id) return;
+    setActorMessage('Cancelling actor image scan', '');
+    try {
+      const res = await fetch('/api/maintenance/actor-images/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: actorScan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image scan could not be cancelled', '');
+        return;
+      }
+      handleActorScan(data.scan);
+    } catch (e) {
+      setActorMessage('Actor image scan could not be cancelled', e.message || '');
+    }
+  }
+
+  function renderActorPlan(plan) {
+    const summary = byId('actorPlanSummary');
+    if (!summary) return;
+    const sample = (plan.files || []).slice(0, 8).map(file =>
+      `<li><strong>import</strong> <code title="${escapeHtml(file.candidate_path)}">${escapeHtml(file.candidate_relative_path || file.candidate_name)}</code> -> ${escapeHtml(file.person_name || '')}</li>`
+    ).join('');
+    summary.innerHTML =
+      `<div class="settings-panel">` +
+      `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>Actor Image Import Plan</span></div>` +
+      `<div class="metric-row mt-0"><span>Import ${escapeHtml(plan.file_count || 0)} actor image(s)</span><span>${escapeHtml((plan.skipped || []).length)} skipped</span></div>` +
+      `${sample ? `<ul class="maintenance-plan-list mt-2">${sample}${(plan.files || []).length > 8 ? '<li class="text-muted">Additional actors are included in the plan.</li>' : ''}</ul>` : '<div class="text-muted mt-2">No actor images selected.</div>'}` +
+      `</div>`;
+  }
+
+  async function reviewActorPlan() {
+    if (!actorScan || actorScan.status !== 'success') {
+      setActorMessage('Run an actor image scan first', '');
+      return;
+    }
+    const selected = Array.from(actorSelected).map(itemId => ({item_id: itemId}));
+    setActorMessage('Building actor image import plan', '');
+    try {
+      const res = await fetch('/api/maintenance/actor-images/plan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: actorScan.id, items: selected})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image import plan could not be built', '');
+        return;
+      }
+      actorPlan = data.plan;
+      renderActorPlan(actorPlan);
+      const applyButton = byId('actorApplyButton');
+      if (applyButton) applyButton.disabled = !actorPlan.file_count;
+      setActorMessage('Review the actor image import plan before applying', `${actorPlan.file_count || 0} image(s) selected`);
+    } catch (e) {
+      setActorMessage('Actor image import plan could not be built', e.message || '');
+    }
+  }
+
+  function handleActorApply(apply) {
+    actorApply = apply;
+    const button = byId('actorApplyButton');
+    const running = apply && ['queued', 'running'].includes(apply.status || '');
+    if (button) button.disabled = running || !actorPlan;
+    if (!apply) return;
+    if (running) {
+      setActorMessage(
+        apply.progress_label || 'Actor image import running',
+        `${apply.imported_count || 0} imported, ${apply.refused_count || 0} refused, ${apply.failed_count || 0} failed`
+      );
+      return;
+    }
+    if (apply.status === 'success' || apply.status === 'failed') {
+      stopActorApplyPolling();
+      const result = apply.result || {};
+      setActorMessage(
+        apply.status === 'success' ? 'Actor image import complete' : 'Actor image import finished with errors',
+        `${result.imported_count || apply.imported_count || 0} imported, ${result.refused_count || apply.refused_count || 0} refused, ${result.failed_count || apply.failed_count || 0} failed`
+      );
+      actorPlan = null;
+      if (button) button.disabled = true;
+      if (actorScan?.id) pollActorScan(actorScan.id);
+    }
+  }
+
+  async function pollActorApply(applyId) {
+    if (!applyId) return;
+    try {
+      const res = await fetch(`/api/maintenance/actor-images/apply/status?apply_id=${encodeURIComponent(applyId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image import status unavailable', '');
+        stopActorApplyPolling();
+        return;
+      }
+      handleActorApply(data.apply);
+    } catch (e) {
+      setActorMessage('Actor image import status unavailable', e.message || '');
+      stopActorApplyPolling();
+    }
+  }
+
+  async function applyActorPlan() {
+    if (!actorPlan) {
+      setActorMessage('Review an actor image import plan first', '');
+      return;
+    }
+    if (!window.confirm(`Import ${actorPlan.file_count} actor image(s) into Emby?`)) {
+      return;
+    }
+    const button = byId('actorApplyButton');
+    if (button) button.disabled = true;
+    setActorMessage('Starting actor image import', '');
+    try {
+      const res = await fetch('/api/maintenance/actor-images/apply', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plan_id: actorPlan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor image import could not start', '');
+        return;
+      }
+      handleActorApply(data.apply);
+      stopActorApplyPolling();
+      if (data.apply?.id && ['queued', 'running'].includes(data.apply.status || '')) {
+        actorApplyPollTimer = setInterval(() => pollActorApply(data.apply.id), 1000);
+      } else if (data.apply?.id) {
+        pollActorApply(data.apply.id);
+      }
+    } catch (e) {
+      setActorMessage('Actor image import could not start', e.message || '');
+    }
+  }
+
+  async function updateActorException(itemId, status) {
+    const item = (actorItemsPage?.items || []).find(value => value.id === itemId);
+    if (!item) return;
+    try {
+      const res = await fetch('/api/maintenance/actor-images/exceptions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({person_id: item.person_id, name: item.name, status})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setActorMessage(data.error || 'Actor exception could not be saved', '');
+        return;
+      }
+      setActorMessage(status === 'clear' ? 'Actor exception cleared' : 'Actor exception saved', item.name || '');
+      if (actorScan?.id) {
+        pollActorScan(actorScan.id);
+        loadActorItems(actorPageOffset);
+      }
+    } catch (e) {
+      setActorMessage('Actor exception could not be saved', e.message || '');
+    }
+  }
+
+  async function refreshActorLogs() {
+    const panel = byId('actorLogPanel');
+    const list = byId('actorLogList');
+    if (panel) panel.classList.remove('d-none');
+    if (!list) return;
+    list.innerHTML = '<div class="small text-muted">Loading logs...</div>';
+    try {
+      const res = await fetch('/api/maintenance/actor-images/logs');
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        list.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Logs unavailable')}</div>`;
+        return;
+      }
+      const logs = data.logs || [];
+      list.innerHTML = logs.length
+        ? logs.map(log => `<button class="btn btn-outline-secondary btn-sm me-2 mb-2" type="button" data-actor-log="${escapeHtml(log.id)}">${escapeHtml(log.created_at || log.id)} · ${escapeHtml(log.type || '')} · ${escapeHtml(log.size_label || '')}</button>`).join('')
+        : '<div class="small text-muted">No actor image logs yet.</div>';
+    } catch (e) {
+      list.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Logs unavailable')}</div>`;
+    }
+  }
+
+  async function openActorLog(logId) {
+    const output = byId('actorLogContent');
+    if (!output) return;
+    output.classList.remove('d-none');
+    output.textContent = 'Loading log...';
+    try {
+      const res = await fetch(`/api/maintenance/actor-images/logs/${encodeURIComponent(logId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        output.textContent = data.error || 'Log unavailable';
+        return;
+      }
+      output.textContent = data.log?.content || '';
+    } catch (e) {
+      output.textContent = e.message || 'Log unavailable';
+    }
+  }
+
   function setPosterMessage(title, detail) {
     const titleEl = byId('posterMessageTitle');
     const detailEl = byId('posterMessageDetail');
@@ -1777,6 +2283,18 @@
       qualityPageOffset = 0;
       loadQualityItems(0);
     });
+    byId('actorBrowseButton')?.addEventListener('click', () => {
+      openActorBrowser(byId('actorPath')?.value.trim() || config.libRoot || '/library');
+    });
+    byId('actorScanButton')?.addEventListener('click', startActorScan);
+    byId('actorCancelScanButton')?.addEventListener('click', cancelActorScan);
+    byId('actorPlanButton')?.addEventListener('click', reviewActorPlan);
+    byId('actorApplyButton')?.addEventListener('click', applyActorPlan);
+    byId('actorLogsButton')?.addEventListener('click', refreshActorLogs);
+    byId('actorItemStatus')?.addEventListener('change', () => {
+      actorPageOffset = 0;
+      loadActorItems(0);
+    });
     byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);
     byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
@@ -1834,6 +2352,17 @@
       }
     });
 
+    byId('actorBrowser')?.addEventListener('click', event => {
+      const folder = event.target.closest('[data-actor-folder]');
+      const choose = event.target.closest('[data-actor-choose]');
+      if (folder) {
+        openActorBrowser(folder.getAttribute('data-actor-folder'));
+      } else if (choose) {
+        const path = choose.getAttribute('data-actor-choose') || '';
+        if (byId('actorPath')) byId('actorPath').value = path;
+      }
+    });
+
     byId('previewItems')?.addEventListener('click', event => {
       const page = event.target.closest('[data-preview-page]');
       if (!page) return;
@@ -1843,6 +2372,42 @@
       } else if (direction === 'prev' && previewItemsPage?.has_previous) {
         loadPreviewItems(previewItemsPage.previous_offset);
       }
+    });
+
+    byId('actorItems')?.addEventListener('click', event => {
+      const page = event.target.closest('[data-actor-page]');
+      if (page) {
+        const direction = page.getAttribute('data-actor-page');
+        if (direction === 'next' && actorItemsPage?.has_next) {
+          loadActorItems(actorItemsPage.next_offset);
+        } else if (direction === 'prev' && actorItemsPage?.has_previous) {
+          loadActorItems(actorItemsPage.previous_offset);
+        }
+        return;
+      }
+      const exception = event.target.closest('[data-actor-exception]');
+      if (exception) {
+        updateActorException(
+          exception.getAttribute('data-actor-id'),
+          exception.getAttribute('data-actor-exception')
+        );
+      }
+    });
+
+    byId('actorItems')?.addEventListener('change', event => {
+      const selected = event.target.closest('[data-actor-select]');
+      if (!selected) return;
+      const itemId = selected.getAttribute('data-actor-select');
+      if (selected.checked) {
+        actorSelected.add(itemId);
+      } else {
+        actorSelected.delete(itemId);
+      }
+      actorPlan = null;
+      const applyButton = byId('actorApplyButton');
+      if (applyButton) applyButton.disabled = true;
+      const summary = byId('actorPlanSummary');
+      if (summary) summary.innerHTML = '';
     });
 
     byId('qualityItems')?.addEventListener('click', event => {
@@ -1921,6 +2486,12 @@
       if (!button) return;
       openMaintenanceLog(button.getAttribute('data-maint-log'));
     });
+
+    byId('actorLogList')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-actor-log]');
+      if (!button) return;
+      openActorLog(button.getAttribute('data-actor-log'));
+    });
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -1929,10 +2500,13 @@
     setProgress(null);
     setPreviewProgress(null);
     setQualityProgress(null);
+    setActorProgress(null);
     openBrowser(config.libRoot || '/library');
     openPreviewBrowser(config.libRoot || '/library');
+    openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
     refreshPreviewTasks();
+    refreshActorStatus();
     refreshPosterStatus();
     posterPollTimer = setInterval(refreshPosterStatus, 10000);
   });

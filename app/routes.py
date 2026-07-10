@@ -1,8 +1,10 @@
 import os
+import mimetypes
 import time
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_file
 
 from . import app_settings
+from . import actor_image_maintenance
 from . import estimate_history
 from . import maintenance
 from . import poster_maintenance
@@ -797,6 +799,107 @@ def api_maintenance_video_previews_quality_apply_status():
     if err:
         return jsonify({"error": err}), 404
     return jsonify(payload)
+
+
+@app.route("/api/maintenance/actor-images/scan", methods=["POST"])
+def api_maintenance_actor_images_scan():
+    data = _json_or_form_data()
+    scan, err = actor_image_maintenance.start_scan(
+        data.get("path"),
+        lib_root=LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": actor_image_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/actor-images/status")
+def api_maintenance_actor_images_status():
+    payload, err = actor_image_maintenance.status_payload(request.args.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/actor-images/cancel", methods=["POST"])
+def api_maintenance_actor_images_cancel():
+    data = request.get_json(silent=True) or {}
+    scan, err = actor_image_maintenance.cancel_scan(data.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"scan": actor_image_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/actor-images/items")
+def api_maintenance_actor_images_items():
+    payload, err = actor_image_maintenance.items_payload(
+        request.args.get("scan_id"),
+        status=request.args.get("status"),
+        offset=request.args.get("offset"),
+        limit=request.args.get("limit"),
+    )
+    if err:
+        status = 404 if err == "Scan not found" else 400
+        return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/actor-images/plan", methods=["POST"])
+def api_maintenance_actor_images_plan():
+    plan, err = actor_image_maintenance.build_import_plan(
+        request.get_json(silent=True) or {},
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/actor-images/apply", methods=["POST"])
+def api_maintenance_actor_images_apply():
+    data = request.get_json(silent=True) or {}
+    run, err = actor_image_maintenance.start_import_apply(data.get("plan_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"apply": actor_image_maintenance.public_apply_run(run)})
+
+
+@app.route("/api/maintenance/actor-images/apply/status")
+def api_maintenance_actor_images_apply_status():
+    payload, err = actor_image_maintenance.apply_status(request.args.get("apply_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/actor-images/exceptions", methods=["POST"])
+def api_maintenance_actor_images_exceptions():
+    payload, err = actor_image_maintenance.update_exception(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/actor-images/logs")
+def api_maintenance_actor_images_logs():
+    return jsonify({"logs": actor_image_maintenance.list_recent_logs()})
+
+
+@app.route("/api/maintenance/actor-images/logs/<log_id>")
+def api_maintenance_actor_images_log(log_id):
+    log, err = actor_image_maintenance.read_log(log_id)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"log": log})
+
+
+@app.route("/api/maintenance/actor-images/preview")
+def api_maintenance_actor_images_preview():
+    path, err = actor_image_maintenance.preview_image_path(request.args.get("path"), lib_root=LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 404
+    return send_file(path, mimetype=mimetypes.guess_type(path)[0] or "application/octet-stream", conditional=True)
 
 
 @app.route("/api/scan-estimate")

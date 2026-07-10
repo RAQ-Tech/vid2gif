@@ -22,6 +22,10 @@
         <i class="bi bi-film" aria-hidden="true"></i>
         <span>Video Previews</span>
       </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#actor-images" data-maint-tab-shortcut="actor-images">
+        <i class="bi bi-person-bounding-box" aria-hidden="true"></i>
+        <span>Actor Images</span>
+      </a>
     </div>
   </div>
 
@@ -42,6 +46,12 @@
       <button class="nav-link" id="tab-video-previews" data-bs-toggle="tab" data-bs-target="#pane-video-previews" type="button" role="tab" aria-controls="pane-video-previews" aria-selected="false" data-maint-tab-hash="video-previews">
         <i class="bi bi-film" aria-hidden="true"></i>
         <span>Video Previews</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-actor-images" data-bs-toggle="tab" data-bs-target="#pane-actor-images" type="button" role="tab" aria-controls="pane-actor-images" aria-selected="false" data-maint-tab-hash="actor-images">
+        <i class="bi bi-person-bounding-box" aria-hidden="true"></i>
+        <span>Actor Images</span>
       </button>
     </li>
   </ul>
@@ -369,6 +379,139 @@
 
         <div id="qualityItems" class="maintenance-groups mt-3">
           <div class="text-muted text-center py-4">BIF quality results will appear here after a scan.</div>
+        </div>
+      </section>
+    </section>
+
+    <section class="tab-pane fade" id="pane-actor-images" role="tabpanel" aria-labelledby="tab-actor-images" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Actor image repair status">
+        <div class="status-tile">
+          <div class="metric-label">Scan</div>
+          <div id="actorScanState" class="metric-value">Idle</div>
+        </div>
+        <div class="status-tile status-tile-wide">
+          <div class="d-flex justify-content-between gap-3">
+            <div>
+              <div class="metric-label">Progress</div>
+              <div id="actorProgressLabel" class="metric-value">Choose a folder</div>
+            </div>
+            <span id="actorProgressPercent" class="small text-muted">0%</span>
+          </div>
+          <div class="progress progress-thin mt-2" role="progressbar" aria-label="Actor image scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="actorProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Missing</div>
+          <div id="actorMissingCount" class="metric-value">0</div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Ready</div>
+          <div id="actorReadyCount" class="metric-value">0</div>
+        </div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Actor Image Repair</h2>
+            <div class="text-muted small">Find Emby actors missing images and import matching local performer images after review.</div>
+          </div>
+          <div class="toolbar-row mb-0">
+            <button id="actorLogsButton" class="btn btn-outline-secondary btn-sm" type="button">
+              <i class="bi bi-journal-text" aria-hidden="true"></i>
+              <span>Logs</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-panel">
+          <div class="panel-subheading">
+            <i class="bi bi-hdd-network" aria-hidden="true"></i>
+            <span>Emby Status</span>
+          </div>
+          <div class="metric-row mt-0">
+            <span id="actorEmbyConfigured">Emby: unknown</span>
+            <span id="actorEmbyLastTest">Last test: unknown</span>
+          </div>
+          <div class="scan-estimate-detail mt-1">Uses the Emby settings from the Landscape Posters panel.</div>
+        </div>
+
+        <div class="settings-panel mt-3">
+          <div class="panel-subheading">
+            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+            <span>Scan Source</span>
+          </div>
+          <label class="form-label" for="actorPath">Library path</label>
+          <div class="input-group">
+            <input id="actorPath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
+            <button id="actorBrowseButton" class="btn btn-outline-secondary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Browse</span>
+            </button>
+            <button id="actorScanButton" class="btn btn-primary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Scan</span>
+            </button>
+            <button id="actorCancelScanButton" class="btn btn-outline-danger" type="button" disabled>
+              <i class="bi bi-x-circle" aria-hidden="true"></i>
+              <span>Cancel</span>
+            </button>
+          </div>
+          <div id="actorBrowser" class="media-browser mt-3"></div>
+        </div>
+
+        <div id="actorMessage" class="scan-estimate mt-3" aria-live="polite">
+          <i class="bi bi-info-circle" aria-hidden="true"></i>
+          <div>
+            <div id="actorMessageTitle">No actor image scan yet.</div>
+            <div id="actorMessageDetail" class="scan-estimate-detail"></div>
+          </div>
+        </div>
+
+        <div class="settings-panel mt-3">
+          <div class="panel-subheading">
+            <i class="bi bi-list-check" aria-hidden="true"></i>
+            <span>Review Imports</span>
+          </div>
+          <div class="toolbar-row">
+            <label class="form-label mb-0 compact-control" for="actorItemStatus">
+              Show
+              <select id="actorItemStatus" class="form-select form-select-sm">
+                <option value="ready" selected>Ready to import</option>
+                <option value="unresolved">Unresolved</option>
+                <option value="ambiguous">Ambiguous</option>
+                <option value="no_candidate">No local image</option>
+                <option value="manual">Manual needed</option>
+                <option value="ignored">Ignored</option>
+                <option value="imported">Imported</option>
+                <option value="failed">Failed</option>
+                <option value="all">All missing actors</option>
+              </select>
+            </label>
+            <button id="actorPlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
+              <i class="bi bi-list-check" aria-hidden="true"></i>
+              <span>Review Import Plan</span>
+            </button>
+            <button id="actorApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+              <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
+              <span>Import Images</span>
+            </button>
+          </div>
+          <div id="actorPlanSummary" class="maintenance-plan-summary mt-3"></div>
+        </div>
+
+        <div id="actorItems" class="maintenance-groups mt-3">
+          <div class="text-muted text-center py-4">Actor image results will appear here after a scan.</div>
+        </div>
+
+        <div id="actorLogPanel" class="settings-panel mt-3 d-none">
+          <div class="panel-subheading">
+            <i class="bi bi-journal-text" aria-hidden="true"></i>
+            <span>Recent Actor Image Logs</span>
+          </div>
+          <div id="actorLogList" class="maintenance-log-list"></div>
+          <pre id="actorLogContent" class="maintenance-log-content d-none mt-3"></pre>
         </div>
       </section>
     </section>
