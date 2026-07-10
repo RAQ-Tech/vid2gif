@@ -12,14 +12,13 @@ def _reload_config_module():
 
 @contextmanager
 def config_with_env(monkeypatch, **env):
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
     try:
-        config = _reload_config_module()
-        yield config
+        with monkeypatch.context() as scoped:
+            for key, value in env.items():
+                scoped.setenv(key, value)
+            config = _reload_config_module()
+            yield config
     finally:
-        for key in env:
-            monkeypatch.delenv(key, raising=False)
         _reload_config_module()
 
 

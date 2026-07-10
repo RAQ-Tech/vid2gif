@@ -337,6 +337,7 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "testLabVariantTabs" in workspace_template
     assert "testLabVariantEditor" in workspace_template
     assert "testLabPlayPause" in workspace_template
+    assert "data-player-play-icon" in workspace_template
     assert "testLabTimeline" in workspace_template
     assert "testLabPlaybackSpeed" in workspace_template
     assert "testLabSavedTray" in workspace_template
@@ -354,14 +355,15 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "preview_status" in test_lab_script
     assert "preview_label" in test_lab_script
     assert "preview-badge" in test_lab_script
-    assert "comparisonRenderSignature" in test_lab_script
+    assert "comparisonStructureSignature" in test_lab_script
     assert "bi-download" in test_lab_script
     assert "test-player-dropzone" in test_lab_script
     assert "data-keyboard-deck" in test_lab_script
     assert "Sortable.create" in test_lab_script
     assert "SynchronizedGifPlayer" in test_lab_script
     assert "decompressFrames" in test_lab_script
-    assert "requestAnimationFrame(this.tick)" in test_lab_script
+    assert "this.requestFrame(this.tick)" in test_lab_script
+    assert "play.innerHTML" not in test_lab_script
     assert "data-test-file-id" in test_lab_script
     assert "<img" not in test_lab_script
     assert "Original FPS" not in workspace_template

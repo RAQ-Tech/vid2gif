@@ -4,6 +4,8 @@ import {
   COMPARISON_STORAGE_KEY,
   MAX_COMPARISON_ITEMS,
   MAX_VARIANTS,
+  comparisonPlayerSignature,
+  comparisonStructureSignature,
   createId,
   loadComparisonIds,
   makeDefaultVariant,
@@ -115,7 +117,8 @@ let runPollTimer = null;
 let previewPollTimer = null;
 let deckSortable = null;
 let traySortable = null;
-let comparisonSignature = '';
+let currentStructureSignature = '';
+let currentPlayerSignature = '';
 let keyboardDrag = null;
 let resumeAfterVisibility = false;
 let resumeAfterTab = false;
@@ -370,7 +373,7 @@ function playerTile(file) {
   return `<article class="test-player-tile" data-file-id="${escapeHtml(file.id)}">
     <header class="test-player-tile-header">
       <button type="button" class="btn btn-icon btn-sm test-drag-handle" data-keyboard-deck="${escapeHtml(file.id)}" aria-label="Move ${escapeHtml(file.name)}" title="Drag to reorder"><i class="bi bi-grip-vertical" aria-hidden="true"></i></button>
-      <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
+      <strong data-player-name title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
       <button type="button" class="btn btn-icon btn-sm" data-remove-comparison="${escapeHtml(file.id)}" aria-label="Remove ${escapeHtml(file.name)}" title="Remove from comparison"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
     </header>
     <div class="test-player-canvas-wrap">
@@ -378,11 +381,11 @@ function playerTile(file) {
       ${tileStatusMarkup(file)}
     </div>
     <footer class="test-player-tile-footer">
-      <div class="test-player-tile-meta">${badge}<span>${escapeHtml(file.size_label || '')}</span></div>
-      <div class="test-player-tile-settings" title="${escapeHtml(file.settings_label || '')}">${escapeHtml(file.settings_label || '')}</div>
+      <div class="test-player-tile-meta">${badge}<span data-player-size>${escapeHtml(file.size_label || '')}</span></div>
+      <div class="test-player-tile-settings" data-player-settings title="${escapeHtml(file.settings_label || '')}">${escapeHtml(file.settings_label || '')}</div>
       <div class="test-player-tile-actions">
-        <a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.original_url || file.url)}" target="_blank" rel="noopener" title="Open original" aria-label="Open original"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a>
-        <a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.download_url || file.url)}" title="Download original" aria-label="Download original"><i class="bi bi-download" aria-hidden="true"></i></a>
+        <a class="btn btn-outline-secondary btn-icon btn-sm" data-player-open href="${escapeHtml(file.original_url || file.url)}" target="_blank" rel="noopener" title="Open original" aria-label="Open original"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a>
+        <a class="btn btn-outline-secondary btn-icon btn-sm" data-player-download href="${escapeHtml(file.download_url || file.url)}" title="Download original" aria-label="Download original"><i class="bi bi-download" aria-hidden="true"></i></a>
       </div>
     </footer>
   </article>`;
@@ -408,22 +411,30 @@ function setTileState(fileId, status, message = '') {
   }
 }
 
-function updatePlayerControls(playerState) {
+function updatePlayerFrame(playerState) {
   const deck = byId('testLabPreviews');
-  const play = byId('testLabPlayPause');
   const timeline = byId('testLabTimeline');
   if (deck) deck.dataset.playerPhase = String(playerState.phase);
+  if (timeline && document.activeElement !== timeline) timeline.value = String(Math.round(playerState.phase * 1000));
+}
+
+function updatePlayerControls(playerState) {
+  const play = byId('testLabPlayPause');
   if (play) {
     play.disabled = playerState.readyCount === 0;
-    play.title = playerState.playing ? 'Pause previews' : 'Play previews';
-    play.setAttribute('aria-label', play.title);
-    play.innerHTML = `<i class="bi ${playerState.playing ? 'bi-pause-fill' : 'bi-play-fill'}" aria-hidden="true"></i>`;
+    const label = playerState.playing ? 'Pause previews' : 'Play previews';
+    if (play.title !== label) play.title = label;
+    if (play.getAttribute('aria-label') !== label) play.setAttribute('aria-label', label);
+    const icon = play.querySelector('[data-player-play-icon]');
+    icon?.classList.toggle('bi-play-fill', !playerState.playing);
+    icon?.classList.toggle('bi-pause-fill', playerState.playing);
   }
-  if (timeline && document.activeElement !== timeline) timeline.value = String(Math.round(playerState.phase * 1000));
+  updatePlayerFrame(playerState);
 }
 
 const player = new SynchronizedGifPlayer({
   onStateChange: updatePlayerControls,
+  onFrame: updatePlayerFrame,
   onTileState: setTileState,
 });
 
@@ -431,16 +442,44 @@ function comparisonFiles() {
   return state.comparisonIds.map(id => state.filesById.get(id)).filter(Boolean);
 }
 
-function comparisonRenderSignature(files) {
-  return JSON.stringify(files.map(file => [
-    file.id,
-    file.name,
-    file.display_url,
-    file.preview_status,
-    file.preview_label,
-    file.size_label,
-    file.settings_label,
-  ]));
+function updateComparisonMetadata(files) {
+  const deck = byId('testLabPreviews');
+  if (!deck) return;
+  const tiles = new Map(Array.from(
+    deck.querySelectorAll('.test-player-tile'),
+    tile => [tile.dataset.fileId, tile],
+  ));
+  files.forEach(file => {
+    const tile = tiles.get(file.id);
+    if (!tile) return;
+    const name = file.name || 'GIF';
+    const nameTarget = tile.querySelector('[data-player-name]');
+    if (nameTarget) {
+      nameTarget.textContent = name;
+      nameTarget.title = name;
+    }
+    const handle = tile.querySelector('[data-keyboard-deck]');
+    if (handle) handle.setAttribute('aria-label', `Move ${name}`);
+    const remove = tile.querySelector('[data-remove-comparison]');
+    if (remove) remove.setAttribute('aria-label', `Remove ${name}`);
+    const canvas = tile.querySelector('[data-player-canvas]');
+    if (canvas) canvas.setAttribute('aria-label', `${name} preview`);
+    const badge = tile.querySelector('.preview-badge');
+    if (badge) badge.textContent = file.display_is_scaled
+      ? (file.preview_label || 'Scaled preview')
+      : 'Original preview';
+    const size = tile.querySelector('[data-player-size]');
+    if (size) size.textContent = file.size_label || '';
+    const settings = tile.querySelector('[data-player-settings]');
+    if (settings) {
+      settings.textContent = file.settings_label || '';
+      settings.title = file.settings_label || '';
+    }
+    const open = tile.querySelector('[data-player-open]');
+    if (open) open.href = file.original_url || file.url;
+    const download = tile.querySelector('[data-player-download]');
+    if (download) download.href = file.download_url || file.url;
+  });
 }
 
 function destroyDeckSortable() {
@@ -512,9 +551,14 @@ function renderComparison(force = false) {
     saveComparison();
   }
   const files = comparisonFiles();
-  const signature = comparisonRenderSignature(files);
-  if (!force && signature === comparisonSignature) return;
-  comparisonSignature = signature;
+  const signature = comparisonStructureSignature(files);
+  requestSelectedPreviews(files);
+  if (!force && signature === currentStructureSignature) {
+    updateComparisonMetadata(files);
+    return;
+  }
+  currentStructureSignature = signature;
+  currentPlayerSignature = '';
   keyboardDrag = null;
   deck.dataset.count = String(files.length);
   deck.innerHTML = files.map(playerTile).join('') + (files.length < MAX_COMPARISON_ITEMS ? dropzoneMarkup(files.length === 0) : '');
@@ -522,11 +566,13 @@ function renderComparison(force = false) {
 
   const waiting = files.some(file => !file.display_url && file.preview_status !== 'failed');
   const playable = files.filter(file => file.display_url);
-  requestSelectedPreviews(files);
   if (waiting || !playable.length) {
     player.clear();
     return;
   }
+  const contentSignature = comparisonPlayerSignature(playable);
+  if (contentSignature === currentPlayerSignature) return;
+  currentPlayerSignature = contentSignature;
   const canvases = new Map();
   deck.querySelectorAll('[data-player-canvas]').forEach(canvas => canvases.set(canvas.dataset.playerCanvas, canvas));
   player.load(playable, canvases, {autoplay: true});
@@ -646,7 +692,8 @@ async function handleCompletedRun(run) {
   await refreshInventory();
   state.comparisonIds = successfulFileIds(run);
   saveComparison();
-  comparisonSignature = '';
+  currentStructureSignature = '';
+  currentPlayerSignature = '';
   renderComparison(true);
   state.pendingRunId = '';
   storageSet(PENDING_RUN_STORAGE_KEY, '');
@@ -722,7 +769,6 @@ async function saveRename(fileId) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'Could not save name');
     state.renameDrafts.delete(fileId);
-    comparisonSignature = '';
     await refreshInventory();
   } catch (error) {
     setMessage('Could not save name', error.message, true);
@@ -741,7 +787,6 @@ async function deleteSelected() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'Delete failed');
     (payload.deleted || []).forEach(id => state.selectedFileIds.delete(id));
-    comparisonSignature = '';
     await refreshInventory();
     const refused = (payload.refused || []).length;
     setMessage('Saved GIFs updated', refused ? `${refused} active GIFs could not be deleted.` : 'Selected GIFs were deleted.');
@@ -882,12 +927,14 @@ function bindEvents() {
     if (remove) {
       state.comparisonIds = state.comparisonIds.filter(id => id !== remove.dataset.removeComparison);
       saveComparison();
-      comparisonSignature = '';
+      currentStructureSignature = '';
+      currentPlayerSignature = '';
       renderComparison(true);
     }
     if (retryPreview) requestPreview(retryPreview.dataset.retryPreview, true);
     if (retryDecode) {
-      comparisonSignature = '';
+      currentStructureSignature = '';
+      currentPlayerSignature = '';
       renderComparison(true);
     }
   });
@@ -968,7 +1015,14 @@ function init() {
       variants: state.variants.map(variant => ({...variant})),
       comparisonIds: [...state.comparisonIds],
       run: state.run ? {...state.run} : null,
-      player: {phase: player.phase, playing: player.playing, readyCount: player.tracks.size},
+      player: {
+        phase: player.phase,
+        elapsedMs: player.elapsedMs,
+        duration: player.duration,
+        playing: player.playing,
+        readyCount: player.tracks.size,
+        tracks: player.trackStates(),
+      },
     }),
   };
 }

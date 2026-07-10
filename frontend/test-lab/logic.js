@@ -136,6 +136,18 @@ export function successfulFileIds(run) {
   );
 }
 
+export function comparisonStructureSignature(files) {
+  return JSON.stringify((files || []).map(file => [
+    file.id,
+    file.display_url,
+    file.preview_status === 'failed' ? 'failed' : (file.display_url ? 'playable' : 'waiting'),
+  ]));
+}
+
+export function comparisonPlayerSignature(files) {
+  return JSON.stringify((files || []).map(file => [file.id, file.display_url]));
+}
+
 export function buildFrameTimeline(frames) {
   let total = 0;
   const starts = (frames || []).map(frame => {
@@ -150,7 +162,15 @@ export function frameIndexForPhase(timeline, phase) {
   if (!timeline?.starts?.length) return -1;
   if (Number(phase) >= 1) return timeline.starts.length - 1;
   const normalized = Math.max(0, Number(phase) || 0);
-  const target = normalized * timeline.duration;
+  return frameIndexForTime(timeline, normalized * timeline.duration);
+}
+
+export function frameIndexForTime(timeline, timeMs) {
+  if (!timeline?.starts?.length) return -1;
+  const target = Math.max(0, Math.min(
+    timeline.duration - Number.EPSILON,
+    Number(timeMs) || 0,
+  ));
   let low = 0;
   let high = timeline.starts.length - 1;
   while (low <= high) {
@@ -159,4 +179,10 @@ export function frameIndexForPhase(timeline, phase) {
     else high = middle - 1;
   }
   return Math.max(0, high);
+}
+
+export function trackTimeForElapsed(elapsedMs, durationMs) {
+  const duration = Math.max(10, Number(durationMs) || 0);
+  const elapsed = Number(elapsedMs) || 0;
+  return ((elapsed % duration) + duration) % duration;
 }
