@@ -5,6 +5,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, R
 
 from . import app_settings
 from . import actor_image_maintenance
+from . import dashboard
 from . import estimate_history
 from . import maintenance
 from . import poster_maintenance
@@ -208,7 +209,12 @@ def _gifs_workspace_context(limit):
 
 @app.route("/")
 def home():
-    return _redirect_to_gifs("new")
+    return render_template("dashboard.html", lib_root=LIB_ROOT)
+
+
+@app.route("/dashboard")
+def dashboard_page():
+    return render_template("dashboard.html", lib_root=LIB_ROOT)
 
 
 @app.route("/gifs")
@@ -314,6 +320,28 @@ def settings_page():
 @app.route("/maintenance")
 def maintenance_page():
     return render_template("maintenance.html", lib_root=LIB_ROOT)
+
+
+@app.route("/api/dashboard/status")
+def api_dashboard_status():
+    return jsonify(dashboard.status_payload())
+
+
+@app.route("/api/dashboard/library-scan", methods=["POST"])
+def api_dashboard_library_scan():
+    data = request.get_json(silent=True) or {}
+    scan, err = dashboard.start_library_scan(
+        data.get("path") or LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": scan})
+
+
+@app.route("/api/dashboard/library-scan/status")
+def api_dashboard_library_scan_status():
+    return jsonify(dashboard.library_scan_status())
 
 
 @app.route("/queue")

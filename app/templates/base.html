@@ -13,12 +13,13 @@
 <body>
   <nav class="navbar navbar-expand-md bg-body-tertiary border-bottom">
     <div class="container-fluid">
-      <a class="navbar-brand" href="/gifs">vid2gif</a>
+      <a class="navbar-brand" href="/">vid2gif</a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav" aria-controls="mainNav" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
       <div class="collapse navbar-collapse" id="mainNav">
         <ul class="navbar-nav me-auto mb-2 mb-md-0">
+          <li class="nav-item"><a href="/" class="nav-link">Dashboard</a></li>
           <li class="nav-item"><a href="/gifs" class="nav-link">GIFs</a></li>
           <li class="nav-item"><a href="/maintenance" class="nav-link">Library Maintenance</a></li>
           <li class="nav-item"><a href="/settings" class="nav-link">Settings</a></li>
@@ -39,7 +40,7 @@
       var path = location.pathname.replace(/\/+$/,'') || '/';
       document.querySelectorAll('.navbar-nav .nav-link').forEach(function(a){
         var href = a.getAttribute('href').replace(/\/+$/,'') || '/';
-        if (href === path || (href === '/gifs' && path === '/')) a.classList.add('active');
+        if (href === path || (href === '/' && path === '/dashboard')) a.classList.add('active');
       });
       const toggle = document.getElementById('themeToggle');
       const preferred = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark':'light');

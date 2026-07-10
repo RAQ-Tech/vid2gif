@@ -1,0 +1,153 @@
+{% extends 'base.html' %}
+
+{% block title %}vid2gif Dashboard{% endblock %}
+
+{% block content %}
+<div class="workspace-shell">
+  <div class="workspace-heading">
+    <div>
+      <h1 class="h3 mb-1">Dashboard</h1>
+      <div class="text-muted small">Library maintenance progress, active work, and cached library stats.</div>
+    </div>
+    <div class="workspace-actions">
+      <button id="dashboardRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
+        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+        <span>Refresh</span>
+      </button>
+      <a class="btn btn-primary btn-sm" href="/gifs">
+        <i class="bi bi-filetype-gif" aria-hidden="true"></i>
+        <span>GIFs</span>
+      </a>
+      <a class="btn btn-outline-secondary btn-sm" href="/maintenance">
+        <i class="bi bi-tools" aria-hidden="true"></i>
+        <span>Maintenance</span>
+      </a>
+    </div>
+  </div>
+
+  <section class="status-strip dashboard-status-strip" aria-label="Dashboard summary">
+    <div class="status-tile">
+      <div class="metric-label">Health</div>
+      <div id="dashboardHealthLabel" class="metric-value">Loading</div>
+    </div>
+    <div class="status-tile status-tile-wide">
+      <div class="d-flex justify-content-between gap-3">
+        <div>
+          <div class="metric-label">Overall progress</div>
+          <div id="dashboardHealthDetail" class="metric-value">Collecting status</div>
+        </div>
+        <span id="dashboardHealthScore" class="small text-muted">0%</span>
+      </div>
+      <div class="progress progress-thin mt-2" role="progressbar" aria-label="Overall dashboard health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="dashboardHealthBar" class="progress-bar" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Unresolved</div>
+      <div id="dashboardUnresolvedCount" class="metric-value">0</div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Active work</div>
+      <div id="dashboardActiveCount" class="metric-value">0</div>
+    </div>
+  </section>
+
+  <div id="dashboardMessage" class="scan-estimate mb-3" aria-live="polite">
+    <i class="bi bi-info-circle" aria-hidden="true"></i>
+    <div>
+      <div id="dashboardMessageTitle">Loading dashboard.</div>
+      <div id="dashboardMessageDetail" class="scan-estimate-detail"></div>
+    </div>
+  </div>
+
+  <section class="dashboard-grid">
+    <div class="workspace-panel dashboard-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">Workstream Progress</h2>
+          <div class="text-muted small">Known issues and how far along they are.</div>
+        </div>
+      </div>
+      <div id="dashboardWorkstreams" class="dashboard-workstreams">
+        <div class="text-muted text-center py-4">Loading workstreams...</div>
+      </div>
+    </div>
+
+    <div class="workspace-panel dashboard-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">Issue Mix</h2>
+          <div class="text-muted small">Unresolved items by maintenance area.</div>
+        </div>
+      </div>
+      <div id="dashboardIssueChart" class="dashboard-chart">
+        <div class="text-muted text-center py-4">No issue data yet.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="workspace-panel dashboard-panel mt-3">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">Linked Libraries</h2>
+        <div class="text-muted small">Cached inventory for {{ lib_root }} and first-level library folders.</div>
+      </div>
+      <button id="dashboardLibraryScanButton" class="btn btn-outline-primary btn-sm" type="button">
+        <i class="bi bi-search" aria-hidden="true"></i>
+        <span>Refresh Library Stats</span>
+      </button>
+    </div>
+    <div class="metric-band">
+      <div>
+        <div class="metric-label">Inventory</div>
+        <div id="dashboardLibraryState" class="metric-value">Not scanned</div>
+      </div>
+      <div class="metric-progress">
+        <div class="metric-row mt-0">
+          <span id="dashboardLibrarySummary">0 videos</span>
+          <span id="dashboardLibraryUpdated">Last scan: never</span>
+        </div>
+        <div class="progress progress-thin mt-2" role="progressbar" aria-label="Library inventory progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="dashboardLibraryBar" class="progress-bar" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+    <div id="dashboardLibraries" class="dashboard-libraries">
+      <div class="text-muted text-center py-4">Run a library stat refresh to populate this view.</div>
+    </div>
+  </section>
+
+  <section class="dashboard-grid mt-3">
+    <div class="workspace-panel dashboard-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">GIF Activity</h2>
+          <div class="text-muted small">Queue, Test Lab, and generated GIF footprint.</div>
+        </div>
+      </div>
+      <div id="dashboardGifStats" class="dashboard-stat-grid"></div>
+    </div>
+
+    <div class="workspace-panel dashboard-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">Recent Maintenance Logs</h2>
+          <div class="text-muted small">Latest recorded cleanup, repair, and import activity.</div>
+        </div>
+      </div>
+      <div id="dashboardActivity" class="dashboard-activity">
+        <div class="text-muted text-center py-4">No recent activity yet.</div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.vid2gifDashboardConfig = {
+    libRoot: {{ lib_root|tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+{% endblock %}

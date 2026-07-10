@@ -47,11 +47,23 @@ def test_settings_page_renders():
     assert "Original / no scaled preview" in html
 
 
+def test_home_renders_dashboard():
+    client = app.test_client()
+
+    res = client.get("/")
+    html = res.get_data(as_text=True)
+
+    assert res.status_code == 200
+    assert "Dashboard" in html
+    assert 'src="/static/dashboard.js"' in html
+    assert 'href="/"' in html
+    assert ">Dashboard</a>" in html
+
+
 def test_legacy_page_routes_redirect_to_workspace_tabs():
     client = app.test_client()
 
     redirects = {
-        "/": "new",
         "/queue": "queue",
         "/completed": "completed",
         "/live": "logs",
