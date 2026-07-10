@@ -15,6 +15,21 @@ def test_app_settings_defaults_to_720_when_missing(tmp_path):
     assert settings["subtitle_expected_languages"] == ["eng", "en", "en-us", "en-gb"]
     assert settings["subtitle_flag_missing"] is True
     assert settings["subtitle_flag_unknown_language"] is True
+    assert settings["video_preview_bif_width"] == 320
+    assert settings["video_preview_bif_interval_seconds"] == 10
+
+
+def test_app_settings_persists_bif_generation_profile(tmp_path):
+    path = tmp_path / "app_settings.json"
+
+    assert app_settings.save_settings(
+        {"video_preview_bif_width": 480, "video_preview_bif_interval_seconds": 30},
+        str(path),
+    )
+
+    settings = app_settings.load_settings(str(path))
+    assert settings["video_preview_bif_width"] == 480
+    assert settings["video_preview_bif_interval_seconds"] == 30
 
 
 def test_app_settings_persists_custom_preview_height(tmp_path):
@@ -99,6 +114,7 @@ def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
     assert "Test Lab preview height" in res.get_data(as_text=True)
     assert "Duplicate Cleanup" in res.get_data(as_text=True)
     assert "Subtitle Health Check" in res.get_data(as_text=True)
+    assert "Video Preview BIF Generation" in res.get_data(as_text=True)
 
     res = client.post(
         "/settings",
@@ -113,6 +129,8 @@ def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
             "subtitle_expected_languages": "eng, spa",
             "subtitle_flag_missing": "on",
             "subtitle_subgen_detection": "on",
+            "video_preview_bif_width": "480",
+            "video_preview_bif_interval_seconds": "30",
         },
     )
 
@@ -128,6 +146,8 @@ def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
     assert settings["subtitle_flag_missing"] is True
     assert settings["subtitle_flag_unknown_language"] is False
     assert settings["subtitle_subgen_detection"] is True
+    assert settings["video_preview_bif_width"] == 480
+    assert settings["video_preview_bif_interval_seconds"] == 30
 
 
 def test_settings_page_rejects_invalid_custom_value(monkeypatch, tmp_path):

@@ -252,6 +252,8 @@ def _settings_context(error="", saved=False, form_values=None):
             "duplicate_accessory_policy",
             "duplicate_move_root",
             "subtitle_expected_languages",
+            "video_preview_bif_width",
+            "video_preview_bif_interval_seconds",
         ):
             if key in form_values:
                 settings[key] = form_values.get(key)
@@ -330,6 +332,8 @@ def settings_page():
                 "subtitle_subgen_detection": _truthy(
                     request.form.get("subtitle_subgen_detection")
                 ),
+                "video_preview_bif_width": request.form.get("video_preview_bif_width"),
+                "video_preview_bif_interval_seconds": request.form.get("video_preview_bif_interval_seconds"),
             }
         )
         if not app_settings.save_settings(settings):
@@ -353,7 +357,11 @@ def settings_page():
 
 @app.route("/maintenance")
 def maintenance_page():
-    return render_template("maintenance.html", lib_root=LIB_ROOT)
+    return render_template(
+        "maintenance.html",
+        lib_root=LIB_ROOT,
+        bif_settings=app_settings.load_settings(),
+    )
 
 
 @app.route("/system")
@@ -706,7 +714,11 @@ def api_maintenance_duplicates_groups():
 
 @app.route("/api/maintenance/duplicates/groups/<group_id>")
 def api_maintenance_duplicates_group(group_id):
-    payload, err = maintenance.group_payload(request.args.get("scan_id"), group_id)
+    payload, err = maintenance.group_payload(
+        request.args.get("scan_id"),
+        group_id,
+        keep_video_id=request.args.get("keep_video_id"),
+    )
     if err:
         status = 404 if err in {"Scan not found", "Group not found"} else 400
         return jsonify({"error": err}), status
@@ -846,6 +858,70 @@ def api_maintenance_video_previews_items():
     return jsonify(payload)
 
 
+@app.route("/api/maintenance/video-previews/generation/settings", methods=["POST"])
+def api_maintenance_video_previews_generation_settings():
+    settings, err = video_preview_maintenance.save_generation_settings(
+        request.get_json(silent=True) or {}
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"settings": settings})
+
+
+@app.route("/api/maintenance/video-previews/generation/plan", methods=["POST"])
+def api_maintenance_video_previews_generation_plan():
+    plan, err = video_preview_maintenance.build_generation_plan(
+        request.get_json(silent=True) or {},
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        status = 409 if "differ from the latest observed" in err else 400
+        return jsonify({"error": err, "profile_mismatch": status == 409}), status
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/video-previews/generation/start", methods=["POST"])
+def api_maintenance_video_previews_generation_start():
+    data = request.get_json(silent=True) or {}
+    run, err = video_preview_maintenance.start_generation(
+        data.get("plan_id"),
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"run": video_preview_maintenance.public_generation_run(run)})
+
+
+@app.route("/api/maintenance/video-previews/generation/status")
+def api_maintenance_video_previews_generation_status():
+    payload, err = video_preview_maintenance.generation_status(request.args.get("run_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/video-previews/generation/cancel", methods=["POST"])
+def api_maintenance_video_previews_generation_cancel():
+    data = request.get_json(silent=True) or {}
+    run, err = video_preview_maintenance.cancel_generation(data.get("run_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"run": run})
+
+
+@app.route("/api/maintenance/video-previews/logs")
+def api_maintenance_video_previews_logs():
+    return jsonify({"logs": video_preview_maintenance.list_recent_logs()})
+
+
+@app.route("/api/maintenance/video-previews/logs/<log_id>")
+def api_maintenance_video_previews_log(log_id):
+    payload, err = video_preview_maintenance.recent_log_payload(log_id)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
 @app.route("/api/maintenance/video-previews/emby/tasks")
 def api_maintenance_video_previews_emby_tasks():
     return jsonify(video_preview_maintenance.discover_thumbnail_tasks())
@@ -974,6 +1050,50 @@ def api_maintenance_subtitles_items():
     if err:
         status = 404 if err == "Scan not found" else 400
         return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/subtitles/plan", methods=["POST"])
+def api_maintenance_subtitles_plan():
+    plan, err = subtitle_maintenance.build_action_plan(
+        request.get_json(silent=True) or {},
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/subtitles/apply", methods=["POST"])
+def api_maintenance_subtitles_apply():
+    data = request.get_json(silent=True) or {}
+    run, err = subtitle_maintenance.start_action_apply(
+        data.get("plan_id"),
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"apply": subtitle_maintenance.public_apply_run(run)})
+
+
+@app.route("/api/maintenance/subtitles/apply/status")
+def api_maintenance_subtitles_apply_status():
+    payload, err = subtitle_maintenance.apply_status(request.args.get("apply_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/subtitles/logs")
+def api_maintenance_subtitles_logs():
+    return jsonify({"logs": subtitle_maintenance.list_action_logs()})
+
+
+@app.route("/api/maintenance/subtitles/logs/<log_id>")
+def api_maintenance_subtitles_log(log_id):
+    payload, err = subtitle_maintenance.action_log(log_id)
+    if err:
+        return jsonify({"error": err}), 404
     return jsonify(payload)
 
 

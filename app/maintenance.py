@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import json
@@ -29,7 +30,7 @@ MAINTENANCE_LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "duplicates")
 MAINTENANCE_LOG_INDEX = os.path.join(MAINTENANCE_LOG_DIR, "index.json")
 MAINTENANCE_LOG_RETENTION_COUNT = 25
 MAINTENANCE_LOG_MAX_BYTES = 5 * 1024 * 1024
-DUPLICATE_GROUP_PAGE_DEFAULT = 25
+DUPLICATE_GROUP_PAGE_DEFAULT = 10
 DUPLICATE_GROUP_PAGE_MAX = 100
 DUPLICATE_GROUP_LARGE_RESULT_COUNT = 100
 DUPLICATE_SCAN_RETENTION_COUNT = 10
@@ -336,17 +337,39 @@ def _quality_sort_key(video):
         -bitrate,
         -(video.get("size_bytes") or 0),
         -duration,
+        _copy_name_penalty(video.get("name")),
         str(video.get("path") or "").lower(),
+    )
+
+
+def _copy_name_penalty(name):
+    stem = os.path.splitext(str(name or ""))[0].strip()
+    return int(
+        bool(
+            re.search(
+                r"(?:\s*\(\d+\)|[\s._-]+(?:copy(?:[\s._-]*\d+)?|duplicate|dupe))$",
+                stem,
+                flags=re.IGNORECASE,
+            )
+        )
     )
 
 
 def _keeper_sort_key(video, rule):
     rule = str(rule or "quality")
     if rule == "largest":
-        return (-(video.get("size_bytes") or 0), str(video.get("path") or "").lower())
+        return (
+            -(video.get("size_bytes") or 0),
+            _copy_name_penalty(video.get("name")),
+            str(video.get("path") or "").lower(),
+        )
     if rule == "newest":
         identity = video.get("identity") or {}
-        return (-(identity.get("mtime_ns") or 0), str(video.get("path") or "").lower())
+        return (
+            -(identity.get("mtime_ns") or 0),
+            _copy_name_penalty(video.get("name")),
+            str(video.get("path") or "").lower(),
+        )
     return _quality_sort_key(video)
 
 
@@ -1012,7 +1035,7 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
     }, None
 
 
-def group_payload(scan_id, group_id):
+def group_payload(scan_id, group_id, keep_video_id=""):
     with maintenance_lock:
         _prune_duplicate_scans_locked()
         scan = duplicate_scans.get(str(scan_id or ""))
@@ -1026,7 +1049,30 @@ def group_payload(scan_id, group_id):
         )
     if not group:
         return None, "Group not found"
-    return {"group": _public_group(group)}, None
+    projected = group
+    keep_video_id = str(keep_video_id or "")
+    if keep_video_id:
+        projected = copy.deepcopy(group)
+        keep_video = next(
+            (video for video in projected.get("videos") or [] if video.get("id") == keep_video_id),
+            None,
+        )
+        if not keep_video:
+            return None, "Keeper not found"
+        settings = scan.get("settings") or duplicate_settings()
+        _annotate_group_defaults(
+            projected.get("videos") or [],
+            keep_video,
+            settings,
+            os.path.realpath(scan.get("lib_root") or LIB_ROOT),
+        )
+        projected["recommended_keep_id"] = keep_video_id
+        projected["remove_ids"] = [
+            video.get("id")
+            for video in projected.get("videos") or []
+            if video.get("id") != keep_video_id
+        ]
+    return {"group": _public_group(projected)}, None
 
 
 def _group_overrides(payload):
@@ -1149,6 +1195,16 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     overrides = _group_overrides(payload)
     if overrides is None:
         return None, "Group overrides are invalid"
+    raw_visible_ids = payload.get("visible_group_ids")
+    if not isinstance(raw_visible_ids, list) or not raw_visible_ids:
+        return None, "Visible duplicate groups are required"
+    visible_group_ids = []
+    visible_seen = set()
+    for value in raw_visible_ids:
+        group_id = str(value or "")
+        if group_id and group_id not in visible_seen:
+            visible_seen.add(group_id)
+            visible_group_ids.append(group_id)
 
     with maintenance_lock:
         _prune_duplicate_scans_locked()
@@ -1157,6 +1213,12 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         return None, "Scan not found"
     if scan.get("status") != "success":
         return None, "Scan is not complete"
+    groups_by_id = {group.get("id"): group for group in scan.get("groups") or []}
+    unknown_ids = [group_id for group_id in visible_group_ids if group_id not in groups_by_id]
+    if unknown_ids:
+        return None, "Visible duplicate groups are stale"
+    if any(group_id not in visible_seen for group_id in overrides):
+        return None, "Group overrides must be limited to the visible page"
 
     settings = scan.get("settings") or duplicate_settings()
     move_root, move_err = _validate_move_root(_effective_move_root(settings, lib_root), lib_root)
@@ -1170,7 +1232,8 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     manual_review = []
     lib_real = os.path.realpath(lib_root)
 
-    for group in scan.get("groups") or []:
+    for group_id in visible_group_ids:
+        group = groups_by_id[group_id]
         override = overrides.get(group["id"], {})
         if not _truthy(override.get("enabled"), default=True):
             skipped_groups.append(group["id"])
@@ -1274,6 +1337,8 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "lib_root": lib_real,
         "move_root": move_root if action == "move" else "",
         "configured_move_root": move_root,
+        "visible_group_ids": visible_group_ids,
+        "visible_group_count": len(visible_group_ids),
         "files": files,
         "file_count": len(files),
         "total_size_bytes": total_size,
@@ -1298,6 +1363,8 @@ def public_plan(plan):
         "created_at": plan.get("created_at", ""),
         "move_root": plan.get("move_root", ""),
         "configured_move_root": plan.get("configured_move_root", ""),
+        "visible_group_ids": list(plan.get("visible_group_ids") or []),
+        "visible_group_count": plan.get("visible_group_count", 0),
         "file_count": plan.get("file_count", 0),
         "total_size_bytes": plan.get("total_size_bytes", 0),
         "total_size_label": plan.get("total_size_label", ""),

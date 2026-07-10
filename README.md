@@ -111,16 +111,31 @@ GIF optimization is lossless and keeps the original ffmpeg output if Gifsicle is
 missing, fails, times out, or produces a larger file.
 
 Landscape poster automation is disabled by default. When enabled from the
-Library Maintenance page or environment variables, it copies existing
-`*-background.*` images over matching existing `*-poster.*` files and preserves
-the original poster once as `*-poster-backup.*`. It stores run state under
-`/state` and does not create `.posters_done` marker files. Optional Emby refresh
-settings can be tested from the same page before automatic refresh is enabled.
+Library Maintenance page or environment variables, it uses FFprobe to require a
+valid landscape `*-background.*` image and skips posters that are already
+landscape. Eligible portrait posters are backed up once as
+`*-poster-backup.*`, verified, and replaced atomically. Ambiguous, unreadable,
+or mismatched artwork is left unchanged. It stores run state under `/state` and
+does not use `.posters_done` marker files. Optional Emby refresh settings can be
+tested from the same page before automatic refresh is enabled.
 
 Duplicate cleanup settings live on the Settings page. Duplicate move
 destinations default to `/library/.vid2gif-duplicates`, can be changed to another
 folder under the mounted library root, and every applied cleanup writes a bounded
-JSONL audit log under `/state/maintenance-logs/duplicates`.
+JSONL audit log under `/state/maintenance-logs/duplicates`. Cleanup plans are
+limited to the duplicate groups visible on the current results page.
+
+Video preview maintenance separates cleanup from generation. Bad and warning
+BIFs can be quarantined or deleted first; a fresh scan then provides the missing
+videos eligible for direct BIF generation. Width and interval settings persist,
+and the page compares them with the newest valid externally observed BIF before
+generation. Frames and the BIF archive are built under `/state`, validated, and
+atomically installed only while the video still has no matching BIF.
+
+Subtitle health results can quarantine or permanently delete flagged unexpected
+or unknown-language SRT sidecars. Video files and missing-subtitle findings are
+never cleanup targets, and plans are restricted to explicitly selected subtitle
+files on the visible page.
 
 ## Example Workflow
 

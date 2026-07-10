@@ -51,12 +51,16 @@ LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "video-previews")
 LOG_INDEX = os.path.join(LOG_DIR, "index.json")
 LOG_RETENTION_COUNT = 25
 LOG_MAX_BYTES = 1024 * 1024
+GENERATION_ROOT = os.path.join(STATE_ROOT, "video-preview-generation")
+GENERATION_MANIFEST_PATH = os.path.join(GENERATION_ROOT, "manifest.json")
 __test__ = False
 
 preview_scans = {}
 quality_scans = {}
 quality_plans = {}
 quality_apply_runs = {}
+generation_plans = {}
+generation_runs = {}
 preview_lock = threading.Lock()
 
 
@@ -285,6 +289,12 @@ def public_scan(scan):
         return None
     counts = scan.get("counts") or {}
     missing_count = counts.get("missing_count", 0)
+    settings = app_settings.load_settings()
+    configured_profile = {
+        "width": settings.get("video_preview_bif_width", 320),
+        "interval_seconds": settings.get("video_preview_bif_interval_seconds", 10),
+    }
+    recommendation = scan.get("recommended_profile") or None
     return {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
@@ -303,6 +313,15 @@ def public_scan(scan):
         "results_page_size": ITEM_PAGE_DEFAULT,
         "large_result": missing_count >= LARGE_RESULT_COUNT,
         "recent_logs": list_recent_logs(),
+        "configured_profile": configured_profile,
+        "recommended_profile": recommendation,
+        "profile_mismatch": bool(
+            recommendation
+            and (
+                recommendation.get("width") != configured_profile["width"]
+                or recommendation.get("interval_seconds") != configured_profile["interval_seconds"]
+            )
+        ),
     }
 
 
@@ -352,6 +371,7 @@ def _run_scan(scan, lib_root):
         )
         items = _scan_videos(scan, lib_root)
         counts = _counts(items)
+        recommendation = _recommended_bif_profile(items)
         finished = time.time()
         label = f"{counts['missing_count']} missing, {counts['present_count']} present"
         _set_scan_progress(
@@ -362,6 +382,7 @@ def _run_scan(scan, lib_root):
             items=items,
             counts=counts,
             scanned_video_count=counts["scanned_video_count"],
+            recommended_profile=recommendation,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -439,6 +460,7 @@ def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "scanned_video_count": 0,
         "items": [],
         "counts": {},
+        "lib_root": os.path.realpath(lib_root),
     }
     with preview_lock:
         _prune_scans_locked()
@@ -796,7 +818,7 @@ def _quality_counts(items):
         "bad_count": bad,
         "warning_count": warning,
         "ok_count": ok,
-        "repairable_count": bad,
+        "repairable_count": bad + warning,
     }
 
 
@@ -908,7 +930,7 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
     return {
         "id": _path_id(bif_path, lib_root),
         "status": status,
-        "repairable": status == "bad",
+        "repairable": status in {"bad", "warning"},
         "confidence": confidence,
         "reason": "; ".join(reasons),
         "reasons": reasons,
@@ -1308,7 +1330,20 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
     scan_id = str(payload.get("scan_id") or "")
     item_ids = payload.get("item_ids")
     selected_ids = {str(item_id) for item_id in item_ids if str(item_id)} if isinstance(item_ids, list) else None
-    trigger_emby = _truthy(payload.get("trigger_emby"), default=True)
+    selected_statuses = {
+        str(status).lower()
+        for status in (payload.get("statuses") or ["bad", "warning"])
+        if str(status).lower() in {"bad", "warning"}
+    }
+    excluded_ids = {
+        str(item_id) for item_id in (payload.get("excluded_item_ids") or []) if str(item_id)
+    }
+    included_ids = {
+        str(item_id) for item_id in (payload.get("included_item_ids") or []) if str(item_id)
+    }
+    operation = str(payload.get("operation") or "quarantine").strip().lower()
+    if operation not in {"quarantine", "delete"}:
+        return None, "Choose quarantine or delete"
     with preview_lock:
         _prune_quality_scans_locked()
         scan = quality_scans.get(scan_id)
@@ -1318,7 +1353,7 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
         return None, "Scan is not complete"
     lib_real = os.path.realpath(lib_root)
     move_root, move_err = _validate_repair_root(payload.get("move_root"), lib_real)
-    if move_err:
+    if operation == "quarantine" and move_err:
         return None, move_err
 
     files = []
@@ -1326,13 +1361,18 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
     for item in scan.get("items") or []:
         if selected_ids is not None and item.get("id") not in selected_ids:
             continue
-        if not item.get("repairable"):
+        if selected_ids is None and not (
+            (item.get("status") in selected_statuses and item.get("id") not in excluded_ids)
+            or item.get("id") in included_ids
+        ):
+            continue
+        if item.get("status") not in {"bad", "warning"}:
             if selected_ids is not None:
                 manual_review.append(
                     {
                         "file_id": item.get("id", ""),
                         "path": item.get("path", ""),
-                        "reason": "Item is not high-confidence repairable",
+                        "reason": "Only bad and warning BIFs can be cleaned up",
                     }
                 )
             continue
@@ -1346,11 +1386,11 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
                 }
             )
             continue
-        destination = _repair_destination(source, lib_real, move_root)
+        destination = _repair_destination(source, lib_real, move_root) if operation == "quarantine" else ""
         files.append(
             {
                 "file_id": item.get("id", ""),
-                "operation": "move",
+                "operation": operation,
                 "source_path": source,
                 "relative_path": _relative_path(source, lib_real),
                 "destination_path": destination,
@@ -1368,17 +1408,16 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
     plan = {
         "id": plan_id,
         "scan_id": scan_id,
-        "action": "move",
+        "action": operation,
         "status": "ready",
         "created_at": utc_iso(),
         "lib_root": lib_real,
-        "move_root": move_root,
+        "move_root": move_root if operation == "quarantine" else "",
         "files": files,
         "file_count": len(files),
         "total_size_bytes": total_size,
         "total_size_label": format_size(total_size),
         "manual_review": manual_review,
-        "trigger_emby": trigger_emby,
     }
     with preview_lock:
         quality_plans[plan_id] = plan
@@ -1399,7 +1438,6 @@ def public_quality_plan(plan):
         "total_size_bytes": plan.get("total_size_bytes", 0),
         "total_size_label": plan.get("total_size_label", ""),
         "manual_review": list(plan.get("manual_review") or []),
-        "trigger_emby": bool(plan.get("trigger_emby")),
         "files": [
             {
                 "file_id": item.get("file_id", ""),
@@ -1432,13 +1470,12 @@ def _write_quality_repair_log(plan, result, records):
         "timestamp": utc_iso(),
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
-        "action": plan.get("action", "move"),
+        "action": plan.get("action", "quarantine"),
         "applied_count": result.get("applied_count", 0),
         "missing_count": result.get("missing_count", 0),
         "refused_count": result.get("refused_count", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "move_root": plan.get("move_root", ""),
-        "trigger_emby": bool(plan.get("trigger_emby")),
         "emby": result.get("emby") or {},
     }
     written = 0
@@ -1622,7 +1659,7 @@ def start_quality_repair_apply(plan_id):
             "id": run_id,
             "plan_id": plan_id,
             "scan_id": plan.get("scan_id", ""),
-            "action": plan.get("action", "move"),
+            "action": plan.get("action", "quarantine"),
             "status": "queued",
             "created_at": utc_iso(created),
             "started_at": None,
@@ -1693,6 +1730,7 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
         return None, "Plan not found"
     lib_root = plan.get("lib_root") or LIB_ROOT
     move_root = plan.get("move_root") or ""
+    action = plan.get("action") or "quarantine"
     files = list(plan.get("files") or [])
     file_count = len(files)
     applied = []
@@ -1760,7 +1798,7 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
                     "file_id": file_id,
                     "old_path": source,
                     "old_name": os.path.basename(source),
-                    "operation": "move",
+                    "operation": action,
                 }
             )
             _finish_item(index, source)
@@ -1771,21 +1809,26 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
             log_records.append({"type": "file", "result": "refused", **refusal})
             _finish_item(index, source)
             continue
-        if not dest or not path_is_under(dest, move_root) or not path_is_under(dest, lib_root):
+        if action == "quarantine" and (
+            not dest or not path_is_under(dest, move_root) or not path_is_under(dest, lib_root)
+        ):
             refusal = _quality_refusal(file_id, source, "Destination is outside repair quarantine")
             refused.append(refusal)
             log_records.append({"type": "file", "result": "refused", **refusal})
             _finish_item(index, source)
             continue
-        if os.path.exists(dest):
+        if action == "quarantine" and os.path.exists(dest):
             refusal = _quality_refusal(file_id, source, "Destination already exists")
             refused.append(refusal)
             log_records.append({"type": "file", "result": "refused", **refusal})
             _finish_item(index, source)
             continue
         try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.move(source, dest)
+            if action == "delete":
+                os.remove(source)
+            else:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.move(source, dest)
         except Exception as exc:
             refusal = _quality_refusal(file_id, source, str(exc))
             refused.append(refusal)
@@ -1794,7 +1837,7 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
             continue
         applied_item = {
             "file_id": file_id,
-            "operation": "move",
+            "operation": action,
             "source_path": source,
             "destination_path": dest,
             "source_name": item.get("source_name") or os.path.basename(source),
@@ -1809,7 +1852,7 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
                 "timestamp": utc_iso(),
                 "result": "applied",
                 "file_id": file_id,
-                "operation": "move",
+                "operation": action,
                 "old_path": source,
                 "old_name": applied_item["source_name"],
                 "new_path": dest,
@@ -1824,15 +1867,10 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
         _finish_item(index, source)
 
     emby = {}
-    if plan.get("trigger_emby") and applied:
-        if apply_run:
-            _set_quality_apply_progress(apply_run, progress_label="Triggering Emby preview extraction")
-        emby = _run_quality_emby_sequence(opener=opener)
-        log_records.append({"type": "emby", "timestamp": utc_iso(), "result": emby})
     result = {
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
-        "action": "move",
+        "action": action,
         "applied": applied,
         "missing": missing,
         "refused": refused,
@@ -1931,6 +1969,408 @@ def list_recent_logs():
         public.pop("path", None)
         logs.append(public)
     return logs
+
+
+def recent_log_payload(log_id):
+    log_id = str(log_id or "")
+    entry = next((item for item in _read_json(LOG_INDEX, {"logs": []}).get("logs") or [] if item.get("id") == log_id), None)
+    if not entry:
+        return None, "Log not found"
+    path = os.path.realpath(entry.get("path") or "")
+    if not path_is_under(path, LOG_DIR) or not os.path.isfile(path):
+        return None, "Log not found"
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            content = handle.read(LOG_MAX_BYTES)
+    except OSError:
+        return None, "Log not found"
+    return {"log": {**{key: value for key, value in entry.items() if key != "path"}, "content": content}}, None
+
+
+def _jpeg_dimensions(data):
+    data = bytes(data or b"")
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None, None
+    position = 2
+    sof_markers = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+    while position + 4 <= len(data):
+        if data[position] != 0xFF:
+            position += 1
+            continue
+        while position < len(data) and data[position] == 0xFF:
+            position += 1
+        if position >= len(data):
+            break
+        marker = data[position]
+        position += 1
+        if marker in {0xD8, 0xD9}:
+            continue
+        if position + 2 > len(data):
+            break
+        length = int.from_bytes(data[position : position + 2], "big")
+        if length < 2 or position + length > len(data):
+            break
+        if marker in sof_markers and length >= 7:
+            height = int.from_bytes(data[position + 3 : position + 5], "big")
+            width = int.from_bytes(data[position + 5 : position + 7], "big")
+            return width or None, height or None
+        position += length
+    return None, None
+
+
+def _bif_width_from_name(name):
+    stem = _bif_stem(name)
+    match = re.search(r"(?:^|[-_. ])(\d{2,5})[-_.](\d{1,5})$", stem)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _generation_manifest():
+    data = _read_json(GENERATION_MANIFEST_PATH, {"schema_version": 1, "records": {}})
+    if data.get("schema_version") != 1:
+        return {"schema_version": 1, "records": {}}
+    data.setdefault("records", {})
+    return data
+
+
+def _manifest_generated_identity(path, manifest=None):
+    manifest = manifest or _generation_manifest()
+    key = os.path.normcase(os.path.realpath(path))
+    record = manifest.get("records", {}).get(key) or {}
+    return record.get("identity") or None
+
+
+def _record_generated_bif(path, width, interval_seconds):
+    manifest = _generation_manifest()
+    key = os.path.normcase(os.path.realpath(path))
+    manifest.setdefault("records", {})[key] = {
+        "path": os.path.realpath(path),
+        "identity": _stat_identity(path) or {},
+        "width": int(width),
+        "interval_seconds": int(interval_seconds),
+        "generated_at": utc_iso(),
+    }
+    _write_json(GENERATION_MANIFEST_PATH, manifest)
+
+
+def _recommended_bif_profile(items):
+    manifest = _generation_manifest()
+    candidates = []
+    for item in items or []:
+        for bif in item.get("bifs") or []:
+            path = bif.get("path") or ""
+            identity = _stat_identity(path)
+            if not identity or identity == _manifest_generated_identity(path, manifest):
+                continue
+            parsed = parse_bif(path, sample_limit=1)
+            if not parsed.get("valid") or not parsed.get("samples"):
+                continue
+            interval = bif.get("interval_seconds") or max(
+                1, int(round((parsed.get("timestamp_multiplier_ms") or 0) / 1000))
+            )
+            width = _bif_width_from_name(bif.get("name"))
+            if not width:
+                width, _height = _jpeg_dimensions(parsed["samples"][0].get("bytes"))
+            stat = _safe_stat(path)
+            if width and interval and stat:
+                candidates.append((stat.st_mtime_ns, path, int(width), int(interval)))
+    if not candidates:
+        return None
+    _mtime, path, width, interval = max(candidates, key=lambda value: value[0])
+    return {
+        "width": width,
+        "interval_seconds": interval,
+        "source_path": _relative_path(path, LIB_ROOT),
+        "source_name": os.path.basename(path),
+    }
+
+
+def save_generation_settings(payload):
+    if not isinstance(payload, dict):
+        return None, "Invalid settings"
+    try:
+        width = int(payload.get("width"))
+        interval = int(payload.get("interval_seconds"))
+    except (TypeError, ValueError):
+        return None, "BIF width and interval must be whole numbers"
+    if not 64 <= width <= 1920:
+        return None, "BIF width must be between 64 and 1920"
+    if not 1 <= interval <= 3600:
+        return None, "BIF interval must be between 1 and 3600 seconds"
+    settings = app_settings.load_settings()
+    settings["video_preview_bif_width"] = width
+    settings["video_preview_bif_interval_seconds"] = interval
+    if not app_settings.save_settings(settings):
+        return None, "BIF settings could not be saved"
+    return {"width": width, "interval_seconds": interval}, None
+
+
+def build_generation_plan(payload, lib_root=LIB_ROOT):
+    if not isinstance(payload, dict):
+        return None, "Invalid request"
+    scan_id = str(payload.get("scan_id") or "")
+    raw_ids = payload.get("item_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return None, "Select at least one missing video"
+    item_ids = []
+    for value in raw_ids:
+        item_id = str(value or "")
+        if item_id and item_id not in item_ids:
+            item_ids.append(item_id)
+    with preview_lock:
+        scan = preview_scans.get(scan_id)
+    if not scan or scan.get("status") != "success":
+        return None, "Missing-BIF scan is not complete"
+    settings = app_settings.load_settings()
+    width = int(settings.get("video_preview_bif_width") or 320)
+    interval = int(settings.get("video_preview_bif_interval_seconds") or 10)
+    recommendation = scan.get("recommended_profile") or None
+    mismatch = bool(
+        recommendation
+        and (recommendation.get("width") != width or recommendation.get("interval_seconds") != interval)
+    )
+    if mismatch and not _truthy(payload.get("confirm_profile_mismatch"), default=False):
+        return None, "BIF generation settings differ from the latest observed Emby BIF"
+    items_by_id = {item.get("id"): item for item in scan.get("items") or []}
+    root = os.path.realpath(lib_root)
+    files = []
+    for item_id in item_ids:
+        item = items_by_id.get(item_id)
+        if not item or item.get("status") != "missing":
+            return None, "Generation accepts only videos still marked missing"
+        video_path = item.get("path") or ""
+        if not path_is_under(video_path, root) or os.path.islink(video_path):
+            return None, "Video path is unsafe"
+        stem = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join(os.path.dirname(video_path), f"{stem}-{width}-{interval}.bif")
+        files.append({
+            "item_id": item_id,
+            "video_path": video_path,
+            "video_relative_path": _relative_path(video_path, root),
+            "video_identity": _stat_identity(video_path) or {},
+            "output_path": os.path.realpath(output_path),
+            "output_relative_path": _relative_path(output_path, root),
+        })
+    plan = {
+        "id": _now_id(),
+        "scan_id": scan_id,
+        "scan_path": scan.get("path") or root,
+        "status": "ready",
+        "created_at": utc_iso(),
+        "lib_root": root,
+        "width": width,
+        "interval_seconds": interval,
+        "profile_mismatch": mismatch,
+        "recommended_profile": recommendation,
+        "files": files,
+        "file_count": len(files),
+    }
+    with preview_lock:
+        generation_plans[plan["id"]] = plan
+    return plan, None
+
+
+def _matching_bifs_for_video(video_path):
+    folder = os.path.dirname(video_path)
+    stem = os.path.splitext(os.path.basename(video_path))[0]
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    return [name for name in names if bif_matches_video(name, stem) and os.path.isfile(os.path.join(folder, name))]
+
+
+def _write_bif_from_jpegs(jpeg_paths, output_path, interval_seconds):
+    if not jpeg_paths:
+        raise ValueError("FFmpeg did not generate any preview frames")
+    sizes = []
+    for path in jpeg_paths:
+        with open(path, "rb") as handle:
+            data = handle.read()
+        if not data.startswith(b"\xff\xd8") or not data.rstrip().endswith(b"\xff\xd9"):
+            raise ValueError(f"Generated frame is not a valid JPEG: {os.path.basename(path)}")
+        sizes.append(len(data))
+    offset = 64 + (len(jpeg_paths) + 1) * 8
+    header = bytearray(64)
+    header[:8] = BIF_MAGIC
+    struct.pack_into("<III", header, 8, 0, len(jpeg_paths), int(interval_seconds) * 1000)
+    with open(output_path, "wb") as output:
+        output.write(header)
+        current = offset
+        for index, size in enumerate(sizes):
+            output.write(struct.pack("<II", index, current))
+            current += size
+        output.write(struct.pack("<II", 0xFFFFFFFF, current))
+        for path in jpeg_paths:
+            with open(path, "rb") as frame:
+                shutil.copyfileobj(frame, output, length=1024 * 1024)
+
+
+def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, run):
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", video_path,
+        "-vf", (
+            f"select='eq(n,0)+gte(t-prev_selected_t,{int(interval_seconds)})',"
+            f"scale={int(width)}:-2:flags=lanczos"
+        ),
+        "-fps_mode", "vfr", "-pix_fmt", "yuvj420p", "-q:v", "2", output_pattern,
+    ]
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    while process.poll() is None:
+        if run.get("cancel_requested"):
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise ScanCancelled()
+        time.sleep(0.1)
+    stderr = (process.stderr.read() if process.stderr else b"").decode("utf-8", errors="replace").strip()
+    if process.returncode != 0:
+        raise RuntimeError(stderr or "FFmpeg frame extraction failed")
+
+
+def _install_generated_bif(work_bif, target, video_path, width, interval_seconds):
+    if _matching_bifs_for_video(video_path):
+        raise FileExistsError("A matching BIF appeared after the generation plan was created")
+    parsed = parse_bif(work_bif)
+    if not parsed.get("valid") or parsed.get("timestamp_multiplier_ms") != int(interval_seconds) * 1000:
+        raise ValueError("Generated BIF failed structural validation")
+    if not parsed.get("image_count"):
+        raise ValueError("Generated BIF contains no frames")
+    duration = _probe_video_duration(video_path)
+    expected_count = _expected_bif_frame_count(duration, interval_seconds)
+    if expected_count is not None and abs(parsed.get("image_count", 0) - expected_count) > 1:
+        raise ValueError(
+            f"Generated BIF frame count is unexpected ({parsed.get('image_count', 0)} / {expected_count})"
+        )
+    tmp_target = os.path.join(os.path.dirname(target), f".{os.path.basename(target)}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(work_bif, tmp_target)
+        os.replace(tmp_target, target)
+    finally:
+        try:
+            if os.path.exists(tmp_target):
+                os.remove(tmp_target)
+        except OSError:
+            pass
+    _record_generated_bif(target, width, interval_seconds)
+    return parsed
+
+
+def public_generation_run(run):
+    if not run:
+        return None
+    return {key: value for key, value in run.items() if not key.startswith("_")}
+
+
+def _execute_generation(run, plan):
+    run.update({"status": "running", "started_at": utc_iso(), "progress_label": "Generating BIF previews"})
+    results = []
+    generated = 0
+    refused = 0
+    work_root = os.path.join(GENERATION_ROOT, "work", run["id"])
+    try:
+        os.makedirs(work_root, exist_ok=False)
+        for index, item in enumerate(plan.get("files") or [], 1):
+            if run.get("cancel_requested"):
+                raise ScanCancelled()
+            video = item["video_path"]
+            result = {"item_id": item["item_id"], "video": item["video_relative_path"], "output": item["output_relative_path"]}
+            try:
+                if not _identity_matches(video, item.get("video_identity")):
+                    raise RuntimeError("Video changed after the missing-BIF scan")
+                item_work = os.path.join(work_root, item["item_id"])
+                os.makedirs(item_work)
+                pattern = os.path.join(item_work, "%08d.jpg")
+                _run_frame_extraction(video, pattern, plan["width"], plan["interval_seconds"], run)
+                frames = sorted(
+                    (os.path.join(item_work, name) for name in os.listdir(item_work) if name.lower().endswith(".jpg")),
+                    key=str.lower,
+                )
+                work_bif = os.path.join(item_work, "preview.bif")
+                _write_bif_from_jpegs(frames, work_bif, plan["interval_seconds"])
+                parsed = _install_generated_bif(
+                    work_bif, item["output_path"], video, plan["width"], plan["interval_seconds"]
+                )
+                result.update({"status": "generated", "frame_count": parsed.get("image_count", 0)})
+                generated += 1
+            except Exception as exc:
+                result.update({"status": "refused", "reason": str(exc)})
+                refused += 1
+            results.append(result)
+            run.update({
+                "processed_count": index,
+                "generated_count": generated,
+                "refused_count": refused,
+                "progress_percent": int(100 * index / max(1, plan["file_count"])),
+                "progress_label": f"Processed {index} of {plan['file_count']} videos",
+            })
+        emby = _refresh_emby_library() if generated else {}
+        run.update({
+            "status": "success",
+            "finished_at": utc_iso(),
+            "progress_percent": 100,
+            "progress_label": "BIF generation complete",
+            "result": {"items": results, "generated_count": generated, "refused_count": refused, "emby": emby, "scan_path": plan["scan_path"]},
+        })
+        _write_log("bif-generation", {"plan_id": plan["id"], "generated_count": generated, "refused_count": refused, "items": results})
+    except ScanCancelled:
+        run.update({"status": "cancelled", "finished_at": utc_iso(), "progress_label": "BIF generation cancelled", "result": {"items": results}})
+    except Exception as exc:
+        run.update({"status": "failed", "finished_at": utc_iso(), "progress_label": "BIF generation failed", "error": str(exc), "result": {"items": results}})
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+
+
+def start_generation(plan_id, synchronous=False):
+    with preview_lock:
+        plan = generation_plans.get(str(plan_id or ""))
+        if not plan:
+            return None, "Generation plan not found"
+        active = next((item for item in generation_runs.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+        if active:
+            return active, None
+        run = {
+            "id": _now_id(), "plan_id": plan["id"], "status": "queued", "created_at": utc_iso(),
+            "file_count": plan["file_count"], "processed_count": 0, "generated_count": 0,
+            "refused_count": 0, "progress_percent": 0, "progress_label": "Queued", "cancel_requested": False,
+        }
+        generation_runs[run["id"]] = run
+    if synchronous:
+        _execute_generation(run, plan)
+    else:
+        threading.Thread(target=_execute_generation, args=(run, plan), daemon=True, name=f"vid2gif-bif-generation-{run['id']}").start()
+    return run, None
+
+
+def generation_status(run_id=None):
+    with preview_lock:
+        if run_id:
+            run = generation_runs.get(str(run_id or ""))
+        elif generation_runs:
+            run = max(generation_runs.values(), key=lambda item: item.get("created_at") or "")
+        else:
+            run = None
+    if run_id and not run:
+        return None, "Generation run not found"
+    return {"run": public_generation_run(run)}, None
+
+
+def cancel_generation(run_id):
+    with preview_lock:
+        run = generation_runs.get(str(run_id or ""))
+        if not run:
+            return None, "Generation run not found"
+        if run.get("status") in {"queued", "running"}:
+            run["cancel_requested"] = True
+            run["status"] = "cancelling"
+            run["progress_label"] = "Cancelling BIF generation"
+    return public_generation_run(run), None
 
 
 def _settings():

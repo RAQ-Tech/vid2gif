@@ -35,6 +35,19 @@ def _reset_poster_state(monkeypatch, tmp_path):
     poster_maintenance._scheduler_state.update(
         {"last_checked_at": None, "next_run_at": None, "last_error": ""}
     )
+    def fake_dimensions(path, timeout=10):
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            return None
+        landscape = b"landscape" in data or data == b"same image"
+        return {
+            "width": 1920 if landscape else 1000,
+            "height": 1080 if landscape else 1500,
+            "landscape": landscape,
+        }
+    monkeypatch.setattr(poster_maintenance, "_probe_image_dimensions", fake_dimensions)
     return state_root
 
 
@@ -117,6 +130,47 @@ def test_landscape_poster_run_skips_when_poster_already_matches(monkeypatch, tmp
 
     assert run["counters"]["already_matching"] == 1
     assert not (movie / "Movie-poster-backup.jpg").exists()
+
+
+def test_landscape_poster_run_skips_non_landscape_background(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"portrait background")
+    poster = _write(movie / "Movie-poster.jpg", b"portrait poster")
+
+    run = _run(lib, monkeypatch, tmp_path)
+
+    assert run["counters"]["updated"] == 0
+    assert run["counters"]["skipped"] == 1
+    assert poster.read_bytes() == b"portrait poster"
+    assert not (movie / "Movie-poster-backup.jpg").exists()
+
+
+def test_landscape_poster_run_skips_existing_landscape_poster(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"new landscape")
+    poster = _write(movie / "Movie-poster.jpg", b"old landscape")
+
+    run = _run(lib, monkeypatch, tmp_path)
+
+    assert run["counters"]["already_matching"] == 1
+    assert poster.read_bytes() == b"old landscape"
+    assert not (movie / "Movie-poster-backup.jpg").exists()
+
+
+def test_landscape_poster_run_skips_ambiguous_backgrounds(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"first landscape")
+    _write(movie / "Movie-background.png", b"second landscape")
+    poster = _write(movie / "Movie-poster.jpg", b"portrait")
+
+    run = _run(lib, monkeypatch, tmp_path)
+
+    assert run["counters"]["updated"] == 0
+    assert run["counters"]["skipped"] == 1
+    assert poster.read_bytes() == b"portrait"
 
 
 def test_landscape_poster_status_prunes_old_memory_runs(monkeypatch, tmp_path):

@@ -20,11 +20,73 @@ def _settings(**overrides):
 
 def _reset_subtitles(monkeypatch, settings=None):
     subtitle_maintenance.subtitle_scans.clear()
+    subtitle_maintenance.subtitle_plans.clear()
+    subtitle_maintenance.subtitle_apply_runs.clear()
     monkeypatch.setattr(
         subtitle_maintenance.app_settings,
         "load_settings",
         lambda: dict(settings or _settings()),
     )
+
+
+def test_subtitle_plan_quarantines_only_flagged_visible_srt(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    log_dir = tmp_path / "state" / "subtitle-logs"
+    monkeypatch.setattr(subtitle_maintenance, "LOG_DIR", str(log_dir))
+    monkeypatch.setattr(subtitle_maintenance, "LOG_INDEX", str(log_dir / "index.json"))
+    _write(lib / "Movie" / "Movie.mkv")
+    expected = _write(lib / "Movie" / "Movie.eng.srt", b"english")
+    flagged = _write(lib / "Movie" / "Movie.nno.srt", b"norwegian")
+    scan = _scan(lib, monkeypatch)
+    page, err = subtitle_maintenance.items_payload(scan["id"], status="language_review")
+    assert err is None
+    files = page["items"][0]["srt_files"]
+    flagged_item = next(item for item in files if item["path"] == str(flagged))
+    expected_item = next(item for item in files if item["path"] == str(expected))
+
+    plan, err = subtitle_maintenance.build_action_plan(
+        {
+            "scan_id": scan["id"],
+            "operation": "quarantine",
+            "visible_file_ids": [item["id"] for item in files],
+            "selected_file_ids": [flagged_item["id"]],
+        },
+        lib_root=str(lib),
+    )
+    assert err is None
+    assert plan["file_count"] == 1
+    assert expected_item["id"] not in {item["file_id"] for item in plan["files"]}
+
+    run, err = subtitle_maintenance.start_action_apply(plan["id"], synchronous=True)
+
+    assert err is None
+    assert run["status"] == "success"
+    assert expected.exists()
+    assert not flagged.exists()
+    assert (lib / ".vid2gif-subtitle-quarantine" / "Movie" / flagged.name).read_bytes() == b"norwegian"
+
+
+def test_subtitle_plan_rejects_offscreen_selection(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    first = _write(lib / "Movie" / "Movie.nno.srt")
+    second = _write(lib / "Movie" / "Movie.spa.srt")
+    scan = _scan(lib, monkeypatch)
+    page, _err = subtitle_maintenance.items_payload(scan["id"], status="language_review")
+    files = {item["path"]: item for item in page["items"][0]["srt_files"]}
+
+    plan, err = subtitle_maintenance.build_action_plan(
+        {
+            "scan_id": scan["id"],
+            "operation": "delete",
+            "visible_file_ids": [files[str(first)]["id"]],
+            "selected_file_ids": [files[str(second)]["id"]],
+        },
+        lib_root=str(lib),
+    )
+
+    assert plan is None
+    assert err == "Selected subtitles must be visible on the current page"
 
 
 def _scan(lib, monkeypatch, settings=None):
@@ -271,7 +333,13 @@ def test_subtitle_ui_assets_render():
     assert 'id="subtitleScanButton"' in html
     assert 'id="subtitleItemStatus"' in html
     assert 'id="subtitleSearch"' in html
+    assert 'id="subtitleAction"' in html
+    assert 'id="subtitlePlanButton"' in html
+    assert 'id="subtitleApplyButton"' in html
     assert "fetch('/api/maintenance/subtitles/scan'" in script
     assert "/api/maintenance/subtitles/items?" in script
     assert "fetch('/api/maintenance/subtitles/cancel'" in script
+    assert "fetch('/api/maintenance/subtitles/plan'" in script
+    assert "fetch('/api/maintenance/subtitles/apply'" in script
+    assert "/api/maintenance/subtitles/apply/status?apply_id=" in script
     assert "escapeHtml(item.detail || '')" in script

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import urllib.error
@@ -40,6 +41,7 @@ MIN_SCAN_INTERVAL_SECONDS = 60
 MIN_FULL_SCAN_INTERVAL_SECONDS = 3600
 POSTER_RUN_RETENTION_COUNT = max(1, _env_int("POSTER_RUN_RETENTION_COUNT", 25))
 POSTER_RUN_ITEM_RETENTION_COUNT = max(50, _env_int("POSTER_RUN_ITEM_RETENTION_COUNT", 200))
+IMAGE_PROBE_TIMEOUT_SECONDS = max(1, _env_int("POSTER_IMAGE_PROBE_TIMEOUT", 10))
 __test__ = False
 
 _settings_lock = threading.Lock()
@@ -392,6 +394,42 @@ def _copy_file_atomic(source, target):
         raise
 
 
+def _probe_image_dimensions(path, timeout=IMAGE_PROBE_TIMEOUT_SECONDS):
+    try:
+        process = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height", "-of", "json", path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        data = json.loads(process.stdout or "{}") if process.returncode == 0 else {}
+        stream = (data.get("streams") or [{}])[0]
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return {"width": width, "height": height, "landscape": width > height}
+
+
+def _matching_artwork(directory, base, suffix):
+    matches = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return matches
+    expected_stem = f"{base}{suffix}".lower()
+    for name in names:
+        stem, ext = os.path.splitext(name)
+        if stem.lower() == expected_stem and ext.lower() in BACKGROUND_IMAGE_EXTS:
+            matches.append(os.path.realpath(os.path.join(directory, name)))
+    return sorted(matches, key=str.lower)
+
+
 def _record_for(candidate, root, status, message=""):
     background_identity = _file_identity(candidate["background_path"])
     poster_identity = (
@@ -431,21 +469,65 @@ def _process_candidate(candidate, root):
     background = candidate["background_path"]
     poster = candidate["poster_path"]
     backup = candidate["backup_path"]
-    if not path_is_under(background, root) or not path_is_under(poster, root):
+    if not all(path_is_under(path, root) for path in (background, poster, backup)):
         return "error", "Path is outside the library"
     if os.path.islink(background) or os.path.islink(poster) or os.path.islink(backup):
         return "error", "Symlinked artwork is not modified"
+    poster_matches = _matching_artwork(os.path.dirname(poster), candidate["base"], POSTER_SUFFIX)
+    if len(poster_matches) > 1:
+        return "error", "Multiple poster candidates are ambiguous"
     if not os.path.isfile(poster):
+        if poster_matches:
+            return "error", "Poster extension does not match the landscape background"
         return "missing_poster", "Matching poster does not exist"
-    if _same_file_bytes(background, poster):
-        return "already_matching", "Poster already matches background"
+    background_identity = _file_identity(background)
+    poster_identity = _file_identity(poster)
+    background_dimensions = _probe_image_dimensions(background)
+    poster_dimensions = _probe_image_dimensions(poster)
+    if not background_identity or not background_dimensions:
+        return "skipped", "Background image is unreadable"
+    if not background_dimensions["landscape"]:
+        return "skipped", "Background image is not landscape"
+    if not poster_identity or not poster_dimensions:
+        return "error", "Poster image is unreadable"
+    if poster_dimensions["landscape"]:
+        return "already_matching", "Poster is already landscape"
+    backup_exists = os.path.lexists(backup)
+    backup_matches = _matching_artwork(os.path.dirname(backup), candidate["base"], BACKUP_SUFFIX)
+    if len(backup_matches) > 1:
+        return "error", "Multiple poster backup candidates are ambiguous"
+    if backup_matches and os.path.realpath(backup) not in backup_matches:
+        return "error", "Poster backup extension does not match the landscape background"
+    if backup_exists:
+        if not os.path.isfile(backup):
+            return "error", "Existing backup is not a regular file"
+        backup_dimensions = _probe_image_dimensions(backup)
+        if not backup_dimensions:
+            return "error", "Existing backup is unreadable"
+        if backup_dimensions["landscape"]:
+            return "error", "Existing backup is landscape; poster was not changed"
+        backup_identity = _file_identity(backup)
+    else:
+        backup_identity = None
+    if _file_identity(background) != background_identity or _file_identity(poster) != poster_identity:
+        return "error", "Artwork changed during preflight"
     try:
-        if not os.path.exists(backup):
-            shutil.copy2(poster, backup)
+        if not backup_exists:
+            _copy_file_atomic(poster, backup)
             backup_created = True
+            if _file_identity(backup).get("size") != poster_identity.get("size") or not _probe_image_dimensions(backup):
+                raise RuntimeError("Backup verification failed")
         else:
             backup_created = False
+            if _file_identity(backup) != backup_identity:
+                raise RuntimeError("Backup changed during preflight")
+        if _file_identity(background) != background_identity or _file_identity(poster) != poster_identity:
+            raise RuntimeError("Artwork changed before replacement")
         _copy_file_atomic(background, poster)
+        installed = _probe_image_dimensions(poster)
+        if not installed or not installed["landscape"] or installed["width"] != background_dimensions["width"] or installed["height"] != background_dimensions["height"]:
+            _copy_file_atomic(backup, poster)
+            raise RuntimeError("Poster verification failed; original was restored")
     except Exception as exc:
         return "error", str(exc)
     return (
@@ -518,6 +600,7 @@ def _empty_counters():
         "updated": 0,
         "already_matching": 0,
         "missing_poster": 0,
+        "skipped": 0,
         "errors": 0,
     }
 
@@ -548,10 +631,21 @@ def _scan_and_apply(run, lib_root, settings):
             continue
 
         counters["folders_scanned"] += 1
-        for name in sorted(files, key=str.lower):
-            candidate = _candidate_from_background(os.path.join(base, name))
-            if not candidate:
-                continue
+        candidates = [
+            candidate
+            for name in sorted(files, key=str.lower)
+            if (candidate := _candidate_from_background(os.path.join(base, name)))
+        ]
+        if len(candidates) > 1:
+            candidate = candidates[0]
+            counters["candidates"] += 1
+            counters["skipped"] += 1
+            status, message = "skipped", "Multiple landscape background candidates are ambiguous"
+            key = _path_key(candidate["background_path"], root)
+            records[key] = _record_for(candidate, root, status, message)
+            items.append(_public_item(candidate, root, status, message))
+            candidates = []
+        for candidate in candidates:
             if os.path.islink(candidate["background_path"]):
                 continue
             counters["candidates"] += 1
@@ -562,6 +656,8 @@ def _scan_and_apply(run, lib_root, settings):
                 counters["already_matching"] += 1
             elif status == "missing_poster":
                 counters["missing_poster"] += 1
+            elif status == "skipped":
+                counters["skipped"] += 1
             else:
                 counters["errors"] += 1
             key = _path_key(candidate["background_path"], root)

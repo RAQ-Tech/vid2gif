@@ -5,7 +5,7 @@ import threading
 from .config import LIB_ROOT, STATE_ROOT
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
@@ -27,6 +27,8 @@ DUPLICATE_ACCESSORY_POLICIES = {
 }
 DEFAULT_DUPLICATE_EXCLUDED_FOLDERS = ("trailer", "trailers")
 DEFAULT_SUBTITLE_EXPECTED_LANGUAGES = ("eng", "en", "en-us", "en-gb")
+DEFAULT_VIDEO_PREVIEW_BIF_WIDTH = 320
+DEFAULT_VIDEO_PREVIEW_BIF_INTERVAL_SECONDS = 10
 
 _settings_lock = threading.Lock()
 
@@ -65,6 +67,8 @@ def default_settings():
         "subtitle_flag_missing": True,
         "subtitle_flag_unknown_language": True,
         "subtitle_subgen_detection": True,
+        "video_preview_bif_width": DEFAULT_VIDEO_PREVIEW_BIF_WIDTH,
+        "video_preview_bif_interval_seconds": DEFAULT_VIDEO_PREVIEW_BIF_INTERVAL_SECONDS,
     }
 
 
@@ -121,6 +125,14 @@ def _bool(value, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bounded_int(value, default, minimum, maximum):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if minimum <= parsed <= maximum else default
+
+
 def _coerce_settings(data):
     if not isinstance(data, dict):
         return default_settings()
@@ -167,6 +179,18 @@ def _coerce_settings(data):
         "subtitle_subgen_detection": _bool(
             data.get("subtitle_subgen_detection", defaults["subtitle_subgen_detection"]),
             defaults["subtitle_subgen_detection"],
+        ),
+        "video_preview_bif_width": _bounded_int(
+            data.get("video_preview_bif_width", defaults["video_preview_bif_width"]),
+            defaults["video_preview_bif_width"],
+            64,
+            1920,
+        ),
+        "video_preview_bif_interval_seconds": _bounded_int(
+            data.get("video_preview_bif_interval_seconds", defaults["video_preview_bif_interval_seconds"]),
+            defaults["video_preview_bif_interval_seconds"],
+            1,
+            3600,
         ),
     }
 

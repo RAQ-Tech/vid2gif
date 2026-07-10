@@ -48,6 +48,10 @@ def _write_duplicate_pair(lib, folder_name, base_name=None):
     return keep, remove
 
 
+def _visible_group_ids(scan):
+    return [group["id"] for group in scan.get("groups") or []]
+
+
 def test_duplicate_name_normalization_removes_quality_tags():
     assert maintenance.normalize_duplicate_name("Movie.1080p.WEB-DL.x265") == "movie"
     assert maintenance.normalize_duplicate_name("Movie 720p BluRay H264") == "movie"
@@ -70,10 +74,51 @@ def test_duplicate_scan_groups_four_copy_suffixes_together(monkeypatch, tmp_path
     ):
         _write(movie / name, b"x" * 100)
 
-    scan = _scan(lib, lib, monkeypatch)
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            "Movie [WEBDL-1080p].mp4": {"width": 1920, "height": 1080},
+            "Movie [WEBDL-2160p].mp4": {"width": 3840, "height": 2160},
+            "Movie [WEBDL-2160p](1).mp4": {"width": 3840, "height": 2160},
+            "Movie [WEBDL-2160p](2).mp4": {"width": 3840, "height": 2160},
+        },
+    )
 
     assert len(scan["groups"]) == 1
     assert len(scan["groups"][0]["videos"]) == 4
+    keeper = next(
+        video for video in scan["groups"][0]["videos"]
+        if video["id"] == scan["groups"][0]["recommended_keep_id"]
+    )
+    assert keeper["name"] == "Movie [WEBDL-2160p].mp4"
+
+
+def test_group_projection_reselects_copy_when_keeper_changes(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    original = _write(movie / "Movie [WEBDL-2160p].mp4", b"video")
+    copied = _write(movie / "Movie [WEBDL-2160p](1).mp4", b"video")
+    copied_srt = _write(movie / "Movie [WEBDL-2160p](1).eng.srt", b"subtitle")
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            original.name: {"width": 3840, "height": 2160},
+            copied.name: {"width": 3840, "height": 2160},
+        },
+    )
+    group = scan["groups"][0]
+
+    payload, err = maintenance.group_payload(scan["id"], group["id"], keep_video_id=group["recommended_keep_id"])
+
+    assert err is None
+    projected_copy = next(video for video in payload["group"]["videos"] if video["name"] == copied.name)
+    assert projected_copy["default_selected"] is True
+    projected_srt = next(item for item in projected_copy["accessories"] if item["path"] == str(copied_srt))
+    assert projected_srt["default_selected"] is True
 
 
 def test_duplicate_scan_groups_by_nfo_provider_id(monkeypatch, tmp_path):
@@ -172,7 +217,7 @@ def test_cleanup_plan_moves_duplicate_video_and_renames_unmatched_accessory(monk
     )
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -203,7 +248,7 @@ def test_cleanup_plan_moves_equivalent_accessory(monkeypatch, tmp_path):
     scan = _scan(lib, lib, monkeypatch)
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -232,7 +277,7 @@ def test_cleanup_plan_uses_custom_move_root(monkeypatch, tmp_path):
     )
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
 
@@ -254,7 +299,7 @@ def test_cleanup_move_creates_missing_destination_folders(monkeypatch, tmp_path)
     assert not dest.parent.exists()
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -276,7 +321,7 @@ def test_cleanup_move_reuses_existing_destination_folders(monkeypatch, tmp_path)
     scan = _scan(lib, lib, monkeypatch)
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -304,7 +349,7 @@ def test_cleanup_move_refuses_existing_destination_file_and_continues(monkeypatc
     scan = _scan(lib, lib, monkeypatch)
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -334,7 +379,7 @@ def test_cleanup_plan_rejects_move_root_outside_library(monkeypatch, tmp_path):
     )
 
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
 
@@ -352,7 +397,7 @@ def test_cleanup_log_records_old_and_new_paths(monkeypatch, tmp_path):
     remove = _write(movie / "Movie.720p.mkv", b"b" * 100)
     scan = _scan(lib, lib, monkeypatch)
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -388,6 +433,7 @@ def test_cleanup_plan_delete_can_include_only_selected_file(monkeypatch, tmp_pat
         {
             "scan_id": scan["id"],
             "action": "delete",
+            "visible_group_ids": _visible_group_ids(scan),
             "groups": [
                 {
                     "id": group["id"],
@@ -425,7 +471,7 @@ def test_apply_refuses_file_that_changed_after_scan(monkeypatch, tmp_path):
         },
     )
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "delete", "groups": []},
+        {"scan_id": scan["id"], "action": "delete", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -622,7 +668,7 @@ def test_duplicate_scan_cancel_route_returns_json(monkeypatch, tmp_path):
     assert cancel_res.get_json()["scan"]["status"] == "cancelled"
 
 
-def test_cleanup_plan_uses_defaults_for_unvisited_paged_groups(monkeypatch, tmp_path):
+def test_cleanup_plan_is_limited_to_visible_paged_groups(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write_duplicate_pair(lib, "First")
     _, second_remove = _write_duplicate_pair(lib, "Second")
@@ -634,6 +680,7 @@ def test_cleanup_plan_uses_defaults_for_unvisited_paged_groups(monkeypatch, tmp_
         {
             "scan_id": scan["id"],
             "action": "move",
+            "visible_group_ids": [first_group["id"]],
             "groups": [{"id": first_group["id"], "enabled": False}],
         },
         lib_root=str(lib),
@@ -641,9 +688,9 @@ def test_cleanup_plan_uses_defaults_for_unvisited_paged_groups(monkeypatch, tmp_
 
     assert err is None
     assert first_group["id"] in plan["skipped_groups"]
-    assert plan["file_count"] == 1
-    assert plan["files"][0]["group_id"] == second_group["id"]
-    assert plan["files"][0]["source_path"] == str(second_remove)
+    assert plan["file_count"] == 0
+    assert second_group["id"] not in plan["visible_group_ids"]
+    assert str(second_remove) not in {item["source_path"] for item in plan["files"]}
 
 
 def test_duplicate_apply_can_run_in_background_and_report_status(monkeypatch, tmp_path):
@@ -651,7 +698,7 @@ def test_duplicate_apply_can_run_in_background_and_report_status(monkeypatch, tm
     _write_duplicate_pair(lib, "Movie")
     scan = _scan(lib, lib, monkeypatch)
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "move", "groups": []},
+        {"scan_id": scan["id"], "action": "move", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -682,7 +729,7 @@ def test_duplicate_apply_route_starts_background_run(monkeypatch, tmp_path):
     _write_duplicate_pair(lib, "Movie")
     scan = _scan(lib, lib, monkeypatch)
     plan, err = maintenance.build_duplicate_cleanup_plan(
-        {"scan_id": scan["id"], "action": "delete", "groups": []},
+        {"scan_id": scan["id"], "action": "delete", "groups": [], "visible_group_ids": _visible_group_ids(scan)},
         lib_root=str(lib),
     )
     assert err is None
@@ -766,6 +813,9 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="subtitleItemStatus"' in html
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
+    assert "visible_group_ids" in script
+    assert "data-maint-bulk=\"select\"" in script
+    assert "const pageSizes = [10, 25, 50]" in script
     assert 'id="maintenanceRefreshLogsButton"' in html
     assert 'src="/static/maintenance.js"' in html
     assert "fetch('/api/dashboard/library-scan/status')" in script

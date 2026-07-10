@@ -2,6 +2,7 @@ import json
 import os
 import struct
 import urllib.error
+from pathlib import Path
 
 from app import routes, video_preview_maintenance
 
@@ -16,15 +17,24 @@ def _reset_preview_state(monkeypatch, tmp_path):
     log_dir = tmp_path / "state" / "maintenance-logs" / "video-previews"
     monkeypatch.setattr(video_preview_maintenance, "LOG_DIR", str(log_dir))
     monkeypatch.setattr(video_preview_maintenance, "LOG_INDEX", str(log_dir / "index.json"))
+    generation_root = tmp_path / "state" / "video-preview-generation"
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_ROOT", str(generation_root))
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_MANIFEST_PATH", str(generation_root / "manifest.json"))
     monkeypatch.setattr(
         video_preview_maintenance.app_settings,
         "load_settings",
-        lambda: {"duplicate_move_root": ""},
+        lambda: {
+            "duplicate_move_root": "",
+            "video_preview_bif_width": 320,
+            "video_preview_bif_interval_seconds": 10,
+        },
     )
     video_preview_maintenance.preview_scans.clear()
     video_preview_maintenance.quality_scans.clear()
     video_preview_maintenance.quality_plans.clear()
     video_preview_maintenance.quality_apply_runs.clear()
+    video_preview_maintenance.generation_plans.clear()
+    video_preview_maintenance.generation_runs.clear()
     return log_dir
 
 
@@ -325,7 +335,7 @@ def test_bif_quality_warns_for_moderate_frame_count_shortfall(monkeypatch, tmp_p
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
     assert item["status"] == "warning"
-    assert item["repairable"] is False
+    assert item["repairable"] is True
     assert item["expected_frame_count"] == 20
     assert item["frame_count_ratio"] == 0.8
     assert "lower than expected" in item["reason"]
@@ -583,7 +593,7 @@ def test_bif_quality_repair_plan_rejects_outside_destination(monkeypatch, tmp_pa
     assert err == "Repair destination must be inside the mounted library root"
 
 
-def test_bif_quality_apply_triggers_emby_refresh_then_extraction(monkeypatch, tmp_path):
+def test_bif_quality_apply_does_not_trigger_emby_extraction(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write(lib / "Movie" / "Movie.mkv")
     _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"same")] * 8))
@@ -613,10 +623,85 @@ def test_bif_quality_apply_triggers_emby_refresh_then_extraction(monkeypatch, tm
     assert err is None
     assert apply_err is None
     assert result["applied_count"] == 1
-    assert calls[0] == ("POST", "http://emby:8096/emby/Library/Refresh?api_key=secret")
-    assert calls[1] == ("GET", "http://emby:8096/emby/ScheduledTasks?api_key=secret")
-    assert calls[2] == ("POST", "http://emby:8096/emby/ScheduledTasks/Running/thumbs?api_key=secret")
+    assert calls == []
+    assert result["emby"] == {}
     assert "secret" not in str(result)
+
+
+def test_bif_generation_plan_requires_mismatch_confirmation(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    scan = _scan(lib, monkeypatch, tmp_path)
+    scan["recommended_profile"] = {"width": 320, "interval_seconds": 180, "source_name": "Recent-320-180.bif"}
+    missing_id = scan["items"][0]["id"]
+
+    plan, err = video_preview_maintenance.build_generation_plan(
+        {"scan_id": scan["id"], "item_ids": [missing_id]},
+        lib_root=str(lib),
+    )
+
+    assert plan is None
+    assert "differ from the latest observed" in err
+    confirmed, confirmed_err = video_preview_maintenance.build_generation_plan(
+        {"scan_id": scan["id"], "item_ids": [missing_id], "confirm_profile_mismatch": True},
+        lib_root=str(lib),
+    )
+    assert confirmed_err is None
+    assert confirmed["interval_seconds"] == 10
+
+
+def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv", b"video")
+    scan = _scan(lib, monkeypatch, tmp_path)
+    missing_id = scan["items"][0]["id"]
+    plan, err = video_preview_maintenance.build_generation_plan(
+        {"scan_id": scan["id"], "item_ids": [missing_id]},
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    def fake_extract(_video, pattern, _width, _interval, _run):
+        _write(Path(pattern % 1), _jpeg(b"frame-one"))
+        _write(Path(pattern % 2), _jpeg(b"frame-two"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+    monkeypatch.setattr(video_preview_maintenance, "_refresh_emby_library", lambda **_kwargs: {"status": "success"})
+
+    run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
+
+    assert run_err is None
+    assert run["status"] == "success"
+    assert run["generated_count"] == 1
+    output = video.parent / "Movie-320-10.bif"
+    assert output.is_file()
+    parsed = video_preview_maintenance.parse_bif(str(output))
+    assert parsed["valid"] is True
+    assert parsed["image_count"] == 2
+    assert parsed["timestamp_multiplier_ms"] == 10_000
+
+
+def test_bif_generation_refuses_late_matching_bif(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv", b"video")
+    scan = _scan(lib, monkeypatch, tmp_path)
+    plan, err = video_preview_maintenance.build_generation_plan(
+        {"scan_id": scan["id"], "item_ids": [scan["items"][0]["id"]]},
+        lib_root=str(lib),
+    )
+    assert err is None
+    _write(video.parent / "Movie-existing.bif", _bif_bytes([_jpeg(b"existing")], multiplier=10_000))
+
+    def fake_extract(_video, pattern, _width, _interval, _run):
+        _write(Path(pattern % 1), _jpeg(b"new"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+    run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
+
+    assert run_err is None
+    assert run["generated_count"] == 0
+    assert run["refused_count"] == 1
+    assert not (video.parent / "Movie-320-10.bif").exists()
 
 
 def test_bif_quality_cancel_reuses_active_scan(monkeypatch, tmp_path):
@@ -757,6 +842,10 @@ def test_video_preview_ui_assets_render():
     assert "Interval mismatches" not in html
     assert 'id="qualityScanButton"' in html
     assert 'id="qualityApplyButton"' in html
+    assert 'id="previewGenerationPlanButton"' in html
+    assert 'id="previewGenerationStartButton"' in html
+    assert 'id="qualityAction"' in html
+    assert 'id="qualitySelectWarningButton"' in html
     assert "fetch('/api/maintenance/video-previews/scan'" in script
     assert "/api/maintenance/video-previews/items?scan_id=" in script
     assert "fetch('/api/maintenance/video-previews/emby/tasks')" in script
@@ -766,6 +855,9 @@ def test_video_preview_ui_assets_render():
     assert "fetch('/api/maintenance/video-previews/quality/plan'" in script
     assert "fetch('/api/maintenance/video-previews/quality/apply'" in script
     assert "/api/maintenance/video-previews/quality/apply/status?apply_id=" in script
+    assert "fetch('/api/maintenance/video-previews/generation/plan'" in script
+    assert "fetch('/api/maintenance/video-previews/generation/start'" in script
+    assert "/api/maintenance/video-previews/generation/status?run_id=" in script
     assert "escapeHtml(item.relative_path" in script
     assert "escapeHtml(change.source || '')" in script
     assert "frame_count_detail" in script

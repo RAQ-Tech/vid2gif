@@ -1,12 +1,14 @@
 import datetime
 import hashlib
+import json
 import os
 import re
+import shutil
 import threading
 import time
 
 from . import app_settings
-from .config import LIB_ROOT, VIDEO_EXTS
+from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
 
@@ -19,9 +21,13 @@ SCAN_TERMINAL_STATUSES = {"success", "failed", "cancelled"}
 SCAN_RETENTION_COUNT = 10
 SCAN_MAX_AGE_SECONDS = 24 * 60 * 60
 SUBTITLE_EXTS = {".srt"}
+SUBTITLE_QUARANTINE_DIRNAME = ".vid2gif-subtitle-quarantine"
+LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "subtitles")
+LOG_INDEX = os.path.join(LOG_DIR, "index.json")
 KNOWN_SKIP_DIRS = {
     ".vid2gif-duplicates",
     ".vid2gif-video-preview-repairs",
+    SUBTITLE_QUARANTINE_DIRNAME,
     "_previews",
     "__pycache__",
 }
@@ -40,6 +46,8 @@ LANGUAGE_MODIFIER_TOKENS = {
 __test__ = False
 
 subtitle_scans = {}
+subtitle_plans = {}
+subtitle_apply_runs = {}
 subtitle_lock = threading.Lock()
 
 
@@ -75,6 +83,18 @@ def _safe_stat(path):
         return os.stat(path)
     except OSError:
         return None
+
+
+def _stat_identity(path):
+    stat = _safe_stat(path)
+    if not stat:
+        return None
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "inode": getattr(stat, "st_ino", 0),
+        "device": getattr(stat, "st_dev", 0),
+    }
 
 
 def _validate_scan_path(path, lib_root):
@@ -154,6 +174,9 @@ def _public_subtitle(path, video_stem, lib_root, settings=None):
         "size_bytes": stat.st_size if stat else 0,
         "size_label": format_size(stat.st_size if stat else 0),
         "modified_at": utc_iso(stat.st_mtime) if stat else None,
+        "identity": _stat_identity(path) or {},
+        "actionable": False,
+        "action_reason": "",
     }
 
 
@@ -182,6 +205,14 @@ def _classify_video(video_path, folder_files, settings, lib_root):
         item for item in subtitles
         if item.get("language_code") and item.get("language_code") in expected
     ]
+    for subtitle in subtitles:
+        code = subtitle.get("language_code")
+        if code and code not in expected:
+            subtitle["actionable"] = True
+            subtitle["action_reason"] = f"Unexpected language: {code}"
+        elif not code and flag_unknown:
+            subtitle["actionable"] = True
+            subtitle["action_reason"] = "Language could not be identified"
 
     status = "ok"
     detail = "Expected subtitle language found"
@@ -452,6 +483,7 @@ def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "items": [],
         "counts": {},
         "settings": settings,
+        "lib_root": os.path.realpath(lib_root),
     }
     with subtitle_lock:
         _prune_scans_locked()
@@ -571,3 +603,227 @@ def items_payload(scan_id, status="language_review", offset=0, limit=ITEM_PAGE_D
         "large_result": total >= LARGE_RESULT_COUNT,
         "items": page,
     }, None
+
+
+def _write_json_atomic(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def _all_subtitles(scan):
+    result = {}
+    for video in scan.get("items") or []:
+        for subtitle in video.get("srt_files") or []:
+            result[subtitle.get("id")] = subtitle
+    return result
+
+
+def build_action_plan(payload, lib_root=LIB_ROOT):
+    if not isinstance(payload, dict):
+        return None, "Invalid request"
+    scan_id = str(payload.get("scan_id") or "")
+    operation = str(payload.get("operation") or "quarantine").lower()
+    if operation not in {"quarantine", "delete"}:
+        return None, "Choose quarantine or delete"
+    visible_ids = payload.get("visible_file_ids")
+    selected_ids = payload.get("selected_file_ids")
+    if not isinstance(visible_ids, list) or not visible_ids:
+        return None, "Visible subtitle files are required"
+    if not isinstance(selected_ids, list) or not selected_ids:
+        return None, "Select at least one subtitle file"
+    visible = {str(value or "") for value in visible_ids if str(value or "")}
+    selected = []
+    for value in selected_ids:
+        file_id = str(value or "")
+        if file_id and file_id not in selected:
+            selected.append(file_id)
+    if any(file_id not in visible for file_id in selected):
+        return None, "Selected subtitles must be visible on the current page"
+    with subtitle_lock:
+        scan = subtitle_scans.get(scan_id)
+    if not scan or scan.get("status") != "success":
+        return None, "Scan is not complete"
+    files_by_id = _all_subtitles(scan)
+    if any(file_id not in files_by_id for file_id in visible):
+        return None, "Visible subtitle results are stale"
+    root = os.path.realpath(lib_root)
+    quarantine_root = os.path.realpath(os.path.join(root, SUBTITLE_QUARANTINE_DIRNAME))
+    files = []
+    for file_id in selected:
+        subtitle = files_by_id.get(file_id)
+        if not subtitle or not subtitle.get("actionable"):
+            return None, "Only flagged subtitle files can be changed"
+        source = subtitle.get("path") or ""
+        if not path_is_under(source, root) or os.path.islink(source):
+            return None, "Subtitle path is unsafe"
+        relative = os.path.relpath(os.path.realpath(source), root)
+        destination = os.path.realpath(os.path.join(quarantine_root, relative)) if operation == "quarantine" else ""
+        if destination and not path_is_under(destination, quarantine_root):
+            return None, "Subtitle quarantine path is unsafe"
+        files.append({
+            "file_id": file_id,
+            "source_path": source,
+            "relative_path": relative,
+            "destination_path": destination,
+            "size_bytes": subtitle.get("size_bytes") or 0,
+            "size_label": subtitle.get("size_label") or "",
+            "language_code": subtitle.get("language_code") or "unknown",
+            "identity": dict(subtitle.get("identity") or {}),
+        })
+    plan = {
+        "id": _now_id(),
+        "scan_id": scan_id,
+        "scan_path": scan.get("path") or root,
+        "operation": operation,
+        "status": "ready",
+        "created_at": utc_iso(),
+        "lib_root": root,
+        "quarantine_root": quarantine_root if operation == "quarantine" else "",
+        "visible_file_ids": sorted(visible),
+        "files": files,
+        "file_count": len(files),
+        "total_size_bytes": sum(item["size_bytes"] for item in files),
+    }
+    plan["total_size_label"] = format_size(plan["total_size_bytes"])
+    with subtitle_lock:
+        subtitle_plans[plan["id"]] = plan
+    return plan, None
+
+
+def public_apply_run(run):
+    if not run:
+        return None
+    return {key: value for key, value in run.items() if not key.startswith("_")}
+
+
+def _identity_matches(path, expected):
+    current = _stat_identity(path)
+    return bool(current and expected and all(current.get(key) == expected.get(key) for key in ("size", "mtime_ns", "inode", "device")))
+
+
+def _save_action_log(plan, run, records):
+    entry = {
+        "id": run["id"],
+        "created_at": run.get("finished_at") or utc_iso(),
+        "operation": plan.get("operation"),
+        "applied_count": run.get("applied_count", 0),
+        "refused_count": run.get("refused_count", 0),
+        "size_label": format_size(run.get("applied_bytes", 0)),
+        "records": records,
+    }
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        _write_json_atomic(os.path.join(LOG_DIR, f"{entry['id']}.json"), entry)
+        try:
+            with open(LOG_INDEX, "r", encoding="utf-8") as handle:
+                index = json.load(handle)
+        except Exception:
+            index = []
+        index = [entry_item for entry_item in index if entry_item.get("id") != entry["id"]]
+        index.insert(0, {key: value for key, value in entry.items() if key != "records"})
+        _write_json_atomic(LOG_INDEX, index[:25])
+    except OSError:
+        pass
+
+
+def _run_action(plan, run):
+    records = []
+    applied_bytes = 0
+    for index, item in enumerate(plan.get("files") or [], 1):
+        source = item.get("source_path") or ""
+        reason = ""
+        status = "refused"
+        if not path_is_under(source, plan["lib_root"]) or os.path.islink(source):
+            reason = "Source path is unsafe"
+        elif not os.path.isfile(source):
+            reason = "Source file is missing"
+        elif not _identity_matches(source, item.get("identity")):
+            reason = "Source file changed after the scan"
+        else:
+            try:
+                if plan["operation"] == "delete":
+                    os.remove(source)
+                else:
+                    destination = item.get("destination_path") or ""
+                    if os.path.lexists(destination):
+                        raise FileExistsError("Quarantine destination already exists")
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    shutil.move(source, destination)
+                status = "applied"
+                applied_bytes += item.get("size_bytes") or 0
+            except Exception as exc:
+                reason = str(exc)
+        records.append({"file_id": item.get("file_id"), "path": item.get("relative_path"), "status": status, "reason": reason})
+        run.update({
+            "processed_count": index,
+            "applied_count": sum(1 for record in records if record["status"] == "applied"),
+            "refused_count": sum(1 for record in records if record["status"] == "refused"),
+            "progress_label": f"Processed {index} of {len(plan.get('files') or [])} subtitles",
+        })
+    run.update({
+        "status": "success",
+        "finished_at": utc_iso(),
+        "progress_label": "Subtitle cleanup complete",
+        "applied_bytes": applied_bytes,
+        "result": {"records": records, "scan_path": plan.get("scan_path"), "applied_bytes": applied_bytes},
+    })
+    _save_action_log(plan, run, records)
+
+
+def start_action_apply(plan_id, synchronous=False):
+    with subtitle_lock:
+        plan = subtitle_plans.get(str(plan_id or ""))
+        if not plan:
+            return None, "Plan not found"
+        run = {
+            "id": _now_id(),
+            "plan_id": plan["id"],
+            "status": "queued",
+            "operation": plan["operation"],
+            "file_count": plan["file_count"],
+            "processed_count": 0,
+            "applied_count": 0,
+            "refused_count": 0,
+            "progress_label": "Queued",
+            "created_at": utc_iso(),
+        }
+        subtitle_apply_runs[run["id"]] = run
+    def execute():
+        run.update({"status": "running", "started_at": utc_iso(), "progress_label": "Applying subtitle cleanup"})
+        try:
+            _run_action(plan, run)
+        except Exception as exc:
+            run.update({"status": "failed", "error": str(exc), "finished_at": utc_iso(), "progress_label": "Subtitle cleanup failed"})
+    if synchronous:
+        execute()
+    else:
+        threading.Thread(target=execute, daemon=True, name=f"vid2gif-subtitle-apply-{run['id']}").start()
+    return run, None
+
+
+def apply_status(apply_id):
+    with subtitle_lock:
+        run = subtitle_apply_runs.get(str(apply_id or ""))
+    if not run:
+        return None, "Apply run not found"
+    return {"apply": public_apply_run(run)}, None
+
+
+def list_action_logs():
+    try:
+        with open(LOG_INDEX, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def action_log(log_id):
+    try:
+        with open(os.path.join(LOG_DIR, f"{str(log_id or '')}.json"), "r", encoding="utf-8") as handle:
+            return json.load(handle), None
+    except Exception:
+        return None, "Log not found"
