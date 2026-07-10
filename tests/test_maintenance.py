@@ -747,6 +747,13 @@ def test_maintenance_page_and_static_assets_render():
 
     assert res.status_code == 200
     assert "Library Maintenance" in html
+    assert 'data-maint-tab-hash="overview"' in html
+    assert 'id="tab-overview"' in html
+    assert 'id="pane-overview"' in html
+    assert 'id="overviewFolderInventory" class="collapse' in html
+    assert 'id="overviewSearch"' in html
+    assert 'id="overviewSort"' in html
+    assert 'id="overviewPageLimit"' in html
     assert 'data-maint-tab-hash="posters"' in html
     assert 'data-maint-tab-hash="video-previews"' in html
     assert 'data-maint-tab-hash="duplicates"' in html
@@ -758,6 +765,9 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="maintenanceCancelScanButton"' in html
     assert 'id="maintenanceRefreshLogsButton"' in html
     assert 'src="/static/maintenance.js"' in html
+    assert "fetch('/api/dashboard/library-scan/status')" in script
+    assert "fetch('/api/dashboard/library-scan'" in script
+    assert "/api/dashboard/library-scan/folders?${params.toString()}" in script
     assert "fetch('/api/maintenance/duplicates/scan'" in script
     assert "fetch('/api/maintenance/duplicates/cancel'" in script
     assert "/api/maintenance/duplicates/groups?scan_id=" in script
@@ -773,8 +783,10 @@ def test_maintenance_page_and_static_assets_render():
     assert "fetch('/api/maintenance/video-previews/quality/scan'" in script
     assert "/api/maintenance/video-previews/quality/items?scan_id=" in script
     assert "fetch('/api/maintenance/video-previews/quality/apply'" in script
-    assert "maintenance_active_tab" in script
+    assert "maintenance_active_tab_v2" in script
     assert "readJsonResponse" in script
+    assert "data-overview-folder-toggle" in script
+    assert "escapeHtml(item.path || '')" in script
     assert "data-maint-operation" in script
     assert "data-maint-expand" in script
     assert "data-maint-page" in script

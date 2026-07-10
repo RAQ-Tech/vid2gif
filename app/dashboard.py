@@ -18,6 +18,19 @@ from .utils import path_is_under, resolve_case_insensitive
 DASHBOARD_ROOT = os.path.join(STATE_ROOT, "dashboard")
 LIBRARY_INVENTORY_PATH = os.path.join(DASHBOARD_ROOT, "library-inventory.json")
 LIBRARY_SCAN_RETENTION_SECONDS = 24 * 60 * 60
+LIBRARY_FOLDER_LIMITS = (10, 25, 50, 100)
+LIBRARY_FOLDER_SORT_FIELDS = {
+    "name",
+    "video_count",
+    "video_size_bytes",
+    "subtitle_count",
+    "nfo_count",
+    "bif_count",
+    "poster_count",
+    "background_count",
+    "actor_image_count",
+    "file_count",
+}
 SIDECARE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 KNOWN_SKIP_DIRS = {
@@ -296,16 +309,21 @@ def _recent_logs():
     return entries[:8]
 
 
-def _library_paths(lib_root=LIB_ROOT):
+def _library_root_item(lib_root=LIB_ROOT):
     root = resolve_case_insensitive(lib_root) or lib_root
     root = os.path.realpath(root)
-    libraries = [{"name": os.path.basename(root) or root, "path": root, "kind": "root"}]
+    return {"name": os.path.basename(root) or root, "path": root, "kind": "root"}
+
+
+def _direct_library_items(lib_root=LIB_ROOT):
+    root = _library_root_item(lib_root)["path"]
+    libraries = []
     try:
         entries = os.listdir(root)
     except OSError:
-        entries = []
+        return libraries
     for entry in sorted(entries, key=str.lower):
-        if entry.startswith("."):
+        if entry.startswith(".") or entry in KNOWN_SKIP_DIRS:
             continue
         path = os.path.realpath(os.path.join(root, entry))
         if os.path.islink(path) or not os.path.isdir(path):
@@ -331,6 +349,29 @@ def _empty_library_stats(item):
         "other_sidecar_count": 0,
         "file_count": 0,
     }
+
+
+def _normalise_library_stats(item, fallback):
+    source = item if isinstance(item, dict) else {}
+    stats = _empty_library_stats({**fallback, **source})
+    for key in (
+        "video_count",
+        "video_size_bytes",
+        "subtitle_count",
+        "nfo_count",
+        "bif_count",
+        "poster_count",
+        "background_count",
+        "actor_image_count",
+        "other_sidecar_count",
+        "file_count",
+    ):
+        try:
+            stats[key] = int(source.get(key, stats[key]) or 0)
+        except (TypeError, ValueError):
+            stats[key] = 0
+    stats["video_size_label"] = source.get("video_size_label") or format_size(stats["video_size_bytes"])
+    return stats
 
 
 def _count_file(stats, path):
@@ -363,56 +404,115 @@ def _count_file(stats, path):
         stats["other_sidecar_count"] += 1
 
 
+def _format_library_stats(stats):
+    stats["video_size_label"] = format_size(stats["video_size_bytes"])
+    return stats
+
+
+def _inventory_from_data(data, lib_root=LIB_ROOT):
+    source = data if isinstance(data, dict) else {}
+    root_item = _library_root_item(lib_root)
+    if isinstance(source.get("root"), dict):
+        root = _normalise_library_stats(source.get("root"), root_item)
+        folders = [
+            _normalise_library_stats(item, {"name": item.get("name", ""), "path": item.get("path", ""), "kind": "library"})
+            for item in source.get("folders") or []
+            if isinstance(item, dict)
+        ]
+    else:
+        old_libraries = [item for item in source.get("libraries") or [] if isinstance(item, dict)]
+        old_root = next((item for item in old_libraries if item.get("kind") == "root"), old_libraries[0] if old_libraries else {})
+        root = _normalise_library_stats(old_root, root_item)
+        folders = [
+            _normalise_library_stats(item, {"name": item.get("name", ""), "path": item.get("path", ""), "kind": "library"})
+            for item in old_libraries
+            if item is not old_root and item.get("kind") != "root"
+        ]
+    folders.sort(key=lambda item: (item.get("name") or "").lower())
+    return {
+        "schema_version": 2,
+        "status": source.get("status", "not_scanned"),
+        "finished_at": source.get("finished_at"),
+        "library_count": len(folders) + 1,
+        "folder_count": len(folders),
+        "video_count": root.get("video_count", 0),
+        "video_size_bytes": root.get("video_size_bytes", 0),
+        "video_size_label": root.get("video_size_label", "0 B"),
+        "root": root,
+        "folders": folders,
+    }
+
+
+def _direct_child_name(root, path):
+    try:
+        rel = os.path.relpath(path, root)
+    except ValueError:
+        return ""
+    if rel in {"", "."}:
+        return ""
+    return rel.split(os.sep, 1)[0]
+
+
 def _scan_library_inventory(scan):
-    libraries = _library_paths(scan.get("path") or LIB_ROOT)
-    results = []
-    total_videos = 0
-    total_size = 0
-    for index, library in enumerate(libraries, start=1):
+    root_item = _library_root_item(scan.get("path") or LIB_ROOT)
+    root_path = root_item["path"]
+    root_stats = _empty_library_stats(root_item)
+    folders = [_empty_library_stats(item) for item in _direct_library_items(root_path)]
+    folders_by_name = {item["name"]: item for item in folders}
+    scanned_dirs = 0
+    scanned_files = 0
+
+    for base, dirs, files in os.walk(root_path, followlinks=False):
         if scan.get("cancel_requested"):
             break
-        stats = _empty_library_stats(library)
-        for base, dirs, files in os.walk(library["path"], followlinks=False):
-            if scan.get("cancel_requested"):
-                break
-            dirs[:] = [
+        dirs[:] = sorted(
+            [
                 dirname
                 for dirname in dirs
                 if not dirname.startswith(".")
                 and dirname not in KNOWN_SKIP_DIRS
                 and not os.path.islink(os.path.join(base, dirname))
-            ]
-            for filename in files:
-                full_path = os.path.join(base, filename)
-                if os.path.islink(full_path) or not os.path.isfile(full_path):
-                    continue
-                _count_file(stats, full_path)
-        stats["video_size_label"] = format_size(stats["video_size_bytes"])
-        results.append(stats)
-        if library.get("kind") == "root":
-            total_videos = stats["video_count"]
-            total_size = stats["video_size_bytes"]
-        with dashboard_lock:
-            scan.update(
-                {
-                    "progress_percent": int(100 * index / max(len(libraries), 1)),
-                    "progress_label": f"Scanned {index} of {len(libraries)} libraries",
-                    "library_count": len(libraries),
-                    "scanned_library_count": index,
-                    "video_count": total_videos,
-                    "video_size_bytes": total_size,
-                    "video_size_label": format_size(total_size),
-                    "libraries": results,
-                }
-            )
+            ],
+            key=str.lower,
+        )
+        scanned_dirs += 1
+        for filename in files:
+            full_path = os.path.join(base, filename)
+            if os.path.islink(full_path) or not os.path.isfile(full_path):
+                continue
+            _count_file(root_stats, full_path)
+            child_name = _direct_child_name(root_path, full_path)
+            child_stats = folders_by_name.get(child_name)
+            if child_stats:
+                _count_file(child_stats, full_path)
+            scanned_files += 1
+        if scanned_dirs % 50 == 0:
+            with dashboard_lock:
+                scan.update(
+                    {
+                        "progress_percent": 25,
+                        "progress_label": f"Scanned {scanned_dirs} folders and {scanned_files} files",
+                        "library_count": len(folders) + 1,
+                        "folder_count": len(folders),
+                        "root": _format_library_stats(dict(root_stats)),
+                        "video_count": root_stats["video_count"],
+                        "video_size_bytes": root_stats["video_size_bytes"],
+                        "video_size_label": format_size(root_stats["video_size_bytes"]),
+                    }
+                )
+
+    root_stats = _format_library_stats(root_stats)
+    folders = [_format_library_stats(item) for item in folders]
     return {
         "status": "cancelled" if scan.get("cancel_requested") else "success",
         "finished_at": utc_iso(),
-        "library_count": len(libraries),
-        "video_count": total_videos,
-        "video_size_bytes": total_size,
-        "video_size_label": format_size(total_size),
-        "libraries": results,
+        "library_count": len(folders) + 1,
+        "folder_count": len(folders),
+        "video_count": root_stats["video_count"],
+        "video_size_bytes": root_stats["video_size_bytes"],
+        "video_size_label": root_stats["video_size_label"],
+        "root": root_stats,
+        "folders": folders,
     }
 
 
@@ -431,7 +531,7 @@ def _run_library_scan(scan_id):
             scan["progress_label"] = "Library inventory complete" if result["status"] == "success" else "Library inventory cancelled"
             scan["status"] = result["status"]
         if result["status"] == "success":
-            _write_json(LIBRARY_INVENTORY_PATH, {"schema_version": 1, **result})
+            _write_json(LIBRARY_INVENTORY_PATH, {"schema_version": 2, **result})
     except Exception as exc:
         with dashboard_lock:
             scan.update(
@@ -447,8 +547,8 @@ def _run_library_scan(scan_id):
 
 def _public_library_scan(scan):
     if not scan:
-        cached = _read_json(LIBRARY_INVENTORY_PATH, {})
-        if cached:
+        cached = _inventory_from_data(_read_json(LIBRARY_INVENTORY_PATH, {}))
+        if cached.get("finished_at"):
             return {
                 "id": "",
                 "status": "cached",
@@ -459,12 +559,15 @@ def _public_library_scan(scan):
                 "finished_at": cached.get("finished_at"),
                 "error": "",
                 "library_count": cached.get("library_count", 0),
+                "folder_count": cached.get("folder_count", 0),
                 "scanned_library_count": cached.get("library_count", 0),
                 "video_count": cached.get("video_count", 0),
                 "video_size_bytes": cached.get("video_size_bytes", 0),
                 "video_size_label": cached.get("video_size_label", "0 B"),
-                "libraries": cached.get("libraries") or [],
+                "root": cached.get("root") or _empty_library_stats(_library_root_item()),
             }
+        direct_folders = _direct_library_items()
+        root = _empty_library_stats(_library_root_item())
         return {
             "id": "",
             "status": "not_scanned",
@@ -474,13 +577,15 @@ def _public_library_scan(scan):
             "started_at": None,
             "finished_at": None,
             "error": "",
-            "library_count": len(_library_paths()),
+            "library_count": len(direct_folders) + 1,
+            "folder_count": len(direct_folders),
             "scanned_library_count": 0,
             "video_count": 0,
             "video_size_bytes": 0,
             "video_size_label": "0 B",
-            "libraries": [],
+            "root": root,
         }
+    root = scan.get("root") or _empty_library_stats(_library_root_item(scan.get("path") or LIB_ROOT))
     return {
         "id": scan.get("id", ""),
         "status": scan.get("status", ""),
@@ -491,11 +596,12 @@ def _public_library_scan(scan):
         "finished_at": scan.get("finished_at"),
         "error": scan.get("error", ""),
         "library_count": scan.get("library_count", 0),
+        "folder_count": scan.get("folder_count", 0),
         "scanned_library_count": scan.get("scanned_library_count", 0),
         "video_count": scan.get("video_count", 0),
         "video_size_bytes": scan.get("video_size_bytes", 0),
         "video_size_label": scan.get("video_size_label", "0 B"),
-        "libraries": list(scan.get("libraries") or []),
+        "root": root,
     }
 
 
@@ -520,7 +626,8 @@ def start_library_scan(path=None, synchronous=False):
             "finished_at": None,
             "error": "",
             "cancel_requested": False,
-            "libraries": [],
+            "root": _empty_library_stats(_library_root_item(real)),
+            "folders": [],
         }
         scan = library_scan
     if synchronous:
@@ -539,6 +646,72 @@ def library_scan_status():
     with dashboard_lock:
         scan = dict(library_scan) if library_scan else None
     return {"scan": _public_library_scan(scan)}
+
+
+def _current_inventory():
+    with dashboard_lock:
+        scan = dict(library_scan) if library_scan else None
+    if scan:
+        return _inventory_from_data(scan, scan.get("path") or LIB_ROOT), _public_library_scan(scan)
+    cached = _read_json(LIBRARY_INVENTORY_PATH, {})
+    inventory = _inventory_from_data(cached)
+    return inventory, _public_library_scan(None)
+
+
+def _parse_folder_limit(value):
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 25
+    return limit if limit in LIBRARY_FOLDER_LIMITS else 25
+
+
+def _parse_offset(value):
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def library_folders_payload(offset=0, limit=25, q="", sort="name", direction="asc"):
+    inventory, scan = _current_inventory()
+    limit = _parse_folder_limit(limit)
+    offset = _parse_offset(offset)
+    query = str(q or "").strip().lower()
+    sort_key = sort if sort in LIBRARY_FOLDER_SORT_FIELDS else "name"
+    direction = "desc" if str(direction or "").lower() == "desc" else "asc"
+    folders = list(inventory.get("folders") or [])
+    if query:
+        folders = [
+            item for item in folders
+            if query in str(item.get("name", "")).lower()
+            or query in str(item.get("path", "")).lower()
+        ]
+    folders.sort(key=lambda item: str(item.get("name", "")).lower())
+    if sort_key == "name":
+        folders.sort(key=lambda item: str(item.get("name", "")).lower(), reverse=direction == "desc")
+    else:
+        folders.sort(key=lambda item: int(item.get(sort_key, 0) or 0), reverse=direction == "desc")
+    total = len(folders)
+    page = folders[offset:offset + limit]
+    count = len(page)
+    return {
+        "scan": scan,
+        "root": inventory.get("root") or scan.get("root"),
+        "folders": page,
+        "total": total,
+        "count": count,
+        "offset": offset,
+        "limit": limit,
+        "q": q or "",
+        "sort": sort_key,
+        "direction": direction,
+        "has_previous": offset > 0,
+        "previous_offset": max(0, offset - limit),
+        "has_next": offset + count < total,
+        "next_offset": offset + limit if offset + count < total else offset,
+        "large_result": total > limit,
+    }
 
 
 def status_payload():

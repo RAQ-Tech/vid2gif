@@ -10,7 +10,11 @@
       <div class="text-muted small">Review focused maintenance tools without one long cleanup page.</div>
     </div>
     <div class="workspace-actions">
-      <a class="btn btn-primary btn-sm" href="#posters" data-maint-tab-shortcut="posters">
+      <a class="btn btn-primary btn-sm" href="#overview" data-maint-tab-shortcut="overview">
+        <i class="bi bi-speedometer2" aria-hidden="true"></i>
+        <span>Overview</span>
+      </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#posters" data-maint-tab-shortcut="posters">
         <i class="bi bi-image" aria-hidden="true"></i>
         <span>Posters</span>
       </a>
@@ -31,7 +35,13 @@
 
   <ul class="nav nav-tabs workspace-tabs" role="tablist" aria-label="Library maintenance sections">
     <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="tab-posters" data-bs-toggle="tab" data-bs-target="#pane-posters" type="button" role="tab" aria-controls="pane-posters" aria-selected="true" data-maint-tab-hash="posters">
+      <button class="nav-link active" id="tab-overview" data-bs-toggle="tab" data-bs-target="#pane-overview" type="button" role="tab" aria-controls="pane-overview" aria-selected="true" data-maint-tab-hash="overview">
+        <i class="bi bi-speedometer2" aria-hidden="true"></i>
+        <span>Overview</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-posters" data-bs-toggle="tab" data-bs-target="#pane-posters" type="button" role="tab" aria-controls="pane-posters" aria-selected="false" data-maint-tab-hash="posters">
         <i class="bi bi-image" aria-hidden="true"></i>
         <span>Landscape Posters</span>
       </button>
@@ -57,7 +67,126 @@
   </ul>
 
   <div class="tab-content workspace-content">
-    <section class="tab-pane fade show active" id="pane-posters" role="tabpanel" aria-labelledby="tab-posters" tabindex="0">
+    <section class="tab-pane fade show active" id="pane-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Library overview scan status">
+        <div class="status-tile">
+          <div class="metric-label">Inventory</div>
+          <div id="overviewScanState" class="metric-value">Not scanned</div>
+        </div>
+        <div class="status-tile status-tile-wide">
+          <div class="d-flex justify-content-between gap-3">
+            <div>
+              <div class="metric-label">Progress</div>
+              <div id="overviewProgressLabel" class="metric-value">Run a library stat refresh</div>
+            </div>
+            <span id="overviewProgressPercent" class="small text-muted">0%</span>
+          </div>
+          <div class="progress progress-thin mt-2" role="progressbar" aria-label="Library overview scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="overviewProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Videos</div>
+          <div id="overviewVideoCount" class="metric-value">0</div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Folders</div>
+          <div id="overviewFolderCount" class="metric-value">0</div>
+        </div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Library Overview</h2>
+            <div class="text-muted small">Overall library inventory plus searchable direct-folder stats.</div>
+          </div>
+          <button id="overviewRefreshButton" class="btn btn-outline-primary btn-sm" type="button">
+            <i class="bi bi-search" aria-hidden="true"></i>
+            <span>Refresh Library Stats</span>
+          </button>
+        </div>
+
+        <div class="metric-band">
+          <div>
+            <div class="metric-label">Root</div>
+            <div id="overviewRootName" class="metric-value">{{ lib_root }}</div>
+          </div>
+          <div class="metric-progress">
+            <div class="metric-row mt-0">
+              <span id="overviewRootSummary">0 videos, 0 B</span>
+              <span id="overviewLastScan">Last scan: never</span>
+            </div>
+            <div id="overviewRootPath" class="scan-estimate-detail mt-1">{{ lib_root }}</div>
+          </div>
+        </div>
+
+        <div id="overviewRootDetails" class="dashboard-libraries">
+          <div class="text-muted text-center py-4">Run a library stat refresh to populate this view.</div>
+        </div>
+
+        <div class="settings-panel mt-3">
+          <div class="panel-heading mb-0">
+            <div>
+              <h3 class="h6 mb-1">Direct Subfolders</h3>
+              <div class="text-muted small">Collapsed by default for large libraries.</div>
+            </div>
+            <button id="overviewToggleFoldersButton" class="btn btn-outline-secondary btn-sm collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#overviewFolderInventory" aria-expanded="false" aria-controls="overviewFolderInventory">
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+              <span>Show Subfolders</span>
+            </button>
+          </div>
+          <div id="overviewFolderInventory" class="collapse mt-3">
+            <div class="toolbar-row">
+              <label class="form-label mb-0 compact-control" for="overviewSearch">
+                Search
+                <input id="overviewSearch" class="form-control form-control-sm" placeholder="Folder name">
+              </label>
+              <label class="form-label mb-0 compact-control" for="overviewSort">
+                Sort
+                <select id="overviewSort" class="form-select form-select-sm">
+                  <option value="name" selected>Name</option>
+                  <option value="video_count">Videos</option>
+                  <option value="video_size_bytes">Size</option>
+                  <option value="subtitle_count">Subtitles</option>
+                  <option value="nfo_count">NFO</option>
+                  <option value="bif_count">BIF</option>
+                  <option value="poster_count">Posters</option>
+                  <option value="background_count">Backgrounds</option>
+                  <option value="actor_image_count">Actor Images</option>
+                  <option value="file_count">Files</option>
+                </select>
+              </label>
+              <label class="form-label mb-0 compact-control" for="overviewDirection">
+                Direction
+                <select id="overviewDirection" class="form-select form-select-sm">
+                  <option value="asc" selected>Ascending</option>
+                  <option value="desc">Descending</option>
+                </select>
+              </label>
+              <label class="form-label mb-0 compact-control" for="overviewPageLimit">
+                Show
+                <select id="overviewPageLimit" class="form-select form-select-sm">
+                  <option value="10">10</option>
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <button id="overviewLoadFoldersButton" class="btn btn-outline-secondary btn-sm" type="button">
+                <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                <span>Refresh List</span>
+              </button>
+            </div>
+            <div id="overviewFolders" class="maintenance-groups mt-3">
+              <div class="text-muted text-center py-4">Open this section to load subfolder stats.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="tab-pane fade" id="pane-posters" role="tabpanel" aria-labelledby="tab-posters" tabindex="0">
       <div class="workspace-panel maintenance-panel">
         <div class="panel-heading">
           <div>

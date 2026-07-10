@@ -344,6 +344,19 @@ def api_dashboard_library_scan_status():
     return jsonify(dashboard.library_scan_status())
 
 
+@app.route("/api/dashboard/library-scan/folders")
+def api_dashboard_library_scan_folders():
+    return jsonify(
+        dashboard.library_folders_payload(
+            offset=request.args.get("offset"),
+            limit=request.args.get("limit"),
+            q=request.args.get("q"),
+            sort=request.args.get("sort") or "name",
+            direction=request.args.get("direction") or "asc",
+        )
+    )
+
+
 @app.route("/queue")
 def queue_page():
     limit = _queue_limit() if "limit" in request.args else None

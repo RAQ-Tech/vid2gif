@@ -1,6 +1,12 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
-  const maintenanceTabHashes = ['posters', 'duplicates', 'video-previews', 'actor-images'];
+  const maintenanceTabHashes = ['overview', 'posters', 'duplicates', 'video-previews', 'actor-images'];
+  const overviewExpandedFolders = new Set();
+  let overviewFolderPage = null;
+  let overviewPageOffset = 0;
+  let overviewPageLimit = 25;
+  let overviewSearchTimer = null;
+  let overviewPollTimer = null;
   const groupState = new Map();
   const groupSummaries = new Map();
   let currentScan = null;
@@ -68,6 +74,247 @@
       value /= 1024;
     }
     return '0 B';
+  }
+
+  function clampPercent(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    return Math.max(0, Math.min(100, Math.round(number)));
+  }
+
+  function coveragePercent(count, videoCount) {
+    const videos = Number(videoCount || 0);
+    if (!videos) return 0;
+    return clampPercent((Number(count || 0) / videos) * 100);
+  }
+
+  function overviewStateLabel(scan) {
+    if (scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || '')) return 'Running';
+    if (scan?.status === 'cached') return 'Cached';
+    if (scan?.status === 'success') return 'Complete';
+    if (scan?.status === 'failed') return 'Failed';
+    return 'Not scanned';
+  }
+
+  function setOverviewProgress(scan) {
+    const pct = clampPercent(scan?.progress_percent || 0);
+    const state = byId('overviewScanState');
+    const label = byId('overviewProgressLabel');
+    const percent = byId('overviewProgressPercent');
+    const bar = byId('overviewProgressBar');
+    const videos = byId('overviewVideoCount');
+    const folders = byId('overviewFolderCount');
+    const refresh = byId('overviewRefreshButton');
+    if (state) state.textContent = overviewStateLabel(scan);
+    if (label) label.textContent = scan?.progress_label || 'Run a library stat refresh';
+    if (percent) percent.textContent = `${pct}%`;
+    if (bar) {
+      bar.style.width = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+    }
+    if (videos) videos.textContent = String(scan?.video_count || 0);
+    if (folders) folders.textContent = String(scan?.folder_count || 0);
+    if (refresh) refresh.disabled = Boolean(scan?.active);
+  }
+
+  function overviewLibraryBar(label, value) {
+    const pct = clampPercent(value);
+    return `
+      <div class="dashboard-library-bar">
+        <span>${escapeHtml(label)}</span>
+        <div class="progress progress-thin" role="progressbar" aria-label="${escapeHtml(label)} coverage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
+          <div class="progress-bar" style="width: ${pct}%"></div>
+        </div>
+        <strong>${pct}%</strong>
+      </div>
+    `;
+  }
+
+  function renderOverviewRoot(scan) {
+    const root = scan?.root || {};
+    const videoCount = root.video_count || scan?.video_count || 0;
+    const name = root.name || 'Library';
+    if (byId('overviewRootName')) byId('overviewRootName').textContent = name;
+    if (byId('overviewRootSummary')) byId('overviewRootSummary').textContent = `${videoCount} videos, ${root.video_size_label || scan?.video_size_label || '0 B'}`;
+    if (byId('overviewLastScan')) byId('overviewLastScan').textContent = scan?.finished_at ? `Last scan: ${scan.finished_at}` : 'Last scan: never';
+    if (byId('overviewRootPath')) byId('overviewRootPath').textContent = root.path || config.libRoot || '/library';
+    const container = byId('overviewRootDetails');
+    if (!container) return;
+    if (!root.path && !scan?.finished_at && !scan?.active) {
+      container.innerHTML = '<div class="text-muted text-center py-4">Run a library stat refresh to populate this view.</div>';
+      return;
+    }
+    container.innerHTML = `
+      <article class="dashboard-library-row">
+        <div class="dashboard-library-main">
+          <div>
+            <h3>${escapeHtml(name)}</h3>
+            <code>${escapeHtml(root.path || config.libRoot || '/library')}</code>
+          </div>
+          <strong>${escapeHtml(videoCount)} videos</strong>
+        </div>
+        <div class="dashboard-library-metrics">
+          <span>${escapeHtml(root.video_size_label || scan?.video_size_label || '0 B')}</span>
+          <span>${escapeHtml(scan?.folder_count || 0)} direct folders</span>
+          <span>${escapeHtml(root.file_count || 0)} files</span>
+          <span>${escapeHtml(root.nfo_count || 0)} NFO</span>
+          <span>${escapeHtml(root.bif_count || 0)} BIF</span>
+          <span>${escapeHtml(root.poster_count || 0)} posters</span>
+          <span>${escapeHtml(root.background_count || 0)} backgrounds</span>
+        </div>
+        <div class="dashboard-library-bars">
+          ${overviewLibraryBar('Subtitles', coveragePercent(root.subtitle_count, videoCount))}
+          ${overviewLibraryBar('Posters', coveragePercent(root.poster_count, videoCount))}
+          ${overviewLibraryBar('Previews', coveragePercent(root.bif_count, videoCount))}
+          ${overviewLibraryBar('Actor images', coveragePercent(root.actor_image_count, videoCount))}
+        </div>
+      </article>
+    `;
+  }
+
+  function overviewRangeText(page) {
+    const total = Number(page?.total || 0);
+    if (!total) return '0 of 0';
+    const start = Number(page.offset || 0) + 1;
+    const end = Math.min(total, Number(page.offset || 0) + Number(page.count || 0));
+    return `${start}-${end} of ${total}`;
+  }
+
+  function renderOverviewFolders(page) {
+    overviewFolderPage = page || overviewFolderPage;
+    const container = byId('overviewFolders');
+    if (!container) return;
+    const folders = overviewFolderPage?.folders || [];
+    const pager = `
+      <div class="maintenance-pager">
+        <div class="text-muted small">${escapeHtml(overviewRangeText(overviewFolderPage))}</div>
+        <div class="toolbar-row mb-0">
+          <button class="btn btn-outline-secondary btn-sm" type="button" data-overview-page="prev"${overviewFolderPage?.has_previous ? '' : ' disabled'}>
+            <i class="bi bi-chevron-left" aria-hidden="true"></i>
+            <span>Previous</span>
+          </button>
+          <button class="btn btn-outline-secondary btn-sm" type="button" data-overview-page="next"${overviewFolderPage?.has_next ? '' : ' disabled'}>
+            <span>Next</span>
+            <i class="bi bi-chevron-right" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+    `;
+    if (!folders.length) {
+      container.innerHTML = `${pager}<div class="text-muted text-center py-4">No direct subfolders match this view.</div>`;
+      return;
+    }
+    const rows = folders.map(item => {
+      const rowId = item.path || item.name || '';
+      const expanded = overviewExpandedFolders.has(rowId);
+      const videoCount = item.video_count || 0;
+      const detail = expanded ? `
+        <div class="dashboard-library-bars mt-3">
+          ${overviewLibraryBar('Subtitles', coveragePercent(item.subtitle_count, videoCount))}
+          ${overviewLibraryBar('Posters', coveragePercent(item.poster_count, videoCount))}
+          ${overviewLibraryBar('Previews', coveragePercent(item.bif_count, videoCount))}
+          ${overviewLibraryBar('Actor images', coveragePercent(item.actor_image_count, videoCount))}
+        </div>
+        <div class="dashboard-library-metrics mt-3">
+          <span>${escapeHtml(item.file_count || 0)} files</span>
+          <span>${escapeHtml(item.subtitle_count || 0)} subtitles</span>
+          <span>${escapeHtml(item.nfo_count || 0)} NFO</span>
+          <span>${escapeHtml(item.bif_count || 0)} BIF</span>
+          <span>${escapeHtml(item.poster_count || 0)} posters</span>
+          <span>${escapeHtml(item.background_count || 0)} backgrounds</span>
+          <span>${escapeHtml(item.actor_image_count || 0)} actor images</span>
+          <span>${escapeHtml(item.other_sidecar_count || 0)} other sidecars</span>
+        </div>
+      ` : '';
+      return `
+        <article class="dashboard-library-row">
+          <div class="dashboard-library-main">
+            <div>
+              <h3>${escapeHtml(item.name || 'Folder')}</h3>
+              <code>${escapeHtml(item.path || '')}</code>
+            </div>
+            <div class="toolbar-row mb-0">
+              <strong>${escapeHtml(videoCount)} videos</strong>
+              <button class="btn btn-outline-secondary btn-sm" type="button" data-overview-folder-toggle="${escapeHtml(rowId)}" aria-expanded="${expanded ? 'true' : 'false'}">
+                <i class="bi ${expanded ? 'bi-chevron-up' : 'bi-chevron-down'}" aria-hidden="true"></i>
+                <span>${expanded ? 'Hide Details' : 'Show Details'}</span>
+              </button>
+            </div>
+          </div>
+          <div class="dashboard-library-metrics">
+            <span>${escapeHtml(item.video_size_label || '0 B')}</span>
+            <span>${escapeHtml(item.file_count || 0)} files</span>
+            <span>${escapeHtml(item.bif_count || 0)} BIF</span>
+            <span>${escapeHtml(item.poster_count || 0)} posters</span>
+          </div>
+          ${detail}
+        </article>
+      `;
+    }).join('');
+    container.innerHTML = `${pager}<div class="dashboard-libraries">${rows}</div>${pager}`;
+  }
+
+  async function refreshOverviewStatus() {
+    try {
+      const res = await fetch('/api/dashboard/library-scan/status');
+      const data = await readJsonResponse(res);
+      setOverviewProgress(data.scan || {});
+      renderOverviewRoot(data.scan || {});
+      if (data.scan?.active) {
+        clearTimeout(overviewPollTimer);
+        overviewPollTimer = setTimeout(refreshOverviewStatus, 1200);
+      } else if (overviewFolderPage && byId('overviewFolderInventory')?.classList.contains('show')) {
+        loadOverviewFolders(overviewPageOffset);
+      }
+    } catch (_e) {
+      setOverviewProgress({status: 'failed', progress_label: 'Library inventory status could not load'});
+    }
+  }
+
+  async function loadOverviewFolders(offset) {
+    overviewPageOffset = Math.max(0, Number(offset || 0));
+    const params = new URLSearchParams({
+      offset: String(overviewPageOffset),
+      limit: String(overviewPageLimit),
+      q: byId('overviewSearch')?.value || '',
+      sort: byId('overviewSort')?.value || 'name',
+      direction: byId('overviewDirection')?.value || 'asc'
+    });
+    try {
+      const res = await fetch(`/api/dashboard/library-scan/folders?${params.toString()}`);
+      const data = await readJsonResponse(res);
+      setOverviewProgress(data.scan || {});
+      renderOverviewRoot(data.scan || {});
+      renderOverviewFolders(data);
+    } catch (_e) {
+      const container = byId('overviewFolders');
+      if (container) container.innerHTML = '<div class="text-danger text-center py-4">Folder inventory could not load.</div>';
+    }
+  }
+
+  async function startOverviewScan() {
+    const button = byId('overviewRefreshButton');
+    if (button) button.disabled = true;
+    try {
+      const res = await fetch('/api/dashboard/library-scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: config.libRoot || '/library'})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setOverviewProgress({status: 'failed', progress_label: data.error || 'Library stat refresh could not start'});
+        return;
+      }
+      setOverviewProgress(data.scan || {});
+      renderOverviewRoot(data.scan || {});
+      clearTimeout(overviewPollTimer);
+      overviewPollTimer = setTimeout(refreshOverviewStatus, 600);
+    } catch (_e) {
+      setOverviewProgress({status: 'failed', progress_label: 'Library stat refresh could not start'});
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function setMessage(title, detail) {
@@ -2225,11 +2472,11 @@
   }
 
   function activateMaintenanceTab(hash, updateUrl) {
-    const safeHash = maintenanceTabHashes.includes(hash) ? hash : 'posters';
+    const safeHash = maintenanceTabHashes.includes(hash) ? hash : 'overview';
     const button = document.querySelector(`[data-maint-tab-hash="${safeHash}"]`);
     if (!button || !window.bootstrap) return;
     window.bootstrap.Tab.getOrCreateInstance(button).show();
-    localStorage.setItem('maintenance_active_tab', safeHash);
+    localStorage.setItem('maintenance_active_tab_v2', safeHash);
     if (updateUrl) {
       history.replaceState(null, '', `#${safeHash}`);
     }
@@ -2237,12 +2484,12 @@
 
   function initMaintenanceTabs() {
     const requested = location.hash.replace('#', '');
-    const saved = localStorage.getItem('maintenance_active_tab');
-    activateMaintenanceTab(maintenanceTabHashes.includes(requested) ? requested : (saved || 'posters'), false);
+    const saved = localStorage.getItem('maintenance_active_tab_v2');
+    activateMaintenanceTab(maintenanceTabHashes.includes(requested) ? requested : (saved || 'overview'), false);
     document.querySelectorAll('[data-maint-tab-hash]').forEach(button => {
       button.addEventListener('shown.bs.tab', event => {
-        const hash = event.target.getAttribute('data-maint-tab-hash') || 'posters';
-        localStorage.setItem('maintenance_active_tab', hash);
+        const hash = event.target.getAttribute('data-maint-tab-hash') || 'overview';
+        localStorage.setItem('maintenance_active_tab_v2', hash);
         history.replaceState(null, '', `#${hash}`);
       });
     });
@@ -2256,6 +2503,49 @@
   }
 
   function initEvents() {
+    byId('overviewRefreshButton')?.addEventListener('click', startOverviewScan);
+    byId('overviewLoadFoldersButton')?.addEventListener('click', () => loadOverviewFolders(0));
+    byId('overviewPageLimit')?.addEventListener('change', event => {
+      overviewPageLimit = Number(event.target.value || 25);
+      loadOverviewFolders(0);
+    });
+    byId('overviewSort')?.addEventListener('change', () => loadOverviewFolders(0));
+    byId('overviewDirection')?.addEventListener('change', () => loadOverviewFolders(0));
+    byId('overviewSearch')?.addEventListener('input', () => {
+      clearTimeout(overviewSearchTimer);
+      overviewSearchTimer = setTimeout(() => loadOverviewFolders(0), 250);
+    });
+    byId('overviewFolderInventory')?.addEventListener('shown.bs.collapse', () => {
+      const button = byId('overviewToggleFoldersButton');
+      if (button) button.querySelector('span').textContent = 'Hide Subfolders';
+      if (!overviewFolderPage) loadOverviewFolders(0);
+    });
+    byId('overviewFolderInventory')?.addEventListener('hidden.bs.collapse', () => {
+      const button = byId('overviewToggleFoldersButton');
+      if (button) button.querySelector('span').textContent = 'Show Subfolders';
+    });
+    byId('overviewFolders')?.addEventListener('click', event => {
+      const page = event.target.closest('[data-overview-page]');
+      const folder = event.target.closest('[data-overview-folder-toggle]');
+      if (page) {
+        const direction = page.getAttribute('data-overview-page');
+        if (direction === 'next' && overviewFolderPage?.has_next) {
+          loadOverviewFolders(overviewFolderPage.next_offset);
+        } else if (direction === 'prev' && overviewFolderPage?.has_previous) {
+          loadOverviewFolders(overviewFolderPage.previous_offset);
+        }
+        return;
+      }
+      if (folder) {
+        const folderId = folder.getAttribute('data-overview-folder-toggle') || '';
+        if (overviewExpandedFolders.has(folderId)) {
+          overviewExpandedFolders.delete(folderId);
+        } else {
+          overviewExpandedFolders.add(folderId);
+        }
+        renderOverviewFolders(overviewFolderPage);
+      }
+    });
     byId('maintenanceBrowseButton')?.addEventListener('click', () => {
       openBrowser(byId('maintenancePath')?.value.trim() || config.libRoot || '/library');
     });
@@ -2498,6 +2788,7 @@
     initMaintenanceTabs();
     initEvents();
     setProgress(null);
+    setOverviewProgress(null);
     setPreviewProgress(null);
     setQualityProgress(null);
     setActorProgress(null);
@@ -2505,9 +2796,14 @@
     openPreviewBrowser(config.libRoot || '/library');
     openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
+    refreshOverviewStatus();
     refreshPreviewTasks();
     refreshActorStatus();
     refreshPosterStatus();
     posterPollTimer = setInterval(refreshPosterStatus, 10000);
+    window.addEventListener('beforeunload', () => {
+      clearTimeout(overviewPollTimer);
+      clearTimeout(overviewSearchTimer);
+    });
   });
 }());

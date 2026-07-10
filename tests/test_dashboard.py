@@ -47,6 +47,8 @@ def test_dashboard_page_and_status_api_render(monkeypatch, tmp_path):
         "actor_images",
     }
     assert "groups" not in str(payload["duplicates"].get("scan", {}))
+    assert "folders" not in payload["library"]
+    assert "libraries" not in payload["library"]
 
 
 def test_library_inventory_scan_counts_sidecars_and_skips_quarantine(monkeypatch, tmp_path):
@@ -63,11 +65,14 @@ def test_library_inventory_scan_counts_sidecars_and_skips_quarantine(monkeypatch
     _reset_dashboard(monkeypatch, tmp_path, lib)
 
     scan, err = dashboard.start_library_scan(str(lib), synchronous=True)
+    folder_page = dashboard.library_folders_payload()
 
     assert err is None
     assert scan["status"] == "success"
-    root_stats = scan["libraries"][0]
-    child_stats = next(item for item in scan["libraries"] if item["name"] == "XXX")
+    assert "folders" not in scan
+    assert "libraries" not in scan
+    root_stats = scan["root"]
+    child_stats = next(item for item in folder_page["folders"] if item["name"] == "XXX")
     assert root_stats["video_count"] == 1
     assert root_stats["subtitle_count"] == 1
     assert root_stats["nfo_count"] == 1
@@ -79,7 +84,9 @@ def test_library_inventory_scan_counts_sidecars_and_skips_quarantine(monkeypatch
 
     cached = dashboard.library_scan_status()["scan"]
     assert cached["video_count"] == 1
-    assert cached["libraries"][0]["video_size_label"] != "0 B"
+    assert cached["root"]["video_size_label"] != "0 B"
+    assert "folders" not in cached
+    assert folder_page["total"] == 1
 
 
 def test_dashboard_library_scan_route_rejects_prefix_sibling(monkeypatch, tmp_path):
@@ -99,6 +106,70 @@ def test_dashboard_library_scan_route_rejects_prefix_sibling(monkeypatch, tmp_pa
     assert res.get_json()["error"] == "Path not found"
 
 
+def test_library_folder_payload_pages_searches_sorts_and_caps(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    for index in range(120):
+        folder = lib / f"Folder {index:03d}"
+        _write(folder / f"Movie {index:03d}.mkv", b"x" * (index + 1))
+    _reset_dashboard(monkeypatch, tmp_path, lib)
+    scan, err = dashboard.start_library_scan(str(lib), synchronous=True)
+
+    first = dashboard.library_folders_payload(limit=999, sort="video_size_bytes", direction="desc")
+    searched = dashboard.library_folders_payload(q="Folder 119")
+    invalid = dashboard.library_folders_payload(limit="bad", sort="bad", direction="sideways")
+    route_res = routes.app.test_client().get(
+        "/api/dashboard/library-scan/folders",
+        query_string={"offset": 0, "limit": 100, "sort": "video_size_bytes", "direction": "desc"},
+    )
+
+    assert err is None
+    assert scan["folder_count"] == 120
+    assert first["limit"] == 25
+    assert first["total"] == 120
+    assert first["count"] == 25
+    assert first["folders"][0]["name"] == "Folder 119"
+    assert first["large_result"] is True
+    assert searched["total"] == 1
+    assert searched["folders"][0]["name"] == "Folder 119"
+    assert invalid["limit"] == 25
+    assert invalid["sort"] == "name"
+    assert invalid["direction"] == "asc"
+    assert route_res.status_code == 200
+    assert route_res.is_json
+    route_payload = route_res.get_json()
+    assert route_payload["limit"] == 100
+    assert route_payload["folders"][0]["name"] == "Folder 119"
+
+
+def test_old_library_inventory_cache_is_read_without_full_status_payload(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    _reset_dashboard(monkeypatch, tmp_path, lib)
+    old_cache = {
+        "schema_version": 1,
+        "status": "success",
+        "finished_at": "2026-07-10T00:00:00Z",
+        "library_count": 2,
+        "video_count": 3,
+        "video_size_bytes": 300,
+        "video_size_label": "300 B",
+        "libraries": [
+            {"name": "library", "path": str(lib), "kind": "root", "video_count": 3, "video_size_bytes": 300, "video_size_label": "300 B"},
+            {"name": "Movies", "path": str(lib / "Movies"), "kind": "library", "video_count": 2, "video_size_bytes": 200, "video_size_label": "200 B"},
+        ],
+    }
+    dashboard._write_json(dashboard.LIBRARY_INVENTORY_PATH, old_cache)
+
+    status = dashboard.library_scan_status()["scan"]
+    folders = dashboard.library_folders_payload()
+
+    assert status["status"] == "cached"
+    assert status["video_count"] == 3
+    assert "libraries" not in status
+    assert folders["total"] == 1
+    assert folders["folders"][0]["name"] == "Movies"
+
+
 def test_dashboard_static_assets_escape_dynamic_output():
     template = (ROOT / "app" / "templates" / "dashboard.html").read_text(encoding="utf-8")
     script = (ROOT / "app" / "static" / "dashboard.js").read_text(encoding="utf-8")
@@ -109,7 +180,8 @@ def test_dashboard_static_assets_escape_dynamic_output():
     assert "fetch('/api/dashboard/status')" in script
     assert "fetch('/api/dashboard/library-scan'" in script
     assert "fetch('/api/dashboard/library-scan/status')" in script
+    assert "/api/dashboard/library-scan/folders" not in script
     assert "readJsonResponse" in script
     assert "escapeHtml(item.title)" in script
-    assert "escapeHtml(item.path || '')" in script
+    assert "escapeHtml(root.path || scan.path || '')" in script
     assert "escapeHtml(item.area || 'Maintenance')" in script

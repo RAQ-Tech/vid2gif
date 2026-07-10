@@ -195,43 +195,42 @@
 
     const container = byId('dashboardLibraries');
     if (!container) return;
-    const libraries = Array.isArray(scan.libraries) ? scan.libraries : [];
-    if (!libraries.length) {
+    const root = scan.root || {};
+    if (!root.path && !scan.finished_at && !scan.active) {
       container.innerHTML = '<div class="text-muted text-center py-4">Run a library stat refresh to populate this view.</div>';
       return;
     }
-
-    container.innerHTML = libraries.map((item) => {
-      const videoCount = item.video_count || 0;
-      const subtitlePct = coveragePercent(item.subtitle_count, videoCount);
-      const posterPct = coveragePercent(item.poster_count, videoCount);
-      const previewPct = coveragePercent(item.bif_count, videoCount);
-      const actorPct = coveragePercent(item.actor_image_count, videoCount);
-      return `
-        <article class="dashboard-library-row">
-          <div class="dashboard-library-main">
-            <div>
-              <h3>${escapeHtml(item.name || 'Library')}</h3>
-              <code>${escapeHtml(item.path || '')}</code>
-            </div>
-            <strong>${escapeHtml(videoCount)} videos</strong>
+    const videoCount = root.video_count || scan.video_count || 0;
+    const subtitlePct = coveragePercent(root.subtitle_count, videoCount);
+    const posterPct = coveragePercent(root.poster_count, videoCount);
+    const previewPct = coveragePercent(root.bif_count, videoCount);
+    const actorPct = coveragePercent(root.actor_image_count, videoCount);
+    container.innerHTML = `
+      <article class="dashboard-library-row">
+        <div class="dashboard-library-main">
+          <div>
+            <h3>${escapeHtml(root.name || 'Library')}</h3>
+            <code>${escapeHtml(root.path || scan.path || '')}</code>
           </div>
-          <div class="dashboard-library-metrics">
-            <span>${escapeHtml(item.video_size_label || '0 B')}</span>
-            <span>${escapeHtml(item.nfo_count || 0)} NFO</span>
-            <span>${escapeHtml(item.bif_count || 0)} BIF</span>
-            <span>${escapeHtml(item.poster_count || 0)} posters</span>
-            <span>${escapeHtml(item.background_count || 0)} backgrounds</span>
-          </div>
-          <div class="dashboard-library-bars">
-            ${libraryBar('Subtitles', subtitlePct)}
-            ${libraryBar('Posters', posterPct)}
-            ${libraryBar('Previews', previewPct)}
-            ${libraryBar('Actor images', actorPct)}
-          </div>
-        </article>
-      `;
-    }).join('');
+          <strong>${escapeHtml(videoCount)} videos</strong>
+        </div>
+        <div class="dashboard-library-metrics">
+          <span>${escapeHtml(root.video_size_label || scan.video_size_label || '0 B')}</span>
+          <span>${escapeHtml(scan.folder_count || 0)} direct folders</span>
+          <span>${escapeHtml(root.nfo_count || 0)} NFO</span>
+          <span>${escapeHtml(root.bif_count || 0)} BIF</span>
+          <span>${escapeHtml(root.poster_count || 0)} posters</span>
+          <span>${escapeHtml(root.background_count || 0)} backgrounds</span>
+        </div>
+        <div class="dashboard-library-bars">
+          ${libraryBar('Subtitles', subtitlePct)}
+          ${libraryBar('Posters', posterPct)}
+          ${libraryBar('Previews', previewPct)}
+          ${libraryBar('Actor images', actorPct)}
+        </div>
+        <a class="btn btn-outline-secondary btn-sm dashboard-workstream-link" href="/maintenance#overview">Open folder overview</a>
+      </article>
+    `;
   }
 
   function libraryBar(label, value) {
