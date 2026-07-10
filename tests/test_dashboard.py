@@ -44,6 +44,7 @@ def test_dashboard_page_and_status_api_render(monkeypatch, tmp_path):
         "duplicates",
         "posters",
         "video_previews",
+        "subtitles",
         "actor_images",
     }
     assert "groups" not in str(payload["duplicates"].get("scan", {}))

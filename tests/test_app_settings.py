@@ -12,6 +12,9 @@ def test_app_settings_defaults_to_720_when_missing(tmp_path):
     assert settings["duplicate_grouping_mode"] == "balanced"
     assert settings["duplicate_keeper_rule"] == "quality"
     assert settings["duplicate_accessory_policy"] == "rename_unmatched"
+    assert settings["subtitle_expected_languages"] == ["eng", "en", "en-us", "en-gb"]
+    assert settings["subtitle_flag_missing"] is True
+    assert settings["subtitle_flag_unknown_language"] is True
 
 
 def test_app_settings_persists_custom_preview_height(tmp_path):
@@ -47,6 +50,27 @@ def test_app_settings_persists_duplicate_cleanup_settings(tmp_path):
     assert settings["duplicate_excluded_folders"] == ["trailers", "samples"]
 
 
+def test_app_settings_persists_subtitle_health_settings(tmp_path):
+    path = tmp_path / "app_settings.json"
+
+    assert app_settings.save_settings(
+        {
+            "test_lab_preview_height": 720,
+            "subtitle_expected_languages": "eng, spa, es",
+            "subtitle_flag_missing": False,
+            "subtitle_flag_unknown_language": False,
+            "subtitle_subgen_detection": True,
+        },
+        str(path),
+    )
+
+    settings = app_settings.load_settings(str(path))
+    assert settings["subtitle_expected_languages"] == ["eng", "spa", "es"]
+    assert settings["subtitle_flag_missing"] is False
+    assert settings["subtitle_flag_unknown_language"] is False
+    assert settings["subtitle_subgen_detection"] is True
+
+
 def test_app_settings_accepts_original_preview_mode(tmp_path):
     path = tmp_path / "app_settings.json"
 
@@ -74,6 +98,7 @@ def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
     assert res.status_code == 200
     assert "Test Lab preview height" in res.get_data(as_text=True)
     assert "Duplicate Cleanup" in res.get_data(as_text=True)
+    assert "Subtitle Health Check" in res.get_data(as_text=True)
 
     res = client.post(
         "/settings",
@@ -85,6 +110,9 @@ def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
             "duplicate_accessory_policy": "remove_all",
             "duplicate_move_root": "/library/_duplicates",
             "duplicate_excluded_folders": "trailers, samples",
+            "subtitle_expected_languages": "eng, spa",
+            "subtitle_flag_missing": "on",
+            "subtitle_subgen_detection": "on",
         },
     )
 
@@ -96,6 +124,10 @@ def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
     assert settings["duplicate_accessory_policy"] == "remove_all"
     assert settings["duplicate_move_root"] == "/library/_duplicates"
     assert settings["duplicate_excluded_folders"] == ["trailers", "samples"]
+    assert settings["subtitle_expected_languages"] == ["eng", "spa"]
+    assert settings["subtitle_flag_missing"] is True
+    assert settings["subtitle_flag_unknown_language"] is False
+    assert settings["subtitle_subgen_detection"] is True
 
 
 def test_settings_page_rejects_invalid_custom_value(monkeypatch, tmp_path):

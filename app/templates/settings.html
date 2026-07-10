@@ -96,6 +96,38 @@
         </div>
       </div>
 
+      <div class="settings-panel">
+        <div class="panel-subheading">
+          <i class="bi bi-badge-cc" aria-hidden="true"></i>
+          <span>Subtitle Health Check</span>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-8">
+            <label class="form-label" for="subtitle_expected_languages">Expected subtitle languages</label>
+            <input id="subtitle_expected_languages" name="subtitle_expected_languages" class="form-control" value="{{ subtitle_expected_languages_text }}" placeholder="eng, en, en-us, en-gb">
+            <div class="form-text">Comma-separated language codes. Subgen examples usually end in a code such as <code>eng</code> or <code>nno</code>.</div>
+          </div>
+          <div class="col-md-4">
+            <div class="form-check form-switch mt-md-4 pt-md-2">
+              <input id="subtitle_subgen_detection" name="subtitle_subgen_detection" class="form-check-input" type="checkbox" {% if settings.subtitle_subgen_detection %}checked{% endif %}>
+              <label class="form-check-label" for="subtitle_subgen_detection">Recognize Subgen-style names</label>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="form-check form-switch">
+              <input id="subtitle_flag_missing" name="subtitle_flag_missing" class="form-check-input" type="checkbox" {% if settings.subtitle_flag_missing %}checked{% endif %}>
+              <label class="form-check-label" for="subtitle_flag_missing">Flag videos missing SRT sidecars</label>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="form-check form-switch">
+              <input id="subtitle_flag_unknown_language" name="subtitle_flag_unknown_language" class="form-check-input" type="checkbox" {% if settings.subtitle_flag_unknown_language %}checked{% endif %}>
+              <label class="form-check-label" for="subtitle_flag_unknown_language">Flag subtitles with unknown language codes</label>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-panel settings-panel-actions">
         <button type="submit" class="btn btn-primary ms-md-auto">
           <i class="bi bi-save" aria-hidden="true"></i>

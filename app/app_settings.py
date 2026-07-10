@@ -5,7 +5,7 @@ import threading
 from .config import LIB_ROOT, STATE_ROOT
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
@@ -26,6 +26,7 @@ DUPLICATE_ACCESSORY_POLICIES = {
     "remove_all": "Remove all matched-stem sidecars",
 }
 DEFAULT_DUPLICATE_EXCLUDED_FOLDERS = ("trailer", "trailers")
+DEFAULT_SUBTITLE_EXPECTED_LANGUAGES = ("eng", "en", "en-us", "en-gb")
 
 _settings_lock = threading.Lock()
 
@@ -60,6 +61,10 @@ def default_settings():
         "duplicate_accessory_policy": "rename_unmatched",
         "duplicate_move_root": DEFAULT_DUPLICATE_MOVE_ROOT,
         "duplicate_excluded_folders": list(DEFAULT_DUPLICATE_EXCLUDED_FOLDERS),
+        "subtitle_expected_languages": list(DEFAULT_SUBTITLE_EXPECTED_LANGUAGES),
+        "subtitle_flag_missing": True,
+        "subtitle_flag_unknown_language": True,
+        "subtitle_subgen_detection": True,
     }
 
 
@@ -84,8 +89,36 @@ def parse_excluded_folders(value):
     return items or list(DEFAULT_DUPLICATE_EXCLUDED_FOLDERS)
 
 
+def normalize_language_code(value):
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def parse_subtitle_languages(value):
+    if isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        raw_items = re_split_commas(value)
+    items = []
+    seen = set()
+    for item in raw_items:
+        cleaned = normalize_language_code(item)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        items.append(cleaned)
+    return items or list(DEFAULT_SUBTITLE_EXPECTED_LANGUAGES)
+
+
 def re_split_commas(value):
     return str(value or "").replace("\n", ",").split(",")
+
+
+def _bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _coerce_settings(data):
@@ -119,6 +152,21 @@ def _coerce_settings(data):
         "duplicate_move_root": move_root or defaults["duplicate_move_root"],
         "duplicate_excluded_folders": parse_excluded_folders(
             data.get("duplicate_excluded_folders", defaults["duplicate_excluded_folders"])
+        ),
+        "subtitle_expected_languages": parse_subtitle_languages(
+            data.get("subtitle_expected_languages", defaults["subtitle_expected_languages"])
+        ),
+        "subtitle_flag_missing": _bool(
+            data.get("subtitle_flag_missing", defaults["subtitle_flag_missing"]),
+            defaults["subtitle_flag_missing"],
+        ),
+        "subtitle_flag_unknown_language": _bool(
+            data.get("subtitle_flag_unknown_language", defaults["subtitle_flag_unknown_language"]),
+            defaults["subtitle_flag_unknown_language"],
+        ),
+        "subtitle_subgen_detection": _bool(
+            data.get("subtitle_subgen_detection", defaults["subtitle_subgen_detection"]),
+            defaults["subtitle_subgen_detection"],
         ),
     }
 

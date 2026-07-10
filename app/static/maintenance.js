@@ -1,6 +1,6 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
-  const maintenanceTabHashes = ['overview', 'posters', 'duplicates', 'video-previews', 'actor-images'];
+  const maintenanceTabHashes = ['overview', 'posters', 'duplicates', 'video-previews', 'subtitles', 'actor-images'];
   const overviewExpandedFolders = new Set();
   let overviewFolderPage = null;
   let overviewPageOffset = 0;
@@ -31,6 +31,12 @@
   let qualityPlan = null;
   let qualityApply = null;
   let qualityApplyPollTimer = null;
+  let subtitleScan = null;
+  let subtitlePollTimer = null;
+  let subtitleItemsPage = null;
+  let subtitlePageOffset = 0;
+  let subtitlePageLimit = 25;
+  let subtitleSearchTimer = null;
   let actorScan = null;
   let actorPollTimer = null;
   let actorItemsPage = null;
@@ -728,6 +734,34 @@
     }
   }
 
+  async function openSubtitleBrowser(path) {
+    const browser = byId('subtitleBrowser');
+    if (!browser) return;
+    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
+    try {
+      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
+        return;
+      }
+      const folders = (data.folders || []).map(folder =>
+        `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-folder="${escapeHtml(folder.path)}">` +
+        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
+      ).join('');
+      const parent = data.parent
+        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
+        : '';
+      browser.innerHTML =
+        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
+        `<div class="media-browser-actions">${parent}` +
+        `<button class="btn btn-primary btn-sm" type="button" data-subtitle-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
+        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
+    } catch (e) {
+      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
+    }
+  }
+
   async function openActorBrowser(path) {
     const browser = byId('actorBrowser');
     if (!browser) return;
@@ -788,6 +822,13 @@
     if (qualityApplyPollTimer) {
       clearInterval(qualityApplyPollTimer);
       qualityApplyPollTimer = null;
+    }
+  }
+
+  function stopSubtitlePolling() {
+    if (subtitlePollTimer) {
+      clearInterval(subtitlePollTimer);
+      subtitlePollTimer = null;
     }
   }
 
@@ -1764,6 +1805,245 @@
     }
   }
 
+  function setSubtitleMessage(title, detail) {
+    const titleEl = byId('subtitleMessageTitle');
+    const detailEl = byId('subtitleMessageDetail');
+    if (titleEl) titleEl.textContent = title || '';
+    if (detailEl) detailEl.textContent = detail || '';
+  }
+
+  function setSubtitleProgress(scan) {
+    const state = byId('subtitleScanState');
+    const label = byId('subtitleProgressLabel');
+    const percent = byId('subtitleProgressPercent');
+    const bar = byId('subtitleProgressBar');
+    const missing = byId('subtitleMissingCount');
+    const review = byId('subtitleReviewCount');
+    const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
+    if (state) state.textContent = scan?.status || 'Idle';
+    if (label) label.textContent = scan?.progress_label || 'Choose a folder';
+    if (percent) percent.textContent = `${pct}%`;
+    if (bar) {
+      bar.style.width = `${pct}%`;
+      bar.parentElement.setAttribute('aria-valuenow', pct);
+    }
+    if (missing) missing.textContent = String(scan?.missing_count || 0);
+    if (review) review.textContent = String(scan?.review_count || 0);
+    const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
+    const scanButton = byId('subtitleScanButton');
+    const cancelButton = byId('subtitleCancelScanButton');
+    if (scanButton) scanButton.disabled = active;
+    if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
+  }
+
+  function subtitlePageRangeText(page) {
+    const total = Number(page?.total || 0);
+    if (!total) return '0 of 0';
+    const start = Number(page.offset || 0) + 1;
+    const end = Math.min(total, Number(page.offset || 0) + Number(page.count || 0));
+    return `${start}-${end} of ${total}`;
+  }
+
+  function subtitlePager(page) {
+    if (!page) return '';
+    return `<div class="maintenance-pager">` +
+      `<div class="text-muted small">${escapeHtml(subtitlePageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
+      `<div class="toolbar-row mb-0">` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
+      `</div>` +
+      `</div>`;
+  }
+
+  function subtitleStatusBadge(status) {
+    const labels = {
+      missing: ['Missing', 'text-bg-warning'],
+      language_review: ['Language Review', 'text-bg-danger'],
+      unknown: ['Unknown', 'text-bg-info'],
+      ok: ['OK', 'text-bg-success']
+    };
+    const [label, klass] = labels[status] || [status || 'Unknown', 'text-bg-secondary'];
+    return `<span class="badge ${klass}">${escapeHtml(label)}</span>`;
+  }
+
+  function subtitleFilesCell(item) {
+    const files = item.srt_files || [];
+    if (!files.length) return '<span class="text-muted">No matching SRT</span>';
+    return files.slice(0, 3).map(file => {
+      const code = file.language_code || 'unknown';
+      return `<div class="mb-1">` +
+        `<code class="path-cell" title="${escapeHtml(file.path || '')}">${escapeHtml(file.relative_path || file.name || '')}</code>` +
+        `<div class="text-muted small">${escapeHtml(code)} · ${escapeHtml(file.size_label || '')}${file.modified_at ? ` · ${escapeHtml(file.modified_at)}` : ''}</div>` +
+        `</div>`;
+    }).join('') + (files.length > 3 ? `<div class="text-muted small">${files.length - 3} more subtitle file(s)</div>` : '');
+  }
+
+  function renderSubtitleItems(page) {
+    const target = byId('subtitleItems');
+    if (!target) return;
+    if (!subtitleScan || subtitleScan.status !== 'success') {
+      target.innerHTML = '<div class="text-muted text-center py-4">Subtitle review results will appear here after a scan.</div>';
+      return;
+    }
+    if (!page || !(page.items || []).length) {
+      target.innerHTML = `${page ? subtitlePager(page) : ''}<div class="text-muted text-center py-4">No videos in this view.</div>`;
+      return;
+    }
+    const rows = (page.items || []).map(item => {
+      const codes = (item.language_codes || []).join(', ') || 'none';
+      return `<tr>` +
+        `<td>${subtitleStatusBadge(item.status)}</td>` +
+        `<td class="path-cell"><code title="${escapeHtml(item.path || '')}">${escapeHtml(item.relative_path || item.name || '')}</code><div class="text-muted small">${escapeHtml(item.size_label || '')}</div></td>` +
+        `<td>${subtitleFilesCell(item)}</td>` +
+        `<td>${escapeHtml(codes)}</td>` +
+        `<td>${escapeHtml(item.detail || '')}</td>` +
+        `</tr>`;
+    }).join('');
+    target.innerHTML =
+      `${subtitlePager(page)}` +
+      `<div class="table-responsive workspace-table-wrap">` +
+      `<table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th>Status</th><th>Video</th><th>Matched SRTs</th><th>Language</th><th>Reason</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      `${subtitlePager(page)}`;
+  }
+
+  async function loadSubtitleItems(offset = subtitlePageOffset) {
+    if (!subtitleScan?.id || subtitleScan.status !== 'success') return;
+    const status = byId('subtitleItemStatus')?.value || 'language_review';
+    const query = byId('subtitleSearch')?.value || '';
+    const target = byId('subtitleItems');
+    if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading subtitle results...</div>';
+    try {
+      const params = new URLSearchParams({
+        scan_id: subtitleScan.id,
+        status,
+        offset: String(offset),
+        limit: String(subtitlePageLimit),
+        q: query
+      });
+      const res = await fetch(`/api/maintenance/subtitles/items?${params.toString()}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setSubtitleMessage(data.error || 'Subtitle results unavailable', '');
+        return;
+      }
+      subtitleItemsPage = data;
+      subtitlePageOffset = Number(data.offset || 0);
+      renderSubtitleItems(data);
+      if (data.large_result) {
+        setSubtitleMessage(`${data.total || 0} videos in this view`, `Large result set loaded ${data.limit || subtitlePageLimit} items at a time.`);
+      }
+    } catch (e) {
+      setSubtitleMessage('Subtitle results unavailable', e.message || '');
+    }
+  }
+
+  function handleSubtitleScan(scan) {
+    subtitleScan = scan;
+    setSubtitleProgress(scan);
+    const terminal = scan && ['success', 'failed', 'cancelled'].includes(scan.status || '');
+    if (!scan) {
+      setSubtitleMessage('No subtitle scan yet.', '');
+    } else if (scan.status === 'success') {
+      const settings = scan.settings || {};
+      setSubtitleMessage(
+        `${scan.review_count || 0} subtitle review item${(scan.review_count || 0) === 1 ? '' : 's'}`,
+        `${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`
+      );
+      if (subtitleItemsPage?.scan?.id !== scan.id) {
+        loadSubtitleItems(0);
+      }
+    } else if (scan.status === 'failed') {
+      setSubtitleMessage('Subtitle scan failed', scan.error || '');
+    } else if (scan.status === 'cancelled') {
+      setSubtitleMessage('Subtitle scan cancelled', '');
+    } else {
+      setSubtitleMessage(scan.progress_label || 'Scanning subtitles', 'Large libraries can take a while.');
+    }
+    if (terminal) {
+      stopSubtitlePolling();
+    }
+  }
+
+  async function pollSubtitleScan(scanId) {
+    if (!scanId) return;
+    try {
+      const res = await fetch(`/api/maintenance/subtitles/status?scan_id=${encodeURIComponent(scanId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setSubtitleMessage(data.error || 'Subtitle scan unavailable', '');
+        stopSubtitlePolling();
+        return;
+      }
+      handleSubtitleScan(data.scan);
+    } catch (e) {
+      setSubtitleMessage('Subtitle scan unavailable', e.message || '');
+      stopSubtitlePolling();
+    }
+  }
+
+  async function refreshSubtitleStatus() {
+    try {
+      const res = await fetch('/api/maintenance/subtitles/status');
+      const data = await readJsonResponse(res);
+      if (res.ok) {
+        handleSubtitleScan(data.scan);
+      }
+    } catch (_e) {
+      // Status refresh is best-effort on page load.
+    }
+  }
+
+  async function startSubtitleScan() {
+    const path = (byId('subtitlePath')?.value || config.libRoot || '/library').trim();
+    if (!path) {
+      setSubtitleMessage('Choose a folder under the library', '');
+      return;
+    }
+    stopSubtitlePolling();
+    subtitleItemsPage = null;
+    subtitlePageOffset = 0;
+    setSubtitleMessage('Starting subtitle scan', '');
+    setSubtitleProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
+    try {
+      const res = await fetch('/api/maintenance/subtitles/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setSubtitleMessage(data.error || 'Subtitle scan could not start', '');
+        return;
+      }
+      handleSubtitleScan(data.scan);
+      subtitlePollTimer = setInterval(() => pollSubtitleScan(data.scan.id), 1000);
+    } catch (e) {
+      setSubtitleMessage('Subtitle scan could not start', e.message || '');
+    }
+  }
+
+  async function cancelSubtitleScan() {
+    if (!subtitleScan?.id) return;
+    setSubtitleMessage('Cancelling subtitle scan', '');
+    try {
+      const res = await fetch('/api/maintenance/subtitles/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: subtitleScan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) {
+        setSubtitleMessage(data.error || 'Subtitle scan could not be cancelled', '');
+        return;
+      }
+      handleSubtitleScan(data.scan);
+    } catch (e) {
+      setSubtitleMessage('Subtitle scan could not be cancelled', e.message || '');
+    }
+  }
+
   function setActorMessage(title, detail) {
     const titleEl = byId('actorMessageTitle');
     const detailEl = byId('actorMessageDetail');
@@ -2573,6 +2853,27 @@
       qualityPageOffset = 0;
       loadQualityItems(0);
     });
+    byId('subtitleBrowseButton')?.addEventListener('click', () => {
+      openSubtitleBrowser(byId('subtitlePath')?.value.trim() || config.libRoot || '/library');
+    });
+    byId('subtitleScanButton')?.addEventListener('click', startSubtitleScan);
+    byId('subtitleCancelScanButton')?.addEventListener('click', cancelSubtitleScan);
+    byId('subtitleItemStatus')?.addEventListener('change', () => {
+      subtitlePageOffset = 0;
+      loadSubtitleItems(0);
+    });
+    byId('subtitlePageLimit')?.addEventListener('change', event => {
+      subtitlePageLimit = Number(event.target.value || 25);
+      subtitlePageOffset = 0;
+      loadSubtitleItems(0);
+    });
+    byId('subtitleSearch')?.addEventListener('input', () => {
+      clearTimeout(subtitleSearchTimer);
+      subtitleSearchTimer = setTimeout(() => {
+        subtitlePageOffset = 0;
+        loadSubtitleItems(0);
+      }, 250);
+    });
     byId('actorBrowseButton')?.addEventListener('click', () => {
       openActorBrowser(byId('actorPath')?.value.trim() || config.libRoot || '/library');
     });
@@ -2653,6 +2954,17 @@
       }
     });
 
+    byId('subtitleBrowser')?.addEventListener('click', event => {
+      const folder = event.target.closest('[data-subtitle-folder]');
+      const choose = event.target.closest('[data-subtitle-choose]');
+      if (folder) {
+        openSubtitleBrowser(folder.getAttribute('data-subtitle-folder'));
+      } else if (choose) {
+        const path = choose.getAttribute('data-subtitle-choose') || '';
+        if (byId('subtitlePath')) byId('subtitlePath').value = path;
+      }
+    });
+
     byId('previewItems')?.addEventListener('click', event => {
       const page = event.target.closest('[data-preview-page]');
       if (!page) return;
@@ -2661,6 +2973,17 @@
         loadPreviewItems(previewItemsPage.next_offset);
       } else if (direction === 'prev' && previewItemsPage?.has_previous) {
         loadPreviewItems(previewItemsPage.previous_offset);
+      }
+    });
+
+    byId('subtitleItems')?.addEventListener('click', event => {
+      const page = event.target.closest('[data-subtitle-page]');
+      if (!page) return;
+      const direction = page.getAttribute('data-subtitle-page');
+      if (direction === 'next' && subtitleItemsPage?.has_next) {
+        loadSubtitleItems(subtitleItemsPage.next_offset);
+      } else if (direction === 'prev' && subtitleItemsPage?.has_previous) {
+        loadSubtitleItems(subtitleItemsPage.previous_offset);
       }
     });
 
@@ -2791,19 +3114,24 @@
     setOverviewProgress(null);
     setPreviewProgress(null);
     setQualityProgress(null);
+    setSubtitleProgress(null);
     setActorProgress(null);
     openBrowser(config.libRoot || '/library');
     openPreviewBrowser(config.libRoot || '/library');
+    openSubtitleBrowser(config.libRoot || '/library');
     openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
     refreshOverviewStatus();
     refreshPreviewTasks();
+    refreshSubtitleStatus();
     refreshActorStatus();
     refreshPosterStatus();
     posterPollTimer = setInterval(refreshPosterStatus, 10000);
     window.addEventListener('beforeunload', () => {
       clearTimeout(overviewPollTimer);
       clearTimeout(overviewSearchTimer);
+      clearTimeout(subtitleSearchTimer);
+      stopSubtitlePolling();
     });
   });
 }());

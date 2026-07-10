@@ -9,6 +9,7 @@ from . import dashboard
 from . import estimate_history
 from . import maintenance
 from . import poster_maintenance
+from . import subtitle_maintenance
 from . import test_lab
 from . import video_preview_maintenance
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
@@ -240,6 +241,7 @@ def _settings_context(error="", saved=False, form_values=None):
             "duplicate_keeper_rule",
             "duplicate_accessory_policy",
             "duplicate_move_root",
+            "subtitle_expected_languages",
         ):
             if key in form_values:
                 settings[key] = form_values.get(key)
@@ -247,6 +249,13 @@ def _settings_context(error="", saved=False, form_values=None):
             settings["duplicate_excluded_folders"] = app_settings.parse_excluded_folders(
                 form_values.get("duplicate_excluded_folders")
             )
+        settings["subtitle_flag_missing"] = _truthy(form_values.get("subtitle_flag_missing"))
+        settings["subtitle_flag_unknown_language"] = _truthy(
+            form_values.get("subtitle_flag_unknown_language")
+        )
+        settings["subtitle_subgen_detection"] = _truthy(
+            form_values.get("subtitle_subgen_detection")
+        )
     return {
         "settings": settings,
         "preview_height_presets": app_settings.PREVIEW_HEIGHT_PRESETS,
@@ -261,6 +270,9 @@ def _settings_context(error="", saved=False, form_values=None):
         "duplicate_accessory_policies": app_settings.DUPLICATE_ACCESSORY_POLICIES,
         "duplicate_excluded_folders_text": ", ".join(
             settings.get("duplicate_excluded_folders") or []
+        ),
+        "subtitle_expected_languages_text": ", ".join(
+            settings.get("subtitle_expected_languages") or []
         ),
         "error": error,
         "saved": saved,
@@ -295,6 +307,18 @@ def settings_page():
                 "duplicate_move_root": request.form.get("duplicate_move_root"),
                 "duplicate_excluded_folders": app_settings.parse_excluded_folders(
                     request.form.get("duplicate_excluded_folders")
+                ),
+                "subtitle_expected_languages": app_settings.parse_subtitle_languages(
+                    request.form.get("subtitle_expected_languages")
+                ),
+                "subtitle_flag_missing": _truthy(
+                    request.form.get("subtitle_flag_missing")
+                ),
+                "subtitle_flag_unknown_language": _truthy(
+                    request.form.get("subtitle_flag_unknown_language")
+                ),
+                "subtitle_subgen_detection": _truthy(
+                    request.form.get("subtitle_subgen_detection")
                 ),
             }
         )
@@ -839,6 +863,51 @@ def api_maintenance_video_previews_quality_apply_status():
     payload, err = video_preview_maintenance.quality_apply_status(request.args.get("apply_id"))
     if err:
         return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/subtitles/scan", methods=["POST"])
+def api_maintenance_subtitles_scan():
+    data = _json_or_form_data()
+    scan, err = subtitle_maintenance.start_scan(
+        data.get("path"),
+        lib_root=LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": subtitle_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/subtitles/status")
+def api_maintenance_subtitles_status():
+    payload, err = subtitle_maintenance.status_payload(request.args.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/subtitles/cancel", methods=["POST"])
+def api_maintenance_subtitles_cancel():
+    data = request.get_json(silent=True) or {}
+    scan, err = subtitle_maintenance.cancel_scan(data.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"scan": subtitle_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/subtitles/items")
+def api_maintenance_subtitles_items():
+    payload, err = subtitle_maintenance.items_payload(
+        request.args.get("scan_id"),
+        status=request.args.get("status"),
+        offset=request.args.get("offset"),
+        limit=request.args.get("limit"),
+        q=request.args.get("q"),
+    )
+    if err:
+        status = 404 if err == "Scan not found" else 400
+        return jsonify({"error": err}), status
     return jsonify(payload)
 
 

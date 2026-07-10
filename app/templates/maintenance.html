@@ -26,6 +26,10 @@
         <i class="bi bi-film" aria-hidden="true"></i>
         <span>Video Previews</span>
       </a>
+      <a class="btn btn-outline-secondary btn-sm" href="#subtitles" data-maint-tab-shortcut="subtitles">
+        <i class="bi bi-badge-cc" aria-hidden="true"></i>
+        <span>Subtitles</span>
+      </a>
       <a class="btn btn-outline-secondary btn-sm" href="#actor-images" data-maint-tab-shortcut="actor-images">
         <i class="bi bi-person-bounding-box" aria-hidden="true"></i>
         <span>Actor Images</span>
@@ -56,6 +60,12 @@
       <button class="nav-link" id="tab-video-previews" data-bs-toggle="tab" data-bs-target="#pane-video-previews" type="button" role="tab" aria-controls="pane-video-previews" aria-selected="false" data-maint-tab-hash="video-previews">
         <i class="bi bi-film" aria-hidden="true"></i>
         <span>Video Previews</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-subtitles" data-bs-toggle="tab" data-bs-target="#pane-subtitles" type="button" role="tab" aria-controls="pane-subtitles" aria-selected="false" data-maint-tab-hash="subtitles">
+        <i class="bi bi-badge-cc" aria-hidden="true"></i>
+        <span>Subtitles</span>
       </button>
     </li>
     <li class="nav-item" role="presentation">
@@ -508,6 +518,115 @@
 
         <div id="qualityItems" class="maintenance-groups mt-3">
           <div class="text-muted text-center py-4">BIF quality results will appear here after a scan.</div>
+        </div>
+      </section>
+    </section>
+
+    <section class="tab-pane fade" id="pane-subtitles" role="tabpanel" aria-labelledby="tab-subtitles" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Subtitle health scan status">
+        <div class="status-tile">
+          <div class="metric-label">Scan</div>
+          <div id="subtitleScanState" class="metric-value">Idle</div>
+        </div>
+        <div class="status-tile status-tile-wide">
+          <div class="d-flex justify-content-between gap-3">
+            <div>
+              <div class="metric-label">Progress</div>
+              <div id="subtitleProgressLabel" class="metric-value">Choose a folder</div>
+            </div>
+            <span id="subtitleProgressPercent" class="small text-muted">0%</span>
+          </div>
+          <div class="progress progress-thin mt-2" role="progressbar" aria-label="Subtitle scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="subtitleProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Missing</div>
+          <div id="subtitleMissingCount" class="metric-value">0</div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Review</div>
+          <div id="subtitleReviewCount" class="metric-value">0</div>
+        </div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Subtitle Health Check</h2>
+            <div class="text-muted small">Find missing SRT sidecars and Subgen language-code mismatches before you regenerate anything.</div>
+          </div>
+          <a class="btn btn-outline-secondary btn-sm" href="/settings">
+            <i class="bi bi-gear" aria-hidden="true"></i>
+            <span>Subtitle Settings</span>
+          </a>
+        </div>
+
+        <div class="settings-panel">
+          <div class="panel-subheading">
+            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+            <span>Scan Source</span>
+          </div>
+          <label class="form-label" for="subtitlePath">Library path</label>
+          <div class="input-group">
+            <input id="subtitlePath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
+            <button id="subtitleBrowseButton" class="btn btn-outline-secondary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Browse</span>
+            </button>
+            <button id="subtitleScanButton" class="btn btn-primary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Scan</span>
+            </button>
+            <button id="subtitleCancelScanButton" class="btn btn-outline-danger" type="button" disabled>
+              <i class="bi bi-x-circle" aria-hidden="true"></i>
+              <span>Cancel</span>
+            </button>
+          </div>
+          <div id="subtitleBrowser" class="media-browser mt-3"></div>
+        </div>
+
+        <div id="subtitleMessage" class="scan-estimate mt-3" aria-live="polite">
+          <i class="bi bi-info-circle" aria-hidden="true"></i>
+          <div>
+            <div id="subtitleMessageTitle">No subtitle scan yet.</div>
+            <div id="subtitleMessageDetail" class="scan-estimate-detail"></div>
+          </div>
+        </div>
+
+        <div class="settings-panel mt-3">
+          <div class="panel-subheading">
+            <i class="bi bi-list-check" aria-hidden="true"></i>
+            <span>Review Results</span>
+          </div>
+          <div class="toolbar-row">
+            <label class="form-label mb-0 compact-control" for="subtitleItemStatus">
+              Show
+              <select id="subtitleItemStatus" class="form-select form-select-sm">
+                <option value="language_review" selected>Language Review</option>
+                <option value="missing">Missing SRTs</option>
+                <option value="unknown">Unknown Language</option>
+                <option value="ok">OK</option>
+                <option value="all">All videos</option>
+              </select>
+            </label>
+            <label class="form-label mb-0 compact-control" for="subtitlePageLimit">
+              Show
+              <select id="subtitlePageLimit" class="form-select form-select-sm">
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <label class="form-label mb-0 compact-control" for="subtitleSearch">
+              Search
+              <input id="subtitleSearch" class="form-control form-control-sm" placeholder="Video or SRT name">
+            </label>
+          </div>
+        </div>
+
+        <div id="subtitleItems" class="maintenance-groups mt-3">
+          <div class="text-muted text-center py-4">Subtitle review results will appear here after a scan.</div>
         </div>
       </section>
     </section>

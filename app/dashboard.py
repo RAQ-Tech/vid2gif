@@ -7,6 +7,7 @@ import time
 from . import actor_image_maintenance
 from . import maintenance
 from . import poster_maintenance
+from . import subtitle_maintenance
 from . import test_lab
 from . import video_preview_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -264,6 +265,25 @@ def _preview_summary():
         "repaired_count": repaired,
         "active": active,
         "needs_verification": bool(repaired),
+    }
+
+
+def _subtitle_summary():
+    scan = _safe_scan_payload(subtitle_maintenance.status_payload) or {}
+    active = bool(scan.get("active"))
+    missing = scan.get("missing_count") or 0
+    language_review = scan.get("language_review_count") or 0
+    unknown = scan.get("unknown_count") or 0
+    ok = scan.get("ok_count") or 0
+    review = missing + language_review + unknown
+    return {
+        "scan": scan,
+        "missing_count": missing,
+        "language_review_count": language_review,
+        "unknown_count": unknown,
+        "ok_count": ok,
+        "review_count": review,
+        "active": active,
     }
 
 
@@ -720,6 +740,7 @@ def status_payload():
     posters = _poster_summary()
     duplicates = _duplicate_summary()
     previews = _preview_summary()
+    subtitles = _subtitle_summary()
     actors = _actor_summary()
     library = library_scan_status()["scan"]
 
@@ -782,6 +803,19 @@ def status_payload():
             active=previews["active"],
         ),
         _workstream(
+            "subtitles",
+            "Subtitles",
+            "/maintenance#subtitles",
+            status=(subtitles["scan"] or {}).get("status", "not_scanned"),
+            found=subtitles["review_count"],
+            ready=subtitles["language_review_count"] + subtitles["unknown_count"],
+            resolved=subtitles["ok_count"],
+            remaining=subtitles["review_count"],
+            detail=f"{subtitles['missing_count']} missing, {subtitles['language_review_count']} language review, {subtitles['unknown_count']} unknown",
+            action_label="Open subtitles",
+            active=subtitles["active"],
+        ),
+        _workstream(
             "actor_images",
             "Actor Images",
             "/maintenance#actor-images",
@@ -823,6 +857,7 @@ def status_payload():
         "posters": posters,
         "duplicates": duplicates,
         "video_previews": previews,
+        "subtitles": subtitles,
         "actor_images": actors,
         "library": library,
         "workstreams": workstreams,

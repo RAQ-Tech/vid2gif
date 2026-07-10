@@ -756,11 +756,14 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="overviewPageLimit"' in html
     assert 'data-maint-tab-hash="posters"' in html
     assert 'data-maint-tab-hash="video-previews"' in html
+    assert 'data-maint-tab-hash="subtitles"' in html
     assert 'data-maint-tab-hash="duplicates"' in html
     assert 'id="previewScanButton"' in html
     assert 'id="previewRunExtractionButton"' in html
     assert 'id="qualityScanButton"' in html
     assert 'id="qualityApplyButton"' in html
+    assert 'id="subtitleScanButton"' in html
+    assert 'id="subtitleItemStatus"' in html
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
     assert 'id="maintenanceRefreshLogsButton"' in html
@@ -783,6 +786,9 @@ def test_maintenance_page_and_static_assets_render():
     assert "fetch('/api/maintenance/video-previews/quality/scan'" in script
     assert "/api/maintenance/video-previews/quality/items?scan_id=" in script
     assert "fetch('/api/maintenance/video-previews/quality/apply'" in script
+    assert "fetch('/api/maintenance/subtitles/scan'" in script
+    assert "/api/maintenance/subtitles/items?" in script
+    assert "fetch('/api/maintenance/subtitles/cancel'" in script
     assert "maintenance_active_tab_v2" in script
     assert "readJsonResponse" in script
     assert "data-overview-folder-toggle" in script
