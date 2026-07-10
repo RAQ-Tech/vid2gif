@@ -767,7 +767,7 @@ def test_video_preview_ui_assets_render():
     assert "fetch('/api/maintenance/video-previews/quality/apply'" in script
     assert "/api/maintenance/video-previews/quality/apply/status?apply_id=" in script
     assert "escapeHtml(item.relative_path" in script
-    assert "escapeHtml(file.source_path)" in script
+    assert "escapeHtml(change.source || '')" in script
     assert "frame_count_detail" in script
     assert "Frames Actual / Expected" in script
     assert "interval mismatch" not in script

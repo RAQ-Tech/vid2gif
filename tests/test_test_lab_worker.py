@@ -114,6 +114,46 @@ def test_test_lab_worker_outputs_under_state_and_continues_after_failure(monkeyp
     assert not any((tmp_path / "state" / "processing" / "tmp").rglob("poster.gif"))
 
 
+def test_test_lab_worker_completes_single_variant_with_singular_progress(monkeypatch, tmp_path):
+    lab_root = _reset_lab(monkeypatch, tmp_path)
+    lib = tmp_path / "library"
+    lib.mkdir()
+    video = lib / "movie.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(test_lab, "probe_video_details", lambda path: ("{}", None))
+    monkeypatch.setattr(test_lab, "summarize_video_details", lambda details: "h264 1280x720")
+    monkeypatch.setattr(test_lab, "get_duration", lambda path: (10.0, None))
+    monkeypatch.setattr(test_lab, "build_segments", lambda dur, cfg: [{"start": 1, "end": 2}])
+    monkeypatch.setattr(test_lab, "find_background_image", lambda path: None)
+
+    def fake_make_gif(video_path, segs, out_gif, cfg, job, background_image=None):
+        with open(out_gif, "wb") as output:
+            output.write(b"gif")
+        return True, ""
+
+    monkeypatch.setattr(test_lab, "make_gif_multi_inputs", fake_make_gif)
+    monkeypatch.setattr(test_lab, "optimize_gif", lambda *args, **kwargs: None)
+    monkeypatch.setattr(test_lab, "record_successful_job", lambda job: True)
+
+    run_id, err = test_lab.enqueue_test_run(
+        str(video),
+        [_variant("Only")],
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    thread = threading.Thread(target=test_lab.worker)
+    thread.start()
+    test_lab.test_lab_queue.put(None)
+    thread.join(timeout=5)
+
+    run = test_lab.test_lab_runs[run_id]
+    public = test_lab.run_status_payload()["active_run"]
+    assert run["status"] == "success"
+    assert public["progress_label"] == "Complete · 1 variant"
+    assert (lab_root / run_id / "variant-1.gif").is_file()
+
+
 def test_test_lab_worker_reuses_existing_fingerprint_without_ffmpeg(monkeypatch, tmp_path):
     lab_root = _reset_lab(monkeypatch, tmp_path)
     lib = tmp_path / "library"

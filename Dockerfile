@@ -24,5 +24,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 904
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:904/healthz', timeout=3)" || exit 1
+
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["gunicorn", "--bind", "0.0.0.0:904", "--workers", "1", "--threads", "8", "--graceful-timeout", "10", "--timeout", "60", "app.wsgi:app"]

@@ -33,6 +33,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+node_modules/
 
 # Django stuff
 *.log

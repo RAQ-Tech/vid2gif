@@ -119,13 +119,17 @@ def test_test_lab_run_validates_variant_count(monkeypatch, tmp_path):
     video.write_text("x")
     monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
 
-    res = routes.app.test_client().post(
-        "/api/test-lab/run",
-        json=_run_payload(video, variants=1),
-    )
+    res = routes.app.test_client().post("/api/test-lab/run", json=_run_payload(video, variants=0))
 
     assert res.status_code == 400
-    assert res.get_json()["error"] == "Choose 2 to 4 variants"
+    assert res.get_json()["error"] == "Choose 1 to 4 variants"
+
+    too_many = routes.app.test_client().post(
+        "/api/test-lab/run",
+        json=_run_payload(video, variants=5),
+    )
+    assert too_many.status_code == 400
+    assert too_many.get_json()["error"] == "Choose 1 to 4 variants"
 
 
 def test_test_lab_run_normalizes_settings_and_queues(monkeypatch, tmp_path):
@@ -143,7 +147,7 @@ def test_test_lab_run_normalizes_settings_and_queues(monkeypatch, tmp_path):
         return "run1", None
 
     monkeypatch.setattr(routes.test_lab, "enqueue_test_run", fake_enqueue)
-    monkeypatch.setattr(routes.test_lab, "status_payload", lambda: {"active_run": None})
+    monkeypatch.setattr(routes.test_lab, "run_status_payload", lambda: {"active_run": None})
     payload = _run_payload(video)
     payload["variants"][0]["settings"]["fps_preset"] = "original"
     payload["variants"][0]["settings"]["optimize"] = "off"
@@ -160,6 +164,59 @@ def test_test_lab_run_normalizes_settings_and_queues(monkeypatch, tmp_path):
     assert captured["variants"][0]["cfg"]["optimize"] is False
     assert captured["variants"][1]["cfg"]["smooth"] is True
     assert captured["variants"][1]["cfg"]["loop_forever"] is False
+
+
+def test_test_lab_run_accepts_single_variant(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    video = lib / "movie.mp4"
+    video.write_text("x")
+    monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
+    captured = {}
+
+    def fake_enqueue(path, variants, lib_root):
+        captured["variants"] = variants
+        return "run1", None
+
+    monkeypatch.setattr(routes.test_lab, "enqueue_test_run", fake_enqueue)
+    monkeypatch.setattr(
+        routes.test_lab,
+        "run_status_payload",
+        lambda: {"active_run": {"id": "run1", "status": "queued"}, "has_active_run": True},
+    )
+
+    res = routes.app.test_client().post(
+        "/api/test-lab/run",
+        json=_run_payload(video, variants=1),
+    )
+
+    assert res.status_code == 200
+    assert len(captured["variants"]) == 1
+    assert res.get_json()["status"]["has_active_run"] is True
+
+
+def test_test_lab_split_status_endpoints_avoid_cross_payload_work(monkeypatch):
+    monkeypatch.setattr(
+        routes.test_lab,
+        "run_status_payload",
+        lambda: {"active_run": {"id": "run1"}, "has_active_run": True},
+    )
+    monkeypatch.setattr(
+        routes.test_lab,
+        "inventory_payload",
+        lambda: {"files": [{"id": "run1/variant-1.gif"}], "file_count": 1},
+    )
+
+    client = routes.app.test_client()
+    run_status = client.get("/api/test-lab/run-status")
+    files = client.get("/api/test-lab/files")
+
+    assert run_status.status_code == 200
+    assert run_status.get_json()["active_run"]["id"] == "run1"
+    assert "files" not in run_status.get_json()
+    assert files.status_code == 200
+    assert files.get_json()["files"][0]["id"] == "run1/variant-1.gif"
+    assert "active_run" not in files.get_json()
 
 
 def test_test_lab_file_serving_is_confined_to_lab_root(monkeypatch, tmp_path):

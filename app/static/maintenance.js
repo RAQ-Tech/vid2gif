@@ -82,6 +82,63 @@
     return '0 B';
   }
 
+  const CHANGE_PREVIEW_LIMIT = 50;
+
+  function operationCounts(files) {
+    return (files || []).reduce((counts, file) => {
+      const operation = String(file.operation || 'change').toLowerCase();
+      counts[operation] = (counts[operation] || 0) + 1;
+      return counts;
+    }, {});
+  }
+
+  function operationSummary(files) {
+    const counts = operationCounts(files);
+    return Object.entries(counts)
+      .map(([operation, count]) => `${count} ${operation}`)
+      .join(', ') || 'No changes';
+  }
+
+  function renderChangePreview(options) {
+    const files = options.files || [];
+    const visible = files.slice(0, CHANGE_PREVIEW_LIMIT);
+    const metrics = (options.metrics || []).map(metric =>
+      `<div class="change-preview-metric">` +
+        `<span class="metric-label">${escapeHtml(metric.label)}</span>` +
+        `<strong>${escapeHtml(metric.value)}</strong>` +
+        `${metric.detail ? `<span class="text-muted small">${escapeHtml(metric.detail)}</span>` : ''}` +
+      `</div>`
+    ).join('');
+    const rows = visible.map(file => {
+      const change = options.changeForFile(file);
+      const operation = String(change.operation || 'change').toLowerCase();
+      const operationClass = ['delete', 'move', 'rename', 'import'].includes(operation) ? operation : '';
+      const sourceHtml = escapeHtml(change.source || '');
+      return `<div class="change-preview-row">` +
+        `<div><span class="change-preview-operation ${operationClass}">${escapeHtml(change.operationLabel || operation)}</span></div>` +
+        `<div class="change-preview-paths">` +
+          `<code title="${escapeHtml(change.source || '')}">${sourceHtml}</code>` +
+          `${change.target ? `<div class="change-preview-target"><i class="bi bi-arrow-right" aria-hidden="true"></i> <code title="${escapeHtml(change.target)}">${escapeHtml(change.target)}</code></div>` : ''}` +
+          `${change.detail ? `<div class="text-muted small">${escapeHtml(change.detail)}</div>` : ''}` +
+        `</div>` +
+      `</div>`;
+    }).join('');
+    const omitted = Math.max(0, files.length - visible.length);
+    const list = rows
+      ? `<details class="change-preview-details"${files.length <= 8 ? ' open' : ''}>` +
+          `<summary>File changes (${escapeHtml(files.length)})</summary>` +
+          `<div class="change-preview-list">${rows}</div>` +
+          `${omitted ? `<div class="text-muted small mt-2">${escapeHtml(omitted)} additional changes are included in this plan.</div>` : ''}` +
+        `</details>`
+      : '<div class="text-muted mt-2">No files selected.</div>';
+    return `<div class="maintenance-change-preview">` +
+      `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>${escapeHtml(options.title)}</span></div>` +
+      `<div class="change-preview-metrics">${metrics}</div>` +
+      `${options.note ? `<div class="scan-estimate mt-3"><i class="bi bi-info-circle" aria-hidden="true"></i><div>${escapeHtml(options.note)}</div></div>` : ''}` +
+      `${list}` +
+    `</div>`;
+  }
+
   function clampPercent(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return 0;
@@ -986,20 +1043,27 @@
     const summary = byId('maintenancePlanSummary');
     if (!summary) return;
     const action = plan.action === 'delete' ? 'Delete' : 'Move';
-    const sample = (plan.files || []).slice(0, 8).map(file =>
-      `<li><strong>${escapeHtml(file.operation || action)}</strong> <code title="${escapeHtml(file.source_path)}">${escapeHtml(file.relative_path || file.source_path)}</code>${file.destination_path ? ` -> <code title="${escapeHtml(file.destination_path)}">${escapeHtml(file.destination_name || file.destination_path)}</code>` : ''}</li>`
-    ).join('');
-    const review = (plan.manual_review || []).length
-      ? `<div class="text-muted mt-2">${escapeHtml((plan.manual_review || []).length)} file(s) kept for manual review.</div>`
-      : '';
-    summary.innerHTML =
-      `<div class="settings-panel">` +
-      `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>Cleanup Plan</span></div>` +
-      `<div class="metric-row mt-0"><span>${escapeHtml(action)} ${escapeHtml(plan.file_count || 0)} files</span><span>${escapeHtml(plan.total_size_label || '0 B')}</span>` +
-      `${plan.move_root ? `<span>Quarantine: <code>${escapeHtml(plan.move_root)}</code></span>` : ''}</div>` +
-      `${sample ? `<ul class="maintenance-plan-list mt-2">${sample}${(plan.files || []).length > 8 ? '<li class="text-muted">Additional files are included in the plan.</li>' : ''}</ul>` : '<div class="text-muted mt-2">No files selected.</div>'}` +
-      `${review}` +
-      `</div>`;
+    const unchangedCount = (plan.manual_review || []).length + (plan.skipped_groups || []).length;
+    summary.innerHTML = renderChangePreview({
+      title: 'Cleanup Plan',
+      files: plan.files || [],
+      metrics: [
+        {label: 'Files affected', value: plan.file_count || 0},
+        {label: 'Disk data', value: plan.total_size_label || '0 B'},
+        {label: 'Operations', value: operationSummary(plan.files)},
+        {label: 'Left unchanged', value: unchangedCount, detail: `${(plan.manual_review || []).length} manual review, ${(plan.skipped_groups || []).length} skipped groups`}
+      ],
+      note: plan.action === 'delete'
+        ? 'Delete operations are permanent. Rename operations shown below remain inside the library.'
+        : `Files marked move will be quarantined under ${plan.move_root || 'the configured move destination'}.`,
+      changeForFile: file => ({
+        operation: file.operation || plan.action,
+        operationLabel: file.operation || action,
+        source: file.relative_path || file.source_path,
+        target: file.destination_path || '',
+        detail: `${file.kind || 'file'}${file.size_label ? `, ${file.size_label}` : ''}`
+      })
+    });
     const selected = byId('maintenanceSelectedSize');
     if (selected) selected.textContent = plan.total_size_label || '0 B';
   }
@@ -1092,8 +1156,11 @@
       setMessage('Review a cleanup plan first', '');
       return;
     }
-    const actionLabel = currentPlan.action === 'delete' ? 'delete' : 'move';
-    if (!window.confirm(`Apply this plan to ${actionLabel} ${currentPlan.file_count} files?`)) {
+    const counts = operationCounts(currentPlan.files);
+    const confirmation = currentPlan.action === 'delete'
+      ? `Permanently delete ${counts.delete || 0} file(s) and apply ${Number(currentPlan.file_count || 0) - Number(counts.delete || 0)} other change(s), totaling ${currentPlan.total_size_label || '0 B'}?\n\nThis cannot be undone by vid2gif.`
+      : `Apply ${currentPlan.file_count} file change(s), totaling ${currentPlan.total_size_label || '0 B'}?\n\nMoved files will go to:\n${currentPlan.move_root || 'the configured quarantine'}`;
+    if (!window.confirm(confirmation)) {
       return;
     }
     const button = byId('maintenanceApplyButton');
@@ -1669,21 +1736,24 @@
   function renderQualityPlan(plan) {
     const summary = byId('qualityPlanSummary');
     if (!summary) return;
-    const sample = (plan.files || []).slice(0, 8).map(file =>
-      `<li><strong>move</strong> <code title="${escapeHtml(file.source_path)}">${escapeHtml(file.relative_path || file.source_path)}</code> -> <code title="${escapeHtml(file.destination_path)}">${escapeHtml(file.destination_path || '')}</code><div class="text-muted small">${escapeHtml(file.confidence || 0)}% confidence - ${escapeHtml(file.reason || '')}</div></li>`
-    ).join('');
-    const review = (plan.manual_review || []).length
-      ? `<div class="text-muted mt-2">${escapeHtml((plan.manual_review || []).length)} file(s) kept for manual review.</div>`
-      : '';
-    summary.innerHTML =
-      `<div class="settings-panel">` +
-      `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>BIF Repair Plan</span></div>` +
-      `<div class="metric-row mt-0"><span>Move ${escapeHtml(plan.file_count || 0)} BIF files</span><span>${escapeHtml(plan.total_size_label || '0 B')}</span>` +
-      `<span>Quarantine: <code>${escapeHtml(plan.move_root || '')}</code></span>` +
-      `<span>Emby: ${plan.trigger_emby ? 'trigger after move' : 'no automatic trigger'}</span></div>` +
-      `${sample ? `<ul class="maintenance-plan-list mt-2">${sample}${(plan.files || []).length > 8 ? '<li class="text-muted">Additional files are included in the plan.</li>' : ''}</ul>` : '<div class="text-muted mt-2">No files selected.</div>'}` +
-      `${review}` +
-      `</div>`;
+    summary.innerHTML = renderChangePreview({
+      title: 'BIF Repair Plan',
+      files: plan.files || [],
+      metrics: [
+        {label: 'Files moved', value: plan.file_count || 0},
+        {label: 'Disk data', value: plan.total_size_label || '0 B'},
+        {label: 'Manual review', value: (plan.manual_review || []).length},
+        {label: 'Emby follow-up', value: plan.trigger_emby ? 'Refresh + extract' : 'None'}
+      ],
+      note: `Bad BIF files will be moved to ${plan.move_root || 'the repair quarantine'}; source videos are not modified.`,
+      changeForFile: file => ({
+        operation: 'move',
+        operationLabel: 'Move',
+        source: file.relative_path || file.source_path,
+        target: file.destination_path || '',
+        detail: `${file.confidence || 0}% confidence${file.reason ? `, ${file.reason}` : ''}`
+      })
+    });
   }
 
   async function reviewQualityPlan() {
@@ -1776,7 +1846,8 @@
       setQualityMessage('Review a BIF repair plan first', '');
       return;
     }
-    if (!window.confirm(`Move ${qualityPlan.file_count} bad BIF file(s) to the repair quarantine?`)) {
+    const followUp = qualityPlan.trigger_emby ? '\n\nEmby refresh and thumbnail extraction will run after the move.' : '';
+    if (!window.confirm(`Move ${qualityPlan.file_count} bad BIF file(s), totaling ${qualityPlan.total_size_label || '0 B'}, to:\n${qualityPlan.move_root || 'the repair quarantine'}?${followUp}`)) {
       return;
     }
     const button = byId('qualityApplyButton');
@@ -2319,15 +2390,25 @@
   function renderActorPlan(plan) {
     const summary = byId('actorPlanSummary');
     if (!summary) return;
-    const sample = (plan.files || []).slice(0, 8).map(file =>
-      `<li><strong>import</strong> <code title="${escapeHtml(file.candidate_path)}">${escapeHtml(file.candidate_relative_path || file.candidate_name)}</code> -> ${escapeHtml(file.person_name || '')}</li>`
-    ).join('');
-    summary.innerHTML =
-      `<div class="settings-panel">` +
-      `<div class="panel-subheading"><i class="bi bi-list-check" aria-hidden="true"></i><span>Actor Image Import Plan</span></div>` +
-      `<div class="metric-row mt-0"><span>Import ${escapeHtml(plan.file_count || 0)} actor image(s)</span><span>${escapeHtml((plan.skipped || []).length)} skipped</span></div>` +
-      `${sample ? `<ul class="maintenance-plan-list mt-2">${sample}${(plan.files || []).length > 8 ? '<li class="text-muted">Additional actors are included in the plan.</li>' : ''}</ul>` : '<div class="text-muted mt-2">No actor images selected.</div>'}` +
-      `</div>`;
+    const totalBytes = (plan.files || []).reduce((total, file) => total + Number(file.size_bytes || 0), 0);
+    summary.innerHTML = renderChangePreview({
+      title: 'Actor Image Import Plan',
+      files: plan.files || [],
+      metrics: [
+        {label: 'Images uploaded', value: plan.file_count || 0},
+        {label: 'Upload data', value: formatSize(totalBytes)},
+        {label: 'Skipped', value: (plan.skipped || []).length},
+        {label: 'Target', value: 'Emby primary images'}
+      ],
+      note: 'Each upload replaces the selected person primary image in Emby. Local candidate files are not modified.',
+      changeForFile: file => ({
+        operation: 'import',
+        operationLabel: 'Import',
+        source: file.candidate_relative_path || file.candidate_path || file.candidate_name,
+        target: `Emby person: ${file.person_name || file.person_id || 'Unknown'}`,
+        detail: file.size_label || formatSize(file.size_bytes)
+      })
+    });
   }
 
   async function reviewActorPlan() {
@@ -2406,7 +2487,7 @@
       setActorMessage('Review an actor image import plan first', '');
       return;
     }
-    if (!window.confirm(`Import ${actorPlan.file_count} actor image(s) into Emby?`)) {
+    if (!window.confirm(`Upload ${actorPlan.file_count} actor image(s) to Emby?\n\nThis will replace each selected person's primary image. Local candidate files will remain unchanged.`)) {
       return;
     }
     const button = byId('actorApplyButton');

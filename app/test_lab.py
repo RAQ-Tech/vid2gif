@@ -55,7 +55,7 @@ def _env_int(name, default):
 
 
 SCHEMA_VERSION = 1
-MIN_VARIANTS = 2
+MIN_VARIANTS = 1
 MAX_VARIANTS = 4
 MAX_DISPLAY_NAME_LENGTH = 80
 PREVIEW_DIR_NAME = "_previews"
@@ -626,7 +626,7 @@ def request_preview(file_id):
     if (
         target_height is None
         or metadata.get("preview_status")
-        in {"original", "disabled", "ready", "generating", "failed"}
+        in {"original", "disabled", "ready", "generating"}
     ):
         return status_payload(), None
 
@@ -680,9 +680,11 @@ def _run_progress(run, now=None):
         else:
             label = f"{percent}% complete · {format_duration(eta)} remaining"
     elif run.get("status") == "partial":
-        label = f"Complete with issues · {len(completed)} of {len(variants)} variants"
+        noun = "variant" if len(variants) == 1 else "variants"
+        label = f"Complete with issues · {len(completed)} of {len(variants)} {noun}"
     elif run.get("status") == "success":
-        label = f"Complete · {len(variants)} variants"
+        noun = "variant" if len(variants) == 1 else "variants"
+        label = f"Complete · {len(variants)} {noun}"
     elif run.get("status") == "failed":
         label = "Failed"
     else:
@@ -721,7 +723,7 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
     if os.path.splitext(video_path)[1].lower() not in VIDEO_EXTS:
         return None, "Choose one compatible video file"
     if not isinstance(variants, list) or not (MIN_VARIANTS <= len(variants) <= MAX_VARIANTS):
-        return None, "Choose 2 to 4 variants"
+        return None, "Choose 1 to 4 variants"
 
     run_id = _now_id()
     run_dir = _run_dir(run_id)
@@ -1126,22 +1128,29 @@ def _inventory_items(limit=None):
     return items, total_size, file_count
 
 
-def status_payload():
+def _public_runs():
     with test_lab_lock:
         _prune_test_lab_runs_locked()
         runs = [_public_run(run) for run in test_lab_runs.values()]
     runs.sort(key=lambda run: run.get("id", ""), reverse=True)
+    return runs
+
+
+def run_status_payload():
+    runs = _public_runs()
+    active = next(
+        (run for run in runs if run.get("status") in {"queued", "running"}),
+        None,
+    )
+    return {
+        "active_run": active or (runs[0] if runs else None),
+        "has_active_run": active is not None,
+    }
+
+
+def inventory_payload():
     items, total_size, file_count = _inventory_items()
     return {
-        "runs": runs,
-        "active_run": next(
-            (
-                run
-                for run in runs
-                if run.get("status") in {"queued", "running"}
-            ),
-            runs[0] if runs else None,
-        ),
         "files": items,
         "file_count": file_count,
         "files_truncated": file_count > len(items),
@@ -1150,6 +1159,23 @@ def status_payload():
         "total_size_label": format_size(total_size),
         "test_lab_root": TEST_LAB_ROOT,
     }
+
+
+def status_payload():
+    runs = _public_runs()
+    active = next(
+        (run for run in runs if run.get("status") in {"queued", "running"}),
+        None,
+    )
+    payload = inventory_payload()
+    payload.update(
+        {
+            "runs": runs,
+            "active_run": active or (runs[0] if runs else None),
+            "has_active_run": active is not None,
+        }
+    )
+    return payload
 
 
 def _active_file_ids():

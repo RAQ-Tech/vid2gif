@@ -796,5 +796,5 @@ def test_maintenance_page_and_static_assets_render():
     assert "data-maint-operation" in script
     assert "data-maint-expand" in script
     assert "data-maint-page" in script
-    assert "escapeHtml(file.source_path)" in script
+    assert "escapeHtml(change.source || '')" in script
     assert "textContent" in script

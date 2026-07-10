@@ -1,7 +1,16 @@
-import os
 import mimetypes
+import os
 import time
-from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_file
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 
 from . import app_settings
 from . import actor_image_maintenance
@@ -10,6 +19,7 @@ from . import estimate_history
 from . import maintenance
 from . import poster_maintenance
 from . import subtitle_maintenance
+from . import system_status
 from . import test_lab
 from . import video_preview_maintenance
 from .config import DEFAULTS, LIB_ROOT, VIDEO_EXTS
@@ -344,6 +354,62 @@ def settings_page():
 @app.route("/maintenance")
 def maintenance_page():
     return render_template("maintenance.html", lib_root=LIB_ROOT)
+
+
+@app.route("/system")
+def system_page():
+    return render_template("system.html")
+
+
+@app.route("/api/system/status")
+def api_system_status():
+    return jsonify(system_status.status_payload())
+
+
+@app.route("/healthz")
+def healthz():
+    payload = system_status.status_payload()
+    status_code = 200 if payload.get("healthy") else 503
+    return jsonify(
+        {
+            "status": payload.get("overall", "unhealthy"),
+            "healthy": bool(payload.get("healthy")),
+            "generated_at": payload.get("generated_at"),
+        }
+    ), status_code
+
+
+@app.route("/system/backup", methods=["POST"])
+def system_backup():
+    try:
+        archive_path, backup = system_status.create_state_backup()
+    except Exception as exc:
+        return Response(f"State backup failed: {exc}\n", status=500, mimetype="text/plain")
+
+    archive_size = os.path.getsize(archive_path)
+
+    def stream_archive():
+        try:
+            with open(archive_path, "rb") as archive:
+                while True:
+                    chunk = archive.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                os.remove(archive_path)
+            except OSError:
+                pass
+
+    response = Response(stream_archive(), mimetype="application/zip")
+    response.content_length = archive_size
+    response.headers.set(
+        "Content-Disposition", "attachment", filename=backup["download_name"]
+    )
+    response.headers["X-vid2gif-Backup-Files"] = str(backup["file_count"])
+    response.headers["X-vid2gif-Backup-Bytes"] = str(backup["total_bytes"])
+    return response
 
 
 @app.route("/api/dashboard/status")
@@ -1098,7 +1164,7 @@ def api_test_lab_run():
     if not isinstance(raw_variants, list) or not (
         test_lab.MIN_VARIANTS <= len(raw_variants) <= test_lab.MAX_VARIANTS
     ):
-        return jsonify({"error": "Choose 2 to 4 variants"}), 400
+        return jsonify({"error": "Choose 1 to 4 variants"}), 400
 
     variants = []
     for index, raw in enumerate(raw_variants, start=1):
@@ -1112,12 +1178,22 @@ def api_test_lab_run():
     run_id, err = test_lab.enqueue_test_run(real_target, variants, lib_root=LIB_ROOT)
     if err:
         return jsonify({"error": err}), 400
-    return jsonify({"run_id": run_id, "status": test_lab.status_payload()})
+    return jsonify({"run_id": run_id, "status": test_lab.run_status_payload()})
 
 
 @app.route("/api/test-lab/status")
 def api_test_lab_status():
     return jsonify(test_lab.status_payload())
+
+
+@app.route("/api/test-lab/run-status")
+def api_test_lab_run_status():
+    return jsonify(test_lab.run_status_payload())
+
+
+@app.route("/api/test-lab/files")
+def api_test_lab_files():
+    return jsonify(test_lab.inventory_payload())
 
 
 @app.route("/api/test-lab/delete", methods=["POST"])

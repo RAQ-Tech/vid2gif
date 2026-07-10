@@ -1,0 +1,109 @@
+{% extends 'base.html' %}
+
+{% block title %}vid2gif System{% endblock %}
+
+{% block content %}
+<div class="workspace-shell">
+  <div class="workspace-heading">
+    <div>
+      <h1 class="h3 mb-1">System</h1>
+      <div class="text-muted small">Runtime health, storage availability, and application state backup.</div>
+    </div>
+    <div class="workspace-actions">
+      <button id="systemRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
+        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+        <span>Refresh</span>
+      </button>
+    </div>
+  </div>
+
+  <section class="status-strip system-status-strip" aria-label="System summary">
+    <div class="status-tile">
+      <div class="metric-label">Overall</div>
+      <div id="systemOverall" class="metric-value">Loading</div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Uptime</div>
+      <div id="systemUptime" class="metric-value">--</div>
+    </div>
+    <div class="status-tile">
+      <div class="metric-label">Active work</div>
+      <div id="systemActiveWork" class="metric-value">0</div>
+    </div>
+    <div class="status-tile status-tile-wide">
+      <div class="metric-label">State storage free</div>
+      <div id="systemStateFree" class="metric-value">Checking</div>
+    </div>
+  </section>
+
+  <div id="systemMessage" class="scan-estimate mb-3" aria-live="polite">
+    <i class="bi bi-info-circle" aria-hidden="true"></i>
+    <div>
+      <div id="systemMessageTitle">Collecting system status.</div>
+      <div id="systemMessageDetail" class="scan-estimate-detail"></div>
+    </div>
+  </div>
+
+  <section class="system-grid">
+    <div class="workspace-panel system-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">Runtime Checks</h2>
+          <div class="text-muted small">Required storage, tools, and background workers.</div>
+        </div>
+      </div>
+      <div id="systemChecks" class="system-check-list">
+        <div class="text-muted text-center py-4">Loading checks...</div>
+      </div>
+    </div>
+
+    <div class="workspace-panel system-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">Runtime</h2>
+          <div class="text-muted small">Current process and startup details.</div>
+        </div>
+      </div>
+      <dl id="systemRuntime" class="system-detail-list mb-0"></dl>
+    </div>
+  </section>
+
+  <section class="workspace-panel system-panel mt-3">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">Storage</h2>
+        <div class="text-muted small">Capacity and free space for mounted library and state roots.</div>
+      </div>
+    </div>
+    <div id="systemStorage" class="system-storage-grid">
+      <div class="text-muted text-center py-4">Loading storage...</div>
+    </div>
+  </section>
+
+  <section class="workspace-panel system-panel mt-3">
+    <div class="panel-heading">
+      <div>
+        <h2 class="h5 mb-1">State Backup</h2>
+        <div class="text-muted small">Export settings, manifests, logs, Test Lab runs, and other files currently stored under <code>/state</code>.</div>
+      </div>
+      <form method="post" action="/system/backup">
+        <button class="btn btn-primary btn-sm" type="submit">
+          <i class="bi bi-file-earmark-zip" aria-hidden="true"></i>
+          <span>Download Backup</span>
+        </button>
+      </form>
+    </div>
+    <div class="scan-estimate mb-0">
+      <i class="bi bi-shield-lock" aria-hidden="true"></i>
+      <div>
+        <div>Handle backups as sensitive data.</div>
+        <div class="scan-estimate-detail">The archive can contain application settings, media paths, maintenance logs, and service credentials.</div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='system.js') }}"></script>
+{% endblock %}

@@ -16,6 +16,8 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+node_modules/
+frontend/
 
 # OS-specific files
 .DS_Store

@@ -20,13 +20,21 @@ deployment.
 
 ## Testing
 
-Install development dependencies, audit runtime dependencies, and run tests:
+Install development dependencies, audit runtime dependencies, build the checked-in
+Test Lab bundle, and run tests:
 
 ```bash
 pip install -r requirements-dev.txt
+npm ci --ignore-scripts
 python -m pip_audit -r requirements.txt
+npm audit --audit-level=low
+npm run test:frontend
+npm run build:frontend
 python -m pytest
 ```
+
+Node.js is only required for frontend development. Docker and deployed instances
+serve the generated `app/static/test-lab.bundle.js` file directly.
 
 ## Installation
 
@@ -132,4 +140,5 @@ increase processing time.
 
 - Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines.
 - Add tests under [`tests/`](tests/) and ensure they pass with `python -m pytest`.
+- Run `npm run test:frontend` and rebuild the checked-in frontend bundle after changing Test Lab source files.
 - Keep runtime dependencies in `requirements.txt` and development-only tools in `requirements-dev.txt`.

@@ -7,6 +7,14 @@ from app import jobs, routes
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _test_lab_frontend_source():
+    source_root = ROOT / "frontend" / "test-lab"
+    return "\n".join(
+        (source_root / name).read_text()
+        for name in ("index.js", "logic.js", "player.js")
+    )
+
+
 def _make_job(job_id="job1", status="queued", log_path="/tmp/job.txt"):
     return {
         "id": job_id,
@@ -246,6 +254,7 @@ def test_api_logs_resets_when_offset_exceeds_file_size(tmp_path):
 
 def test_workspace_escapes_dynamic_job_tables():
     workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
+    test_lab_script = _test_lab_frontend_source()
 
     assert "escapeHtml(j.video)" in workspace_script
     assert "escapeHtml(j.progress_label" in workspace_script
@@ -253,12 +262,11 @@ def test_workspace_escapes_dynamic_job_tables():
     assert "escapeHtml(formatDuration(j.elapsed_seconds" in workspace_script
     assert "escapeHtml(formatSize(j.output_size_bytes" in workspace_script
     assert "escapeHtml(j.gif_optimization_label || '')" in workspace_script
-    assert "escapeHtml(variant.name)" in workspace_script
-    assert "escapeHtml(variant.settings_label)" in workspace_script
-    assert "escapeHtml(file.source_name || '')" in workspace_script
-    assert "escapeHtml(displayUrl)" in workspace_script
-    assert "escapeHtml(file.original_url || file.url)" in workspace_script
-    assert "escapeHtml(file.download_url || file.url)" in workspace_script
+    assert "escapeHtml(variant.name)" in test_lab_script
+    assert "escapeHtml(variant.settings_label" in test_lab_script
+    assert "escapeHtml(file.source_name || '')" in test_lab_script
+    assert "escapeHtml(file.original_url || file.url)" in test_lab_script
+    assert "escapeHtml(file.download_url || file.url)" in test_lab_script
     assert "box.textContent +=" in workspace_script
     assert "opt.textContent =" in workspace_script
 
@@ -266,7 +274,8 @@ def test_workspace_escapes_dynamic_job_tables():
 def test_gifs_workspace_uses_polling_instead_of_socketio():
     workspace_template = (ROOT / "app" / "templates" / "gifs.html").read_text()
     workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
-    combined = workspace_template + workspace_script
+    test_lab_script = _test_lab_frontend_source()
+    combined = workspace_template + workspace_script + test_lab_script
 
     assert "socket.io" not in combined
     assert "const socket = io()" not in combined
@@ -274,21 +283,25 @@ def test_gifs_workspace_uses_polling_instead_of_socketio():
     assert "EventSource" not in combined
     assert "/api/stream" not in combined
     assert "fetch('/api/queue/status')" in workspace_script
-    assert "setInterval(refreshQueue, 1000)" in workspace_script
+    assert "workspaceRefreshTimer = setTimeout(refreshWorkspace, delay)" in workspace_script
+    assert "setInterval(refreshQueue, 1000)" not in workspace_script
     assert "fetch('/api/status')" in workspace_script
     assert "fetch(`/api/logs/${encodeURIComponent(currentJob)}" in workspace_script
     assert "fetch(`/api/scan-estimate?${params.toString()}`" in workspace_script
-    assert "fetch('/api/test-lab/status')" in workspace_script
-    assert "fetch('/api/test-lab/run'" in workspace_script
-    assert "fetch('/api/test-lab/delete'" in workspace_script
-    assert "fetch('/api/test-lab/preview'" in workspace_script
-    assert "fetch(`/api/media-browser?path=${encodeURIComponent" in workspace_script
+    assert "fetch('/api/test-lab/run-status')" in test_lab_script
+    assert "fetch('/api/test-lab/files')" in test_lab_script
+    assert "fetch('/api/test-lab/run'" in test_lab_script
+    assert "fetch('/api/test-lab/delete'" in test_lab_script
+    assert "fetch('/api/test-lab/preview'" in test_lab_script
+    assert "fetch(`/api/media-browser?path=${encodeURIComponent" in test_lab_script
+    assert "setInterval(refreshTestLab, 1000)" not in workspace_script
 
 
 def test_gifs_workspace_contains_expected_controls_and_metrics():
     base_template = (ROOT / "app" / "templates" / "base.html").read_text()
     workspace_template = (ROOT / "app" / "templates" / "gifs.html").read_text()
     workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
+    test_lab_script = _test_lab_frontend_source()
 
     assert '>GIFs</a>' in base_template
     assert '>Settings</a>' in base_template
@@ -321,46 +334,42 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     assert "testLabVariants" in workspace_template
     assert "testLabPreviews" in workspace_template
     assert "testLabFilesBody" in workspace_template
-    assert "testLabAutoRestart" in workspace_template
-    assert "testLabPreviewLayout" in workspace_template
-    assert "testLabPreviewSizeMode" in workspace_template
-    assert "Natural preview" in workspace_template
+    assert "testLabVariantTabs" in workspace_template
+    assert "testLabVariantEditor" in workspace_template
+    assert "testLabPlayPause" in workspace_template
+    assert "testLabTimeline" in workspace_template
+    assert "testLabPlaybackSpeed" in workspace_template
+    assert "testLabSavedTray" in workspace_template
     assert "Optimize GIF" in workspace_template
-    assert ">Restart</span>" in workspace_template
-    assert "data-test-preview" in workspace_script
-    assert "height_preset" in workspace_script
-    assert "fps_preset" in workspace_script
-    assert "clip_len_preset" in workspace_script
-    assert "toggleTestLabVariantControls" in workspace_script
-    assert "testLabSelectedFileIds" in workspace_script
-    assert "testLabSlotIds" in workspace_script
-    assert "testlab_slots" in workspace_script
-    assert "testlab_preview_layout" in workspace_script
-    assert "testlab_preview_size" in workspace_script
-    assert "data-test-rename-id" in workspace_script
-    assert "/api/test-lab/rename" in workspace_script
-    assert "/api/test-lab/preview" in workspace_script
-    assert "data-base-src" in workspace_script
-    assert "display_url" in workspace_script
-    assert "preview_status" in workspace_script
-    assert "preview_label" in workspace_script
-    assert "preview-badge" in workspace_script
-    assert "testLabSlotRenderSignature" in workspace_script
-    assert "bi-download" in workspace_script
-    assert "test-empty-slots" in workspace_script
-    assert "data-slot-drop" in workspace_script
-    assert "data-drag-file-id" in workspace_script
-    assert "application/x-test-lab-file" in workspace_script
-    assert "fillOpenTestLabSlots" in workspace_script
-    assert "testlab_auto_restart" in workspace_script
-    assert "requestAnimationFrame(() =>" in workspace_script
-    assert "data-test-file-id" in workspace_script
+    assert "height_preset" in test_lab_script
+    assert "fps_preset" in test_lab_script
+    assert "clip_len_preset" in test_lab_script
+    assert "makeDefaultVariant(config.defaults || {}, 1)" in test_lab_script
+    assert "testlab_slots" in test_lab_script
+    assert "testlab_comparison_ids" in test_lab_script
+    assert "data-test-rename-id" in test_lab_script
+    assert "/api/test-lab/rename" in test_lab_script
+    assert "/api/test-lab/preview" in test_lab_script
+    assert "display_url" in test_lab_script
+    assert "preview_status" in test_lab_script
+    assert "preview_label" in test_lab_script
+    assert "preview-badge" in test_lab_script
+    assert "comparisonRenderSignature" in test_lab_script
+    assert "bi-download" in test_lab_script
+    assert "test-player-dropzone" in test_lab_script
+    assert "data-keyboard-deck" in test_lab_script
+    assert "Sortable.create" in test_lab_script
+    assert "SynchronizedGifPlayer" in test_lab_script
+    assert "decompressFrames" in test_lab_script
+    assert "requestAnimationFrame(this.tick)" in test_lab_script
+    assert "data-test-file-id" in test_lab_script
+    assert "<img" not in test_lab_script
     assert "Original FPS" not in workspace_template
-    assert "Original FPS" not in workspace_script
+    assert "Original FPS" not in test_lab_script
     assert "fps_original" not in workspace_template
-    assert "fps_original" not in workspace_script
+    assert "fps_original" not in test_lab_script
     assert "speed=" not in workspace_template
-    assert "speed=" not in workspace_script
+    assert "speed=" not in test_lab_script
 
 
 def test_settings_template_contains_preview_controls():

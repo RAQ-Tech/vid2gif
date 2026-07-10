@@ -1,0 +1,16 @@
+{
+  "name": "vid2gif-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:frontend": "esbuild frontend/test-lab/index.js --bundle --minify --legal-comments=linked --target=es2020 --outfile=app/static/test-lab.bundle.js",
+    "test:frontend": "node --test frontend/test-lab/*.test.js"
+  },
+  "dependencies": {
+    "gifuct-js": "2.1.2",
+    "sortablejs": "1.15.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}
