@@ -544,7 +544,8 @@ def test_landscape_poster_ui_assets_render():
     assert 'id="posterEmbyLastTest"' in html
     assert 'id="posterEmbyLastRefresh"' in html
     assert "fetch('/api/maintenance/landscape-posters/status')" in script
-    assert "fetch('/api/maintenance/landscape-posters/run'" in script
+    assert "fetch('/api/maintenance/landscape-posters/scan'" in script
+    assert 'id="posterApplyButton"' in html
     assert "fetch('/api/maintenance/landscape-posters/settings'" in script
     assert "fetch('/api/maintenance/landscape-posters/emby/test'" in script
     assert "server.textContent" in script

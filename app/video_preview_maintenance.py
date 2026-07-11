@@ -13,6 +13,7 @@ import time
 from . import app_settings
 from . import emby_client
 from . import impact_metrics
+from . import maintenance_scan_store
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .maintenance import QUARANTINE_DIRNAME
@@ -58,6 +59,8 @@ __test__ = False
 
 preview_scans = {}
 quality_scans = {}
+_preview_cache_loaded = False
+_quality_cache_loaded = False
 quality_plans = {}
 quality_apply_runs = {}
 generation_plans = {}
@@ -296,7 +299,7 @@ def public_scan(scan):
         "interval_seconds": settings.get("video_preview_bif_interval_seconds", 10),
     }
     recommendation = scan.get("recommended_profile") or None
-    return {
+    public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
@@ -324,6 +327,19 @@ def public_scan(scan):
             )
         ),
     }
+    public.update(maintenance_scan_store.public_cache_metadata("video_previews_missing", scan))
+    return public
+
+
+def _ensure_preview_cache_loaded():
+    global _preview_cache_loaded
+    if _preview_cache_loaded:
+        return
+    restored = maintenance_scan_store.restore_scan("video_previews_missing")
+    with preview_lock:
+        if restored and restored.get("id") not in preview_scans:
+            preview_scans[restored["id"]] = restored
+        _preview_cache_loaded = True
 
 
 def _prune_scans_locked(now=None):
@@ -333,7 +349,7 @@ def _prune_scans_locked(now=None):
         if scan.get("status") not in SCAN_TERMINAL_STATUSES:
             continue
         finished = scan.get("_finished_ts") or scan.get("_created_ts") or now
-        if now - finished > SCAN_MAX_AGE_SECONDS:
+        if not scan.get("_persisted_latest") and now - finished > SCAN_MAX_AGE_SECONDS:
             preview_scans.pop(scan_id, None)
     terminal = sorted(
         (
@@ -344,7 +360,8 @@ def _prune_scans_locked(now=None):
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
-    for scan_id, _scan in terminal[SCAN_RETENTION_COUNT:]:
+    removable = [item for item in terminal if not item[1].get("_persisted_latest")]
+    for scan_id, _scan in removable[SCAN_RETENTION_COUNT:]:
         preview_scans.pop(scan_id, None)
 
 
@@ -412,6 +429,13 @@ def _run_scan(scan, lib_root):
                 "counts": counts,
             },
         )
+        persisted = maintenance_scan_store.persist_success(
+            "video_previews_missing", "video_previews", scan, lib_root
+        )
+        if persisted:
+            with preview_lock:
+                for candidate in preview_scans.values():
+                    candidate["_persisted_latest"] = candidate is scan
     except ScanCancelled:
         finished = time.time()
         _set_scan_progress(
@@ -456,6 +480,7 @@ def _run_scan(scan, lib_root):
 
 
 def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
+    _ensure_preview_cache_loaded()
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
@@ -525,6 +550,7 @@ def cancel_scan(scan_id=None):
 
 
 def status_payload(scan_id=None):
+    _ensure_preview_cache_loaded()
     with preview_lock:
         _prune_scans_locked()
         if scan_id:
@@ -532,13 +558,16 @@ def status_payload(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         elif preview_scans:
-            scan = max(preview_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            active = _active_scan_locked()
+            successful = [item for item in preview_scans.values() if item.get("status") == "success"]
+            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(preview_scans.values(), key=lambda item: item.get("_created_ts") or 0))
         else:
             scan = None
     return {"scan": public_scan(scan)}, None
 
 
 def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT):
+    _ensure_preview_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "missing").lower()
     if status not in {"missing", "present", "all"}:
@@ -1036,7 +1065,7 @@ def public_quality_scan(scan):
     if not scan:
         return None
     counts = scan.get("counts") or {}
-    return {
+    public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
@@ -1058,6 +1087,19 @@ def public_quality_scan(scan):
         "default_repair_root": DEFAULT_REPAIR_ROOT,
         "recent_logs": list_recent_logs(),
     }
+    public.update(maintenance_scan_store.public_cache_metadata("video_previews_quality", scan))
+    return public
+
+
+def _ensure_quality_cache_loaded():
+    global _quality_cache_loaded
+    if _quality_cache_loaded:
+        return
+    restored = maintenance_scan_store.restore_scan("video_previews_quality")
+    with preview_lock:
+        if restored and restored.get("id") not in quality_scans:
+            quality_scans[restored["id"]] = restored
+        _quality_cache_loaded = True
 
 
 def _prune_quality_scans_locked(now=None):
@@ -1067,7 +1109,7 @@ def _prune_quality_scans_locked(now=None):
         if scan.get("status") not in SCAN_TERMINAL_STATUSES:
             continue
         finished = scan.get("_finished_ts") or scan.get("_created_ts") or now
-        if now - finished > SCAN_MAX_AGE_SECONDS:
+        if not scan.get("_persisted_latest") and now - finished > SCAN_MAX_AGE_SECONDS:
             quality_scans.pop(scan_id, None)
     terminal = sorted(
         (
@@ -1078,7 +1120,8 @@ def _prune_quality_scans_locked(now=None):
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
-    for scan_id, _scan in terminal[SCAN_RETENTION_COUNT:]:
+    removable = [item for item in terminal if not item[1].get("_persisted_latest")]
+    for scan_id, _scan in removable[SCAN_RETENTION_COUNT:]:
         quality_scans.pop(scan_id, None)
 
 
@@ -1136,6 +1179,13 @@ def _run_quality_scan(scan, lib_root):
             timestamp=utc_iso(finished),
         )
         _write_log("quality-scan", {"scan_id": scan["id"], "path": scan["path"], "counts": counts})
+        persisted = maintenance_scan_store.persist_success(
+            "video_previews_quality", "video_previews", scan, lib_root
+        )
+        if persisted:
+            with preview_lock:
+                for candidate in quality_scans.values():
+                    candidate["_persisted_latest"] = candidate is scan
     except ScanCancelled:
         finished = time.time()
         _set_quality_progress(
@@ -1180,6 +1230,7 @@ def _run_quality_scan(scan, lib_root):
 
 
 def start_quality_scan(path, lib_root=LIB_ROOT, synchronous=False):
+    _ensure_quality_cache_loaded()
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
@@ -1249,6 +1300,7 @@ def cancel_quality_scan(scan_id=None):
 
 
 def quality_status_payload(scan_id=None):
+    _ensure_quality_cache_loaded()
     with preview_lock:
         _prune_quality_scans_locked()
         if scan_id:
@@ -1256,13 +1308,16 @@ def quality_status_payload(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         elif quality_scans:
-            scan = max(quality_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            active = _active_quality_scan_locked()
+            successful = [item for item in quality_scans.values() if item.get("status") == "success"]
+            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(quality_scans.values(), key=lambda item: item.get("_created_ts") or 0))
         else:
             scan = None
     return {"scan": public_quality_scan(scan)}, None
 
 
 def quality_items_payload(scan_id, status="problem", offset=0, limit=ITEM_PAGE_DEFAULT):
+    _ensure_quality_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "problem").lower()
     if status not in {"problem", "bad", "warning", "ok", "all"}:
@@ -1360,9 +1415,13 @@ def _repair_destination(path, lib_root, move_root):
 
 
 def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
+    _ensure_quality_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
+    allowed, freshness_error = maintenance_scan_store.action_allowed("video_previews_quality", scan_id)
+    if not allowed:
+        return None, freshness_error
     item_ids = payload.get("item_ids")
     selected_ids = {str(item_id) for item_id in item_ids if str(item_id)} if isinstance(item_ids, list) else None
     selected_statuses = {
@@ -2204,9 +2263,13 @@ def save_generation_settings(payload):
 
 
 def build_generation_plan(payload, lib_root=LIB_ROOT):
+    _ensure_preview_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
+    allowed, freshness_error = maintenance_scan_store.action_allowed("video_previews_missing", scan_id)
+    if not allowed:
+        return None, freshness_error
     raw_ids = payload.get("item_ids")
     if not isinstance(raw_ids, list) or not raw_ids:
         return None, "Select at least one missing video"

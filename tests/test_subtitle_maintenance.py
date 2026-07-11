@@ -306,7 +306,7 @@ def test_subtitle_scan_route_rejects_symlink(monkeypatch, tmp_path):
     assert res.get_json()["error"] == "Path not found"
 
 
-def test_subtitle_status_reports_expired_scan(monkeypatch, tmp_path):
+def test_subtitle_status_retains_latest_persisted_scan(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write(lib / "Movie" / "Movie.mkv")
     scan = _scan(lib, monkeypatch)
@@ -315,8 +315,8 @@ def test_subtitle_status_reports_expired_scan(monkeypatch, tmp_path):
     scan["_finished_ts"] = time.time() - 2
     payload, err = subtitle_maintenance.status_payload(scan["id"])
 
-    assert payload is None
-    assert err == "Scan not found"
+    assert err is None
+    assert payload["scan"]["id"] == scan["id"]
 
 
 def test_subtitle_ui_assets_render():

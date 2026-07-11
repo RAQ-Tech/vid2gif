@@ -11,6 +11,7 @@ import time
 
 from . import app_settings
 from . import impact_metrics
+from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
@@ -43,6 +44,7 @@ FFPROBE_TIMEOUT_SECONDS = max(1, _env_int("FFPROBE_TIMEOUT_SECONDS", 30))
 __test__ = False
 
 duplicate_scans = {}
+_duplicate_cache_loaded = False
 cleanup_plans = {}
 duplicate_apply_runs = {}
 maintenance_lock = threading.Lock()
@@ -781,7 +783,19 @@ def public_scan(scan, include_groups=False):
     }
     if include_groups:
         public["groups"] = [_public_group(group) for group in scan.get("groups") or []]
+    public.update(maintenance_scan_store.public_cache_metadata("duplicates", scan))
     return public
+
+
+def _ensure_duplicate_cache_loaded():
+    global _duplicate_cache_loaded
+    if _duplicate_cache_loaded:
+        return
+    restored = maintenance_scan_store.restore_scan("duplicates")
+    with maintenance_lock:
+        if restored and restored.get("id") not in duplicate_scans:
+            duplicate_scans[restored["id"]] = restored
+        _duplicate_cache_loaded = True
 
 
 def _coerce_page(offset, limit):
@@ -808,7 +822,7 @@ def _prune_duplicate_scans_locked(now=None):
     for scan_id in terminal_ids:
         scan = duplicate_scans.get(scan_id) or {}
         finished = scan.get("_finished_ts") or scan.get("_created_ts") or now
-        if now - finished > DUPLICATE_SCAN_MAX_AGE_SECONDS:
+        if not scan.get("_persisted_latest") and now - finished > DUPLICATE_SCAN_MAX_AGE_SECONDS:
             duplicate_scans.pop(scan_id, None)
 
     terminal = sorted(
@@ -820,7 +834,8 @@ def _prune_duplicate_scans_locked(now=None):
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
-    for scan_id, _scan in terminal[DUPLICATE_SCAN_RETENTION_COUNT:]:
+    removable = [item for item in terminal if not item[1].get("_persisted_latest")]
+    for scan_id, _scan in removable[DUPLICATE_SCAN_RETENTION_COUNT:]:
         duplicate_scans.pop(scan_id, None)
 
 
@@ -908,6 +923,13 @@ def _run_scan(scan, lib_root):
             ],
             timestamp=utc_iso(finished),
         )
+        persisted = maintenance_scan_store.persist_success(
+            "duplicates", "duplicates", scan, lib_root
+        )
+        if persisted:
+            with maintenance_lock:
+                for candidate in duplicate_scans.values():
+                    candidate["_persisted_latest"] = candidate is scan
     except _ScanCancelled:
         finished = time.time()
         _set_scan_progress(
@@ -933,6 +955,7 @@ def _run_scan(scan, lib_root):
 
 
 def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
+    _ensure_duplicate_cache_loaded()
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
@@ -1015,6 +1038,7 @@ def cancel_duplicate_scan(scan_id=None):
 
 
 def status_payload(scan_id=None):
+    _ensure_duplicate_cache_loaded()
     with maintenance_lock:
         _prune_duplicate_scans_locked()
         if scan_id:
@@ -1022,13 +1046,16 @@ def status_payload(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         elif duplicate_scans:
-            scan = max(duplicate_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            active = _active_duplicate_scan_locked()
+            successful = [item for item in duplicate_scans.values() if item.get("status") == "success"]
+            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(duplicate_scans.values(), key=lambda item: item.get("_created_ts") or 0))
         else:
             scan = None
     return {"scan": public_scan(scan)}, None
 
 
 def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
+    _ensure_duplicate_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     with maintenance_lock:
         _prune_duplicate_scans_locked()
@@ -1057,6 +1084,7 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
 
 
 def group_payload(scan_id, group_id, keep_video_id=""):
+    _ensure_duplicate_cache_loaded()
     with maintenance_lock:
         _prune_duplicate_scans_locked()
         scan = duplicate_scans.get(str(scan_id or ""))
@@ -1207,9 +1235,13 @@ def _planned_operation(item, keep_video, action, settings, lib_root, override_op
 
 
 def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
+    _ensure_duplicate_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
+    allowed, freshness_error = maintenance_scan_store.action_allowed("duplicates", scan_id)
+    if not allowed:
+        return None, freshness_error
     action = str(payload.get("action") or "move").strip().lower()
     if action not in PLAN_ACTIONS:
         return None, "Choose move or delete"

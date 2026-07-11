@@ -9,6 +9,7 @@ import time
 
 from . import app_settings
 from . import impact_metrics
+from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
@@ -47,6 +48,7 @@ LANGUAGE_MODIFIER_TOKENS = {
 __test__ = False
 
 subtitle_scans = {}
+_subtitle_cache_loaded = False
 subtitle_plans = {}
 subtitle_apply_runs = {}
 subtitle_lock = threading.Lock()
@@ -358,7 +360,7 @@ def public_scan(scan):
         return None
     counts = scan.get("counts") or {}
     review_count = counts.get("review_count", 0)
-    return {
+    public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
@@ -375,6 +377,19 @@ def public_scan(scan):
         "settings": public_settings(scan.get("settings") or app_settings.load_settings()),
         **counts,
     }
+    public.update(maintenance_scan_store.public_cache_metadata("subtitles", scan))
+    return public
+
+
+def _ensure_cache_loaded():
+    global _subtitle_cache_loaded
+    if _subtitle_cache_loaded:
+        return
+    restored = maintenance_scan_store.restore_scan("subtitles")
+    with subtitle_lock:
+        if restored and restored.get("id") not in subtitle_scans:
+            subtitle_scans[restored["id"]] = restored
+        _subtitle_cache_loaded = True
 
 
 def _prune_scans_locked(now=None):
@@ -384,7 +399,7 @@ def _prune_scans_locked(now=None):
         if scan.get("status") not in SCAN_TERMINAL_STATUSES:
             continue
         finished = scan.get("_finished_ts") or scan.get("_created_ts") or now
-        if now - finished > SCAN_MAX_AGE_SECONDS:
+        if not scan.get("_persisted_latest") and now - finished > SCAN_MAX_AGE_SECONDS:
             subtitle_scans.pop(scan_id, None)
     terminal = sorted(
         (
@@ -395,7 +410,8 @@ def _prune_scans_locked(now=None):
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
-    for scan_id, _scan in terminal[SCAN_RETENTION_COUNT:]:
+    removable = [item for item in terminal if not item[1].get("_persisted_latest")]
+    for scan_id, _scan in removable[SCAN_RETENTION_COUNT:]:
         subtitle_scans.pop(scan_id, None)
 
 
@@ -453,6 +469,13 @@ def _run_scan(scan, settings, lib_root):
             ],
             timestamp=utc_iso(finished),
         )
+        persisted = maintenance_scan_store.persist_success(
+            "subtitles", "subtitles", scan, lib_root
+        )
+        if persisted:
+            with subtitle_lock:
+                for candidate in subtitle_scans.values():
+                    candidate["_persisted_latest"] = candidate is scan
     except ScanCancelled:
         finished = time.time()
         _set_scan_progress(
@@ -478,6 +501,7 @@ def _run_scan(scan, settings, lib_root):
 
 
 def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
+    _ensure_cache_loaded()
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
@@ -549,6 +573,7 @@ def cancel_scan(scan_id=None):
 
 
 def status_payload(scan_id=None):
+    _ensure_cache_loaded()
     with subtitle_lock:
         _prune_scans_locked()
         if scan_id:
@@ -556,7 +581,9 @@ def status_payload(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         elif subtitle_scans:
-            scan = max(subtitle_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            active = _active_scan_locked()
+            successful = [item for item in subtitle_scans.values() if item.get("status") == "success"]
+            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(subtitle_scans.values(), key=lambda item: item.get("_created_ts") or 0))
         else:
             scan = None
     return {"scan": public_scan(scan)}, None
@@ -595,6 +622,7 @@ def _filter_items(items, status, query):
 
 
 def items_payload(scan_id, status="language_review", offset=0, limit=ITEM_PAGE_DEFAULT, q=""):
+    _ensure_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     with subtitle_lock:
         _prune_scans_locked()
@@ -641,9 +669,13 @@ def _all_subtitles(scan):
 
 
 def build_action_plan(payload, lib_root=LIB_ROOT):
+    _ensure_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
+    allowed, freshness_error = maintenance_scan_store.action_allowed("subtitles", scan_id)
+    if not allowed:
+        return None, freshness_error
     operation = str(payload.get("operation") or "quarantine").lower()
     if operation not in {"quarantine", "delete"}:
         return None, "Choose quarantine or delete"

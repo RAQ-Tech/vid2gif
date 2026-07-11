@@ -17,6 +17,8 @@ from . import actor_image_maintenance
 from . import dashboard
 from . import estimate_history
 from . import maintenance
+from . import maintenance_scan_orchestrator
+from . import maintenance_scan_store
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import system_status
@@ -425,6 +427,43 @@ def api_dashboard_status():
     return jsonify(dashboard.status_payload())
 
 
+@app.route("/api/dashboard/maintenance-scans", methods=["POST"])
+def api_dashboard_maintenance_scans():
+    data = request.get_json(silent=True) or {}
+    run, err = maintenance_scan_orchestrator.start(
+        data.get("path") or LIB_ROOT,
+        areas=data.get("areas") if "areas" in data else None,
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"run": run})
+
+
+@app.route("/api/dashboard/maintenance-scans/status")
+def api_dashboard_maintenance_scans_status():
+    return jsonify({"run": maintenance_scan_orchestrator.status(), "freshness": maintenance_scan_store.freshness_status()})
+
+
+@app.route("/api/dashboard/maintenance-scans/cancel", methods=["POST"])
+def api_dashboard_maintenance_scans_cancel():
+    run, err = maintenance_scan_orchestrator.cancel()
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"run": run})
+
+
+@app.route("/api/dashboard/maintenance-scans/freshness", methods=["POST"])
+def api_dashboard_maintenance_scans_freshness():
+    data = request.get_json(silent=True) or {}
+    result = maintenance_scan_store.start_freshness(
+        areas=data.get("areas"),
+        force=_truthy(data.get("force")),
+        synchronous=_truthy(data.get("synchronous")),
+    )
+    return jsonify({"freshness": result})
+
+
 @app.route("/api/dashboard/library-scan", methods=["POST"])
 def api_dashboard_library_scan():
     data = request.get_json(silent=True) or {}
@@ -769,6 +808,71 @@ def api_maintenance_duplicates_log(log_id):
 @app.route("/api/maintenance/landscape-posters/status")
 def api_maintenance_landscape_posters_status():
     return jsonify(poster_maintenance.status_payload())
+
+
+@app.route("/api/maintenance/landscape-posters/scan", methods=["POST"])
+def api_maintenance_landscape_posters_scan():
+    data = request.get_json(silent=True) or {}
+    scan, err = poster_maintenance.start_poster_scan(
+        data.get("path") or LIB_ROOT,
+        synchronous=_truthy(data.get("synchronous")),
+        lib_root=LIB_ROOT,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": poster_maintenance.public_poster_scan(scan)})
+
+
+@app.route("/api/maintenance/landscape-posters/scan/status")
+def api_maintenance_landscape_posters_scan_status():
+    payload, err = poster_maintenance.poster_scan_status(request.args.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/landscape-posters/scan/cancel", methods=["POST"])
+def api_maintenance_landscape_posters_scan_cancel():
+    data = request.get_json(silent=True) or {}
+    scan, err = poster_maintenance.cancel_poster_scan(data.get("scan_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"scan": poster_maintenance.public_poster_scan(scan)})
+
+
+@app.route("/api/maintenance/landscape-posters/items")
+def api_maintenance_landscape_posters_items():
+    payload, err = poster_maintenance.poster_items_payload(
+        request.args.get("scan_id"), request.args.get("offset"), request.args.get("limit"), request.args.get("status") or "all"
+    )
+    if err:
+        return jsonify({"error": err}), 404 if err == "Scan not found" else 400
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/landscape-posters/plan", methods=["POST"])
+def api_maintenance_landscape_posters_plan():
+    plan, err = poster_maintenance.build_poster_plan(request.get_json(silent=True) or {}, lib_root=LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/landscape-posters/apply", methods=["POST"])
+def api_maintenance_landscape_posters_apply():
+    data = request.get_json(silent=True) or {}
+    run, err = poster_maintenance.start_poster_apply(data.get("plan_id"), synchronous=_truthy(data.get("synchronous")), lib_root=LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"apply": poster_maintenance.public_poster_apply(run)})
+
+
+@app.route("/api/maintenance/landscape-posters/apply/status")
+def api_maintenance_landscape_posters_apply_status():
+    payload, err = poster_maintenance.poster_apply_status(request.args.get("apply_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
 
 
 @app.route("/api/maintenance/landscape-posters/run", methods=["POST"])

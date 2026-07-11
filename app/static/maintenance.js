@@ -59,6 +59,12 @@
   const actorSelected = new Set();
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
+  let posterScan = null;
+  let posterItemsPage = null;
+  let posterPlan = null;
+  let posterApply = null;
+  const posterSelected = new Set();
+  let maintenanceFreshnessTimer = null;
 
   function byId(id) {
     return document.getElementById(id);
@@ -918,7 +924,8 @@
     setProgress(scan);
     renderGroups();
     const planButton = byId('maintenancePlanButton');
-    if (planButton) planButton.disabled = !scan || scan.status !== 'success' || !(scan.duplicate_group_count || 0);
+    const stale = scan?.freshness?.status === 'changed';
+    if (planButton) planButton.disabled = !scan || scan.status !== 'success' || !(scan.duplicate_group_count || 0) || stale;
     if (!scan) {
       setMessage('No scan results yet.', '');
     } else if (scan.status === 'success') {
@@ -931,6 +938,7 @@
       if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
         loadGroupsPage(0);
       }
+      if (stale) setMessage('Duplicate results are out of date', 'Library files changed after this scan. Rescan before creating a cleanup plan.');
     } else if (scan.status === 'failed') {
       setMessage('Scan failed', scan.error || '');
     } else if (scan.status === 'cancelled') {
@@ -957,6 +965,19 @@
     } catch (e) {
       setMessage('Scan unavailable', e.message || '');
       stopPolling();
+    }
+  }
+
+  async function refreshDuplicateStatus() {
+    try {
+      const res = await fetch('/api/maintenance/duplicates/status');
+      const data = await readJsonResponse(res);
+      if (res.ok) {
+        handleScan(data.scan);
+        if (data.scan?.active && !pollTimer) pollTimer = setInterval(() => pollScan(data.scan.id), 1000);
+      }
+    } catch (_e) {
+      // Latest-result hydration is best effort.
     }
   }
 
@@ -1285,6 +1306,8 @@
     if (scanButton) scanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
     if (verifyButton) verifyButton.disabled = active || !previewLastPath;
+    const planButton = byId('previewGenerationPlanButton');
+    if (planButton && scan?.freshness?.status === 'changed') planButton.disabled = true;
   }
 
   function previewPageRangeText(page) {
@@ -1363,7 +1386,7 @@
       previewSelectedMissing.clear();
       (data.items || []).filter(item => item.status === 'missing').forEach(item => previewSelectedMissing.add(item.id));
       previewGenerationPlan = null;
-      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size;
+      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size || previewScan?.freshness?.status === 'changed';
       byId('previewGenerationStartButton').disabled = true;
       byId('previewSelectMissingButton').disabled = !(data.items || []).some(item => item.status === 'missing');
       byId('previewDeselectMissingButton').disabled = !previewSelectedMissing.size;
@@ -1403,6 +1426,7 @@
       if (previewItemsPage?.scan?.id !== scan.id) {
         loadPreviewItems(0);
       }
+      if (scan.freshness?.status === 'changed') setPreviewMessage('Video preview results are out of date', 'Library files changed after this scan. Rescan before generating BIF files.');
     } else if (scan.status === 'failed') {
       setPreviewMessage('Video preview scan failed', scan.error || '');
     } else if (scan.status === 'cancelled') {
@@ -1429,6 +1453,19 @@
     } catch (e) {
       setPreviewMessage('Video preview scan unavailable', e.message || '');
       stopPreviewPolling();
+    }
+  }
+
+  async function refreshPreviewStatus() {
+    try {
+      const res = await fetch('/api/maintenance/video-previews/status');
+      const data = await readJsonResponse(res);
+      if (res.ok) {
+        handlePreviewScan(data.scan);
+        if (data.scan?.active && !previewPollTimer) previewPollTimer = setInterval(() => pollPreviewScan(data.scan.id), 1000);
+      }
+    } catch (_e) {
+      // Latest-result hydration is best effort.
     }
   }
 
@@ -1692,7 +1729,7 @@
     const planButton = byId('qualityPlanButton');
     if (scanButton) scanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
-    if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.repairable_count || 0);
+    if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.repairable_count || 0) || scan?.freshness?.status === 'changed';
   }
 
   function qualityPageRangeText(page) {
@@ -1812,6 +1849,7 @@
       if (qualityItemsPage?.scan?.id !== scan.id) {
         loadQualityItems(0);
       }
+      if (scan.freshness?.status === 'changed') setQualityMessage('BIF quality results are out of date', 'Library files changed after this scan. Rescan before cleanup.');
     } else if (scan.status === 'failed') {
       setQualityMessage('BIF quality scan failed', scan.error || '');
     } else if (scan.status === 'cancelled') {
@@ -1838,6 +1876,19 @@
     } catch (e) {
       setQualityMessage('BIF quality scan unavailable', e.message || '');
       stopQualityPolling();
+    }
+  }
+
+  async function refreshQualityStatus() {
+    try {
+      const res = await fetch('/api/maintenance/video-previews/quality/status');
+      const data = await readJsonResponse(res);
+      if (res.ok) {
+        handleQualityScan(data.scan);
+        if (data.scan?.active && !qualityPollTimer) qualityPollTimer = setInterval(() => pollQualityScan(data.scan.id), 1000);
+      }
+    } catch (_e) {
+      // Latest-result hydration is best effort.
     }
   }
 
@@ -2077,6 +2128,8 @@
     const cancelButton = byId('subtitleCancelScanButton');
     if (scanButton) scanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
+    const planButton = byId('subtitlePlanButton');
+    if (planButton && scan?.freshness?.status === 'changed') planButton.disabled = true;
   }
 
   function subtitlePageRangeText(page) {
@@ -2212,6 +2265,7 @@
       if (subtitleItemsPage?.scan?.id !== scan.id) {
         loadSubtitleItems(0);
       }
+      if (scan.freshness?.status === 'changed') setSubtitleMessage('Subtitle results are out of date', 'Library files changed after this scan. Rescan before quarantine or deletion.');
     } else if (scan.status === 'failed') {
       setSubtitleMessage('Subtitle scan failed', scan.error || '');
     } else if (scan.status === 'cancelled') {
@@ -2440,7 +2494,7 @@
     const planButton = byId('actorPlanButton');
     if (scanButton) scanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
-    if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.ready_count || 0);
+    if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.ready_count || 0) || scan?.freshness?.status === 'changed';
   }
 
   function renderActorEmbyStatus(status) {
@@ -2584,6 +2638,7 @@
       if (actorItemsPage?.scan?.id !== scan.id) {
         loadActorItems(0);
       }
+      if (scan.freshness?.status === 'changed') setActorMessage('Actor image results are out of date', 'Library files changed after this scan. Rescan before importing images.');
     } else if (scan.status === 'failed') {
       setActorMessage('Actor image scan failed', scan.error || '');
     } else if (scan.status === 'cancelled') {
@@ -2950,6 +3005,10 @@
   }
 
   function posterStatusBadge(status) {
+    if (status === 'eligible') return '<span class="badge text-bg-primary">Ready</span>';
+    if (status === 'already_landscape') return '<span class="badge text-bg-success">Already landscape</span>';
+    if (status === 'missing') return '<span class="badge text-bg-warning">Missing poster</span>';
+    if (status === 'ambiguous' || status === 'unreadable' || status === 'unsafe') return `<span class="badge text-bg-warning">${escapeHtml(status)}</span>`;
     if (status === 'updated') return '<span class="badge text-bg-success">Updated</span>';
     if (status === 'already_matching') return '<span class="badge text-bg-secondary">Matched</span>';
     if (status === 'missing_poster') return '<span class="badge text-bg-warning">Missing poster</span>';
@@ -2957,22 +3016,44 @@
     return `<span class="badge text-bg-secondary">${escapeHtml(status || 'Skipped')}</span>`;
   }
 
-  function renderPosterItems(run) {
+  function renderPosterItems(page) {
     const wrap = byId('posterRecentItems');
     if (!wrap) return;
-    const items = run?.items || [];
+    const items = page?.items || [];
     const rows = items.length ? items.map(item =>
       `<tr>` +
+      `<td><input class="form-check-input" type="checkbox" data-poster-item="${escapeHtml(item.id)}"${posterSelected.has(item.id) ? ' checked' : ''}${item.eligible ? '' : ' disabled'} aria-label="Select poster update"></td>` +
       `<td>${posterStatusBadge(item.status)}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.source)}">${escapeHtml(item.source)}</code></td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.poster)}">${escapeHtml(item.poster)}</code></td>` +
       `<td>${escapeHtml(item.message || '')}</td>` +
       `</tr>`
-    ).join('') : '<tr><td colspan="4" class="text-muted text-center py-4">No landscape poster changes in the latest run.</td></tr>';
+    ).join('') : '<tr><td colspan="5" class="text-muted text-center py-4">No poster analysis results in this view.</td></tr>';
+    const start = page?.total ? Number(page.offset || 0) + 1 : 0;
+    const end = Math.min(Number(page?.total || 0), Number(page?.offset || 0) + Number(page?.count || 0));
     wrap.innerHTML =
+      `<div class="maintenance-pager"><div class="text-muted small">${start}-${end} of ${Number(page?.total || 0)}</div><div class="toolbar-row mb-0"><button class="btn btn-outline-secondary btn-sm" type="button" data-poster-page="prev"${page?.has_previous ? '' : ' disabled'}>Previous</button><button class="btn btn-outline-secondary btn-sm" type="button" data-poster-page="next"${page?.has_next ? '' : ' disabled'}>Next</button></div></div>` +
       `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Status</th><th>Background</th><th>Poster</th><th>Detail</th></tr></thead>` +
+      `<thead><tr><th>Apply</th><th>Status</th><th>Background</th><th>Poster</th><th>Detail</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
+    if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !posterSelected.size || posterScan?.freshness?.status === 'changed';
+  }
+
+  async function loadPosterItems(offset = 0) {
+    if (!posterScan?.id || posterScan.status !== 'success') return;
+    try {
+      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=10`);
+      const data = await readJsonResponse(res);
+      posterItemsPage = data;
+      posterSelected.clear();
+      (data.items || []).filter(item => item.eligible).forEach(item => posterSelected.add(item.id));
+      posterPlan = null;
+      if (byId('posterApplyButton')) byId('posterApplyButton').disabled = true;
+      if (byId('posterPlanSummary')) byId('posterPlanSummary').innerHTML = '';
+      renderPosterItems(data);
+    } catch (e) {
+      setPosterMessage('Poster results unavailable', e.message || '');
+    }
   }
 
   function renderPosterStatus(data) {
@@ -2980,6 +3061,8 @@
     const current = data?.current_run;
     const last = current || data?.last_run;
     const counters = last?.counters || {};
+    const analysis = data?.analysis_scan || null;
+    posterScan = analysis;
     const automation = byId('posterAutomationState');
     const lastRun = byId('posterLastRun');
     const nextRun = byId('posterNextRun');
@@ -2999,7 +3082,13 @@
       lastResult.textContent =
         `Updated: ${counters.updated || 0}, matched: ${counters.already_matching || 0}, errors: ${counters.errors || 0}`;
     }
-    if (!current && settings.enabled) {
+    if (analysis?.active) {
+      setPosterMessage(analysis.progress_label || 'Analyzing poster artwork', analysis.path || '');
+    } else if (analysis?.status === 'success') {
+      const stale = analysis.freshness?.status === 'changed';
+      setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, stale ? 'Library artwork changed after this scan. Rescan before applying updates.' : `${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous`);
+      if (posterItemsPage?.scan?.id !== analysis.id) loadPosterItems(0);
+    } else if (!current && settings.enabled) {
       setPosterMessage('Landscape poster automation is enabled', `Incremental interval: ${settings.scan_interval_label || ''}`);
     } else if (current) {
       setPosterMessage(current.progress_label || 'Landscape poster run active', current.path || '');
@@ -3010,7 +3099,6 @@
       setPosterMessage('Landscape poster automation is disabled', 'Run manually or enable automatic scans.');
     }
     renderEmbyStatus(data?.emby_status);
-    renderPosterItems(last);
   }
 
   async function refreshPosterStatus() {
@@ -3026,6 +3114,10 @@
         posterSettingsLoaded = true;
       }
       renderPosterStatus(data);
+      clearTimeout(posterPollTimer);
+      if (!document.hidden && (data.analysis_scan?.active || data.current_run?.status === 'running')) {
+        posterPollTimer = setTimeout(refreshPosterStatus, 1000);
+      }
     } catch (e) {
       setPosterMessage('Landscape poster status unavailable', e.message || '');
     }
@@ -3104,26 +3196,67 @@
   async function runLandscapePosters() {
     const button = byId('posterRunButton');
     if (button) button.disabled = true;
-    setPosterMessage('Starting landscape poster run', '');
+    setPosterMessage('Starting poster analysis', '');
     try {
-      const res = await fetch('/api/maintenance/landscape-posters/run', {
+      const res = await fetch('/api/maintenance/landscape-posters/scan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path: config.libRoot || '/library', mode: 'full'})
+        body: JSON.stringify({path: config.libRoot || '/library'})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
-        setPosterMessage(data.error || 'Landscape poster run could not start', '');
+        setPosterMessage(data.error || 'Poster analysis could not start', '');
         return;
       }
-      renderPosterStatus({current_run: data.run, settings: collectPosterSettings(), scheduler: {}});
-      if (!posterPollTimer) {
-        posterPollTimer = setInterval(refreshPosterStatus, 3000);
-      }
+      posterScan = data.scan;
+      setPosterMessage(data.scan?.progress_label || 'Poster analysis queued', data.scan?.path || '');
+      clearTimeout(posterPollTimer);
+      posterPollTimer = setTimeout(refreshPosterStatus, 500);
     } catch (e) {
-      setPosterMessage('Landscape poster run could not start', e.message || '');
+      setPosterMessage('Poster analysis could not start', e.message || '');
     } finally {
       if (button) button.disabled = false;
+    }
+  }
+
+  async function reviewPosterPlan() {
+    if (!posterScan?.id || !posterItemsPage || !posterSelected.size) return;
+    const visible = (posterItemsPage.items || []).map(item => item.id);
+    try {
+      const res = await fetch('/api/maintenance/landscape-posters/plan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: posterScan.id, visible_item_ids: visible, item_ids: [...posterSelected]})
+      });
+      const data = await readJsonResponse(res);
+      posterPlan = data.plan;
+      byId('posterPlanSummary').innerHTML = `<div class="scan-estimate"><i class="bi bi-clipboard-check" aria-hidden="true"></i><div><strong>${escapeHtml(posterPlan.file_count)} poster update${posterPlan.file_count === 1 ? '' : 's'} reviewed</strong><div class="scan-estimate-detail">Only selected items on this visible page will be changed.</div></div></div>`;
+      byId('posterApplyButton').disabled = false;
+    } catch (e) {
+      setPosterMessage('Poster update review failed', e.message || '');
+    }
+  }
+
+  async function applyPosterPlan() {
+    if (!posterPlan?.id || !window.confirm(`Apply ${posterPlan.file_count} selected poster update${posterPlan.file_count === 1 ? '' : 's'}?`)) return;
+    byId('posterApplyButton').disabled = true;
+    try {
+      const res = await fetch('/api/maintenance/landscape-posters/apply', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plan_id: posterPlan.id})
+      });
+      const data = await readJsonResponse(res);
+      posterApply = data.apply;
+      setPosterMessage(posterApply.progress_label || 'Applying poster updates', 'Verified backups and rollback protection remain active.');
+      const poll = async () => {
+        const statusRes = await fetch(`/api/maintenance/landscape-posters/apply/status?apply_id=${encodeURIComponent(posterApply.id)}`);
+        const statusData = await readJsonResponse(statusRes);
+        posterApply = statusData.apply;
+        setPosterMessage(posterApply.progress_label || 'Applying poster updates', posterApply.error || '');
+        if (['queued', 'running'].includes(posterApply.status)) setTimeout(poll, 1000);
+        else refreshPosterStatus();
+      };
+      setTimeout(poll, 500);
+    } catch (e) {
+      setPosterMessage('Poster updates could not start', e.message || '');
     }
   }
 
@@ -3156,6 +3289,41 @@
       });
     });
     window.addEventListener('hashchange', () => activateMaintenanceTab(location.hash.replace('#', ''), false));
+  }
+
+  async function checkMaintenanceFreshness() {
+    try {
+      const res = await fetch('/api/dashboard/maintenance-scans/freshness', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const data = await readJsonResponse(res);
+      if (data.freshness?.active && !document.hidden) {
+        clearTimeout(maintenanceFreshnessTimer);
+        maintenanceFreshnessTimer = setTimeout(pollMaintenanceFreshness, 1000);
+      }
+    } catch (_e) {
+      // Unknown freshness keeps existing per-file identity checks in force.
+    }
+  }
+
+  async function pollMaintenanceFreshness() {
+    if (document.hidden) return;
+    try {
+      const res = await fetch('/api/dashboard/maintenance-scans/status');
+      const data = await readJsonResponse(res);
+      if (data.freshness?.active) {
+        maintenanceFreshnessTimer = setTimeout(pollMaintenanceFreshness, 1000);
+        return;
+      }
+      refreshDuplicateStatus();
+      refreshPreviewStatus();
+      refreshQualityStatus();
+      refreshSubtitleStatus();
+      refreshActorStatus();
+      refreshPosterStatus();
+    } catch (_e) {
+      // Freshness display will remain at its previous state.
+    }
   }
 
   function initEvents() {
@@ -3324,7 +3492,26 @@
     byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);
     byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
+    byId('posterPlanButton')?.addEventListener('click', reviewPosterPlan);
+    byId('posterApplyButton')?.addEventListener('click', applyPosterPlan);
     byId('posterRefreshButton')?.addEventListener('click', refreshPosterStatus);
+    byId('posterRecentItems')?.addEventListener('change', event => {
+      const checkbox = event.target.closest('[data-poster-item]');
+      if (!checkbox) return;
+      if (checkbox.checked) posterSelected.add(checkbox.dataset.posterItem);
+      else posterSelected.delete(checkbox.dataset.posterItem);
+      posterPlan = null;
+      if (byId('posterApplyButton')) byId('posterApplyButton').disabled = true;
+      if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !posterSelected.size || posterScan?.freshness?.status === 'changed';
+    });
+    byId('posterRecentItems')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-poster-page]');
+      if (!button || !posterItemsPage) return;
+      const offset = button.dataset.posterPage === 'next'
+        ? Number(posterItemsPage.offset || 0) + Number(posterItemsPage.limit || 10)
+        : Math.max(0, Number(posterItemsPage.offset || 0) - Number(posterItemsPage.limit || 10));
+      loadPosterItems(offset);
+    });
     byId('maintenanceRefreshLogsButton')?.addEventListener('click', refreshMaintenanceLogs);
     byId('maintenanceAction')?.addEventListener('change', () => {
       invalidatePlan();
@@ -3629,11 +3816,18 @@
     openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
     refreshOverviewStatus();
+    refreshDuplicateStatus();
+    refreshPreviewStatus();
+    refreshQualityStatus();
     refreshPreviewTasks();
     refreshSubtitleStatus();
     refreshActorStatus();
     refreshPosterStatus();
-    posterPollTimer = setInterval(refreshPosterStatus, 10000);
+    checkMaintenanceFreshness();
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) clearTimeout(maintenanceFreshnessTimer);
+      else checkMaintenanceFreshness();
+    });
     window.addEventListener('beforeunload', () => {
       clearTimeout(overviewPollTimer);
       clearTimeout(overviewSearchTimer);
@@ -3641,6 +3835,8 @@
       stopSubtitlePolling();
       stopSubtitleApplyPolling();
       stopGenerationPolling();
+      clearTimeout(posterPollTimer);
+      clearTimeout(maintenanceFreshnessTimer);
     });
   });
 }());

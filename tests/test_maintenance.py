@@ -599,7 +599,7 @@ def test_duplicate_groups_payload_caps_large_result_pages(monkeypatch, tmp_path)
     assert "videos" not in payload["groups"][0]
 
 
-def test_duplicate_groups_payload_reports_missing_and_expired_scans(monkeypatch, tmp_path):
+def test_duplicate_groups_payload_reports_missing_and_retains_latest_scan(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write_duplicate_pair(lib, "Movie")
     scan = _scan(lib, lib, monkeypatch)
@@ -607,12 +607,12 @@ def test_duplicate_groups_payload_reports_missing_and_expired_scans(monkeypatch,
     missing, missing_err = maintenance.groups_payload("missing")
     monkeypatch.setattr(maintenance, "DUPLICATE_SCAN_MAX_AGE_SECONDS", 1)
     scan["_finished_ts"] = time.time() - 2
-    expired, expired_err = maintenance.status_payload(scan["id"])
+    retained, retained_err = maintenance.status_payload(scan["id"])
 
     assert missing is None
     assert missing_err == "Scan not found"
-    assert expired is None
-    assert expired_err == "Scan not found"
+    assert retained_err is None
+    assert retained["scan"]["id"] == scan["id"]
 
 
 def test_duplicate_scan_reuses_active_scan_and_can_cancel(monkeypatch, tmp_path):

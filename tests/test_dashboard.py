@@ -188,7 +188,9 @@ def test_dashboard_static_assets_escape_dynamic_output():
     assert 'id="dashboardIssueChart"' in template
     assert 'id="dashboardLibraries"' in template
     assert "fetch('/api/dashboard/status')" in script
-    assert "fetch('/api/dashboard/library-scan'" in script
+    assert "fetch('/api/dashboard/maintenance-scans'" in script
+    assert 'id="dashboardScanAllButton"' in template
+    assert "setInterval(refreshDashboard" not in script
     assert "fetch('/api/dashboard/library-scan/status')" in script
     assert "/api/dashboard/library-scan/folders" not in script
     assert "readJsonResponse" in script

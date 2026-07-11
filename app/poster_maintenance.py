@@ -12,6 +12,7 @@ import urllib.request
 
 from . import emby_client
 from . import impact_metrics
+from . import maintenance_scan_store
 from .config import (
     LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
     LANDSCAPE_POSTER_INTERVAL_SECONDS,
@@ -55,6 +56,12 @@ _worker_started = False
 _wake_event = threading.Event()
 
 poster_runs = {}
+poster_scans = {}
+poster_plans = {}
+poster_apply_runs = {}
+_poster_cache_loaded = False
+_poster_scan_lock = threading.Lock()
+_poster_apply_execution_lock = threading.Lock()
 _current_run_id = ""
 _scheduler_state = {
     "last_checked_at": None,
@@ -535,6 +542,368 @@ def _process_candidate(candidate, root):
         "updated",
         "Poster replaced; backup created" if backup_created else "Poster replaced",
     )
+
+
+def _poster_item_id(candidate, root):
+    return f"poster-{_path_key(candidate['background_path'], root)[:24]}"
+
+
+def _analysis_item(candidate, root, status, message):
+    return {
+        "id": _poster_item_id(candidate, root),
+        "source": _relative_path(candidate["background_path"], root),
+        "poster": _relative_path(candidate["poster_path"], root),
+        "backup": _relative_path(candidate["backup_path"], root),
+        "status": status,
+        "message": message,
+        "eligible": status == "eligible",
+        "candidate": dict(candidate),
+        "identities": {
+            "background": _file_identity(candidate["background_path"]),
+            "poster": _file_identity(candidate["poster_path"]),
+            "backup": _file_identity(candidate["backup_path"]),
+        },
+    }
+
+
+def _public_analysis_item(item):
+    return {key: item.get(key) for key in ("id", "source", "poster", "backup", "status", "message", "eligible")}
+
+
+def _analyze_candidate(candidate, root):
+    background = candidate["background_path"]
+    poster = candidate["poster_path"]
+    backup = candidate["backup_path"]
+    if not all(path_is_under(path, root) for path in (background, poster, backup)):
+        return "unsafe", "Artwork path is outside the library"
+    if any(os.path.islink(path) for path in (background, poster, backup)):
+        return "unsafe", "Symlinked artwork is not eligible"
+    poster_matches = _matching_artwork(os.path.dirname(poster), candidate["base"], POSTER_SUFFIX)
+    if len(poster_matches) > 1:
+        return "ambiguous", "Multiple poster candidates are ambiguous"
+    if not os.path.isfile(poster):
+        if poster_matches:
+            return "ambiguous", "Poster extension does not match the landscape background"
+        return "missing", "Matching poster does not exist"
+    background_dimensions = _probe_image_dimensions(background)
+    poster_dimensions = _probe_image_dimensions(poster)
+    if not _file_identity(background) or not background_dimensions:
+        return "unreadable", "Background image is unreadable"
+    if not background_dimensions["landscape"]:
+        return "unreadable", "Background image is not landscape"
+    if not _file_identity(poster) or not poster_dimensions:
+        return "unreadable", "Poster image is unreadable"
+    if poster_dimensions["landscape"]:
+        return "already_landscape", "Poster is already landscape"
+    backup_matches = _matching_artwork(os.path.dirname(backup), candidate["base"], BACKUP_SUFFIX)
+    if len(backup_matches) > 1:
+        return "ambiguous", "Multiple poster backup candidates are ambiguous"
+    if backup_matches and os.path.realpath(backup) not in backup_matches:
+        return "ambiguous", "Poster backup extension does not match the landscape background"
+    if os.path.lexists(backup):
+        if not os.path.isfile(backup):
+            return "unsafe", "Existing backup is not a regular file"
+        backup_dimensions = _probe_image_dimensions(backup)
+        if not backup_dimensions:
+            return "unreadable", "Existing backup is unreadable"
+        if backup_dimensions["landscape"]:
+            return "unsafe", "Existing backup is landscape"
+    return "eligible", "Portrait poster can be replaced safely"
+
+
+def _poster_counts(items):
+    counts = {
+        "candidate_count": len(items),
+        "eligible_count": 0,
+        "already_landscape_count": 0,
+        "missing_count": 0,
+        "ambiguous_count": 0,
+        "unreadable_count": 0,
+        "unsafe_count": 0,
+    }
+    for item in items:
+        key = f"{item.get('status')}_count"
+        if key in counts:
+            counts[key] += 1
+    return counts
+
+
+def public_poster_scan(scan):
+    if not scan:
+        return None
+    public = {
+        "id": scan.get("id", ""),
+        "path": scan.get("path", ""),
+        "status": scan.get("status", ""),
+        "progress_percent": scan.get("progress_percent", 0),
+        "progress_label": scan.get("progress_label", ""),
+        "error": scan.get("error", ""),
+        "created_at": scan.get("created_at"),
+        "started_at": scan.get("started_at"),
+        "finished_at": scan.get("finished_at"),
+        "active": scan.get("status") in {"queued", "running", "cancelling"},
+        "cancel_requested": bool(scan.get("cancel_requested")),
+        "results_page_size": 10,
+        **(scan.get("counts") or {}),
+    }
+    public.update(maintenance_scan_store.public_cache_metadata("posters", scan))
+    return public
+
+
+def _ensure_poster_cache_loaded():
+    global _poster_cache_loaded
+    if _poster_cache_loaded:
+        return
+    restored = maintenance_scan_store.restore_scan("posters")
+    with _poster_scan_lock:
+        if restored and restored.get("id") not in poster_scans:
+            poster_scans[restored["id"]] = restored
+        _poster_cache_loaded = True
+
+
+def _prune_poster_analysis_locked():
+    terminal = sorted(
+        ((scan_id, scan) for scan_id, scan in poster_scans.items() if scan.get("status") in {"success", "failed", "cancelled"}),
+        key=lambda item: item[1].get("finished_at") or item[1].get("created_at") or "",
+        reverse=True,
+    )
+    removable = [item for item in terminal if not item[1].get("_persisted_latest")]
+    for scan_id, _scan in removable[10:]:
+        poster_scans.pop(scan_id, None)
+    valid_scan_ids = set(poster_scans)
+    for plan_id, plan in list(poster_plans.items()):
+        if plan.get("scan_id") not in valid_scan_ids:
+            poster_plans.pop(plan_id, None)
+    completed_apply = sorted(
+        ((apply_id, run) for apply_id, run in poster_apply_runs.items() if run.get("status") not in {"queued", "running"}),
+        key=lambda item: item[1].get("finished_at") or item[1].get("created_at") or "",
+        reverse=True,
+    )
+    for apply_id, _run in completed_apply[25:]:
+        poster_apply_runs.pop(apply_id, None)
+
+
+def _run_poster_scan(scan, lib_root):
+    try:
+        scan.update(status="running", started_at=utc_iso(), progress_percent=1, progress_label="Analyzing poster artwork")
+        root = os.path.realpath(lib_root)
+        items = []
+        folders = 0
+        for base, dirs, files in os.walk(scan["path"], followlinks=False):
+            if scan.get("cancel_requested"):
+                scan.update(status="cancelled", finished_at=utc_iso(), progress_percent=100, progress_label="Poster analysis cancelled")
+                return
+            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
+            folders += 1
+            candidates = [candidate for name in sorted(files, key=str.lower) if (candidate := _candidate_from_background(os.path.join(base, name)))]
+            if len(candidates) > 1:
+                for candidate in candidates:
+                    items.append(_analysis_item(candidate, root, "ambiguous", "Multiple landscape background candidates are ambiguous"))
+            else:
+                for candidate in candidates:
+                    status, message = _analyze_candidate(candidate, root)
+                    items.append(_analysis_item(candidate, root, status, message))
+            if folders % 50 == 0:
+                scan.update(progress_percent=25, progress_label=f"Analyzed {folders} folders")
+        counts = _poster_counts(items)
+        scan.update(
+            status="success",
+            finished_at=utc_iso(),
+            progress_percent=100,
+            progress_label=f"{counts['eligible_count']} poster updates ready",
+            items=items,
+            counts=counts,
+        )
+        persisted = maintenance_scan_store.persist_success("posters", "posters", scan, lib_root)
+        if persisted:
+            with _poster_scan_lock:
+                for candidate in poster_scans.values():
+                    candidate["_persisted_latest"] = candidate is scan
+        impact_metrics.record_scan(
+            scan["id"], "posters", "posters", scan["path"],
+            [{"issue_id": f"poster:{item['id']}", "finding_ids": [item["id"]], "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in items if item.get("eligible")],
+            timestamp=scan["finished_at"],
+        )
+    except Exception as exc:
+        scan.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster analysis failed")
+
+
+def start_poster_scan(path=None, *, synchronous=False, lib_root=LIB_ROOT):
+    _ensure_poster_cache_loaded()
+    real_path, err = _normalize_scan_path(path or lib_root, lib_root)
+    if err:
+        return None, err
+    with _poster_scan_lock:
+        _prune_poster_analysis_locked()
+        active = next((item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+        if active:
+            return active, None
+        scan_id = _now_id()
+        scan = {
+            "id": scan_id, "path": real_path, "lib_root": os.path.realpath(lib_root),
+            "status": "queued", "created_at": utc_iso(), "started_at": None,
+            "finished_at": None, "progress_percent": 0, "progress_label": "Queued",
+            "error": "", "cancel_requested": False, "items": [], "counts": {},
+        }
+        poster_scans[scan_id] = scan
+    if synchronous:
+        _run_poster_scan(scan, lib_root)
+    else:
+        threading.Thread(target=_run_poster_scan, args=(scan, lib_root), daemon=True, name=f"vid2gif-poster-analysis-{scan_id}").start()
+    return scan, None
+
+
+def cancel_poster_scan(scan_id=None):
+    _ensure_poster_cache_loaded()
+    with _poster_scan_lock:
+        scan = poster_scans.get(str(scan_id or "")) if scan_id else next((item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+        if not scan:
+            return None, "Scan not found"
+        if scan.get("status") not in {"success", "failed", "cancelled"}:
+            scan["cancel_requested"] = True
+            scan["status"] = "cancelling"
+            scan["progress_label"] = "Cancelling poster analysis"
+    return scan, None
+
+
+def poster_scan_status(scan_id=None):
+    _ensure_poster_cache_loaded()
+    with _poster_scan_lock:
+        _prune_poster_analysis_locked()
+        if scan_id:
+            scan = poster_scans.get(str(scan_id))
+            if not scan:
+                return None, "Scan not found"
+        else:
+            active = next((item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+            successful = [item for item in poster_scans.values() if item.get("status") == "success"]
+            scan = active or (max(successful, key=lambda item: item.get("finished_at") or "") if successful else (max(poster_scans.values(), key=lambda item: item.get("created_at") or "") if poster_scans else None))
+    return {"scan": public_poster_scan(scan)}, None
+
+
+def poster_items_payload(scan_id, offset=0, limit=10, status="all"):
+    _ensure_poster_cache_loaded()
+    try:
+        offset = max(0, int(offset or 0)); limit = max(1, min(100, int(limit or 10)))
+    except (TypeError, ValueError):
+        offset, limit = 0, 10
+    with _poster_scan_lock:
+        scan = poster_scans.get(str(scan_id or ""))
+        if not scan:
+            return None, "Scan not found"
+        if scan.get("status") != "success":
+            return None, "Scan is not complete"
+        items = list(scan.get("items") or [])
+    if status != "all":
+        items = [item for item in items if item.get("status") == status]
+    total = len(items); page = items[offset:offset + limit]
+    return {
+        "scan": public_poster_scan(scan), "offset": offset, "limit": limit,
+        "total": total, "count": len(page), "has_previous": offset > 0,
+        "has_next": offset + limit < total, "items": [_public_analysis_item(item) for item in page],
+    }, None
+
+
+def build_poster_plan(payload, lib_root=LIB_ROOT):
+    if not isinstance(payload, dict):
+        return None, "Invalid request"
+    scan_id = str(payload.get("scan_id") or "")
+    allowed, error = maintenance_scan_store.action_allowed("posters", scan_id)
+    if not allowed:
+        return None, error
+    selected = {str(value) for value in payload.get("item_ids") or [] if str(value)}
+    visible = {str(value) for value in payload.get("visible_item_ids") or [] if str(value)}
+    if not selected or not visible or not selected.issubset(visible):
+        return None, "Selected posters must belong to the visible page"
+    with _poster_scan_lock:
+        scan = poster_scans.get(scan_id)
+        if not scan or scan.get("status") != "success":
+            return None, "Poster analysis is not complete"
+        by_id = {item.get("id"): item for item in scan.get("items") or []}
+        if not visible.issubset(by_id):
+            return None, "Visible poster results are stale"
+        items = [by_id[item_id] for item_id in selected if by_id[item_id].get("eligible")]
+        for item in items:
+            candidate = item.get("candidate") or {}
+            identities = item.get("identities") or {}
+            for key, path_key in (("background", "background_path"), ("poster", "poster_path"), ("backup", "backup_path")):
+                path = candidate.get(path_key)
+                if _file_identity(path) != identities.get(key):
+                    return None, "Artwork changed after analysis. Rescan before applying updates."
+    if not items:
+        return None, "Select at least one eligible poster"
+    plan_id = _now_id()
+    plan = {"id": plan_id, "scan_id": scan_id, "path": scan["path"], "created_at": utc_iso(), "items": items, "file_count": len(items)}
+    with _poster_scan_lock:
+        poster_plans[plan_id] = plan
+    return {key: plan.get(key) for key in ("id", "scan_id", "path", "created_at", "file_count")}, None
+
+
+def public_poster_apply(run):
+    if not run:
+        return None
+    return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results")}
+
+
+def _run_poster_apply(run, plan, lib_root):
+    if not _poster_apply_execution_lock.acquire(blocking=False):
+        run.update(status="failed", error="Another poster apply is already active", finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed")
+        return
+    results = []
+    try:
+        run.update(status="running", started_at=utc_iso(), progress_percent=1, progress_label="Applying poster updates")
+        for index, item in enumerate(plan.get("items") or [], start=1):
+            candidate = item.get("candidate") or {}
+            identities = item.get("identities") or {}
+            stale = any(
+                _file_identity(candidate.get(path_key)) != identities.get(key)
+                for key, path_key in (("background", "background_path"), ("poster", "poster_path"), ("backup", "backup_path"))
+            )
+            if stale:
+                status, message = "error", "Artwork changed after review; update skipped"
+            else:
+                status, message = _process_candidate(candidate, os.path.realpath(lib_root))
+            results.append({"id": item["id"], "status": status, "message": message, "poster": item["poster"]})
+            run.update(progress_percent=int(100 * index / len(plan["items"])), progress_label=f"Applied {index} of {len(plan['items'])} poster updates")
+        updated = sum(1 for item in results if item["status"] == "updated")
+        failed = len(results) - updated
+        if updated:
+            refresh_emby(load_settings(), persist=True)
+            impact_metrics.record_maintenance_action(run["id"], "posters", resolutions=[{"issue_id": f"poster:{item['id']}", "stream": "posters", "resolve_all": True, "ensure_issue": True, "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in plan["items"] if any(result["id"] == item["id"] and result["status"] == "updated" for result in results)], operations={"other_files": updated}, timestamp=utc_iso(), label="Landscape poster updates")
+        run.update(status="success" if not failed else "complete_with_issues", finished_at=utc_iso(), progress_percent=100, progress_label=f"{updated} posters updated", updated_count=updated, failed_count=failed, results=results)
+    except Exception as exc:
+        run.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed", results=results)
+    finally:
+        _poster_apply_execution_lock.release()
+        try:
+            start_poster_scan(plan["path"], synchronous=True, lib_root=lib_root)
+        except Exception:
+            pass
+
+
+def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
+    with _poster_scan_lock:
+        if any(item.get("status") in {"queued", "running"} for item in poster_apply_runs.values()):
+            return None, "Another poster apply is already active"
+        plan = poster_plans.get(str(plan_id or ""))
+        if not plan:
+            return None, "Plan not found"
+        run_id = _now_id()
+        run = {"id": run_id, "plan_id": plan["id"], "status": "queued", "created_at": utc_iso(), "started_at": None, "finished_at": None, "progress_percent": 0, "progress_label": "Queued", "error": "", "updated_count": 0, "failed_count": 0, "results": []}
+        poster_apply_runs[run_id] = run
+    if synchronous:
+        _run_poster_apply(run, plan, lib_root)
+    else:
+        threading.Thread(target=_run_poster_apply, args=(run, plan, lib_root), daemon=True, name=f"vid2gif-poster-apply-{run_id}").start()
+    return run, None
+
+
+def poster_apply_status(apply_id=None):
+    with _poster_scan_lock:
+        run = poster_apply_runs.get(str(apply_id or "")) if apply_id else (max(poster_apply_runs.values(), key=lambda item: item.get("created_at") or "") if poster_apply_runs else None)
+    if apply_id and not run:
+        return None, "Apply run not found"
+    return {"apply": public_poster_apply(run)}, None
 
 
 def _run_summary(run):
@@ -1064,6 +1433,8 @@ def status_payload():
         _prune_poster_runs_locked()
     next_ts = _next_run_timestamp(settings, manifest)
     _scheduler_state["next_run_at"] = utc_iso(next_ts) if next_ts else None
+    scan_payload, _ = poster_scan_status()
+    apply_payload, _ = poster_apply_status()
     return {
         "settings": public_settings(settings),
         "current_run": _run_summary(current) if current else None,
@@ -1072,6 +1443,8 @@ def status_payload():
         "scheduler": dict(_scheduler_state),
         "emby_status": emby_status_payload(settings=settings, latest_run=latest),
         "manifest_path": MANIFEST_PATH,
+        "analysis_scan": (scan_payload or {}).get("scan"),
+        "analysis_apply": (apply_payload or {}).get("apply"),
     }
 
 

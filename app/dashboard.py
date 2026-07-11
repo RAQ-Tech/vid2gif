@@ -7,6 +7,7 @@ import time
 from . import actor_image_maintenance
 from . import impact_metrics
 from . import maintenance
+from . import maintenance_scan_store
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import test_lab
@@ -73,6 +74,8 @@ def _safe_status(callable_):
         payload = callable_()
     except Exception as exc:
         return {"error": str(exc)}
+    if isinstance(payload, tuple):
+        payload = payload[0]
     return payload or {}
 
 
@@ -200,7 +203,8 @@ def _poster_summary():
     last = payload.get("last_run") or {}
     source = current or last
     counters = source.get("counters") or {}
-    changed = counters.get("updated", 0) or 0
+    analysis = payload.get("analysis_scan") or {}
+    changed = analysis.get("eligible_count", counters.get("updated", 0)) or 0
     skipped = (
         counters.get("already_matching", 0)
         + counters.get("missing_poster", 0)
@@ -219,6 +223,7 @@ def _poster_summary():
         "emby_configured": bool(emby.get("configured")),
         "active": active,
         "has_run": bool(current or last),
+        "scan": analysis,
     }
 
 
@@ -554,6 +559,9 @@ def _run_library_scan(scan_id):
             scan["status"] = result["status"]
         if result["status"] == "success":
             _write_json(LIBRARY_INVENTORY_PATH, {"schema_version": 2, **result})
+            maintenance_scan_store.persist_success(
+                "overview", "overview", {**scan, "status": "success"}, scan.get("path") or LIB_ROOT
+            )
     except Exception as exc:
         with dashboard_lock:
             scan.update(
@@ -567,11 +575,23 @@ def _run_library_scan(scan_id):
             )
 
 
+def _overview_scan_metadata(public, scan=None):
+    cached = maintenance_scan_store.load_latest("overview") or {}
+    cached_scan = cached.get("scan") or {}
+    if not public.get("id") and cached_scan.get("id"):
+        public["id"] = cached_scan.get("id")
+        public["path"] = cached_scan.get("path")
+    public.update(maintenance_scan_store.public_cache_metadata("overview", scan or cached_scan))
+    if not scan and cached_scan:
+        public["restored"] = True
+    return public
+
+
 def _public_library_scan(scan):
     if not scan:
         cached = _inventory_from_data(_read_json(LIBRARY_INVENTORY_PATH, {}))
         if cached.get("finished_at"):
-            return {
+            return _overview_scan_metadata({
                 "id": "",
                 "status": "cached",
                 "active": False,
@@ -587,10 +607,10 @@ def _public_library_scan(scan):
                 "video_size_bytes": cached.get("video_size_bytes", 0),
                 "video_size_label": cached.get("video_size_label", "0 B"),
                 "root": cached.get("root") or _empty_library_stats(_library_root_item()),
-            }
+            })
         direct_folders = _direct_library_items()
         root = _empty_library_stats(_library_root_item())
-        return {
+        return _overview_scan_metadata({
             "id": "",
             "status": "not_scanned",
             "active": False,
@@ -606,9 +626,9 @@ def _public_library_scan(scan):
             "video_size_bytes": 0,
             "video_size_label": "0 B",
             "root": root,
-        }
+        })
     root = scan.get("root") or _empty_library_stats(_library_root_item(scan.get("path") or LIB_ROOT))
-    return {
+    return _overview_scan_metadata({
         "id": scan.get("id", ""),
         "status": scan.get("status", ""),
         "active": scan.get("status") in {"queued", "running", "cancelling"},
@@ -624,7 +644,7 @@ def _public_library_scan(scan):
         "video_size_bytes": scan.get("video_size_bytes", 0),
         "video_size_label": scan.get("video_size_label", "0 B"),
         "root": root,
-    }
+    }, scan)
 
 
 def start_library_scan(path=None, synchronous=False):
@@ -668,6 +688,18 @@ def library_scan_status():
     with dashboard_lock:
         scan = dict(library_scan) if library_scan else None
     return {"scan": _public_library_scan(scan)}
+
+
+def cancel_library_scan():
+    global library_scan
+    with dashboard_lock:
+        if not library_scan:
+            return None, "Scan not found"
+        if library_scan.get("status") not in {"success", "failed", "cancelled", "cached"}:
+            library_scan["cancel_requested"] = True
+            library_scan["status"] = "cancelling"
+            library_scan["progress_label"] = "Cancelling library inventory"
+        return _public_library_scan(library_scan), None
 
 
 def _current_inventory():
@@ -737,6 +769,8 @@ def library_folders_payload(offset=0, limit=25, q="", sort="name", direction="as
 
 
 def status_payload():
+    from . import maintenance_scan_orchestrator
+
     impact = impact_metrics.status_payload()
     gifs = _job_summary()
     test_summary = _test_lab_summary()
@@ -782,7 +816,7 @@ def status_payload():
             "posters",
             "Landscape Posters",
             "/maintenance#posters",
-            status="active" if posters["active"] else ("ok" if posters["has_run"] else "not_scanned"),
+            status=(posters.get("scan") or {}).get("status") or ("active" if posters["active"] else ("ok" if posters["has_run"] else "not_scanned")),
             found=posters["changed_count"] + posters["error_count"],
             ready=posters["changed_count"],
             resolved=posters["changed_count"],
@@ -834,6 +868,27 @@ def status_payload():
         ),
     ]
 
+    scan_sources = {
+        "duplicates": duplicates.get("scan") or {},
+        "video_previews": previews.get("scan") or previews.get("quality") or {},
+        "subtitles": subtitles.get("scan") or {},
+        "posters": posters.get("scan") or {},
+        "actor_images": actors.get("scan") or {},
+    }
+    for item in workstreams:
+        key = item.get("key")
+        source = scan_sources.get(key) or {}
+        item.update(
+            {
+                "scan_available": key in scan_sources,
+                "scan_id": source.get("id", ""),
+                "latest_success_at": source.get("finished_at"),
+                "scan_age_seconds": source.get("scan_age_seconds"),
+                "restored": bool(source.get("restored")),
+                "freshness": source.get("freshness") or {"status": "unknown"},
+            }
+        )
+
     unresolved = sum(item["remaining"] for item in workstreams if item["key"] != "gifs")
     active = sum(1 for item in workstreams if item["active"])
     attention = sum(1 for item in workstreams if item["state"] in {"attention", "needs_verification"})
@@ -858,6 +913,9 @@ def status_payload():
     return {
         "generated_at": utc_iso(),
         "lib_root": LIB_ROOT,
+        "maintenance_scope": maintenance_scan_orchestrator.last_scope(),
+        "maintenance_scan": maintenance_scan_orchestrator.status(),
+        "freshness_check": maintenance_scan_store.freshness_status(),
         "health": {
             "label": health_label,
             "score": health_score,

@@ -12,6 +12,7 @@ import urllib.request
 
 from . import emby_client
 from . import impact_metrics
+from . import maintenance_scan_store
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
@@ -38,6 +39,7 @@ EMBY_PAGE_SIZE = 500
 __test__ = False
 
 actor_scans = {}
+_actor_cache_loaded = False
 actor_plans = {}
 actor_apply_runs = {}
 actor_lock = threading.Lock()
@@ -494,7 +496,21 @@ def _public_scan(scan):
 
 
 def public_scan(scan):
-    return _public_scan(scan)
+    public = _public_scan(scan)
+    if public:
+        public.update(maintenance_scan_store.public_cache_metadata("actor_images", scan))
+    return public
+
+
+def _ensure_cache_loaded():
+    global _actor_cache_loaded
+    if _actor_cache_loaded:
+        return
+    restored = maintenance_scan_store.restore_scan("actor_images")
+    with actor_lock:
+        if restored and restored.get("id") not in actor_scans:
+            actor_scans[restored["id"]] = restored
+        _actor_cache_loaded = True
 
 
 def _public_item(item):
@@ -666,6 +682,13 @@ def _run_scan(scan, lib_root, opener=None):
                 "checked_item_count": checked_media,
             },
         )
+        persisted = maintenance_scan_store.persist_success(
+            "actor_images", "actor_images", scan, lib_root
+        )
+        if persisted:
+            with actor_lock:
+                for candidate in actor_scans.values():
+                    candidate["_persisted_latest"] = candidate is scan
     except ScanCancelled:
         finished = time.time()
         _set_scan_progress(
@@ -700,7 +723,7 @@ def _prune_scans_locked(now=None):
         if scan.get("status") not in SCAN_TERMINAL_STATUSES:
             continue
         finished = scan.get("_finished_ts") or scan.get("_created_ts") or now
-        if now - finished > SCAN_MAX_AGE_SECONDS:
+        if not scan.get("_persisted_latest") and now - finished > SCAN_MAX_AGE_SECONDS:
             actor_scans.pop(scan_id, None)
     terminal = sorted(
         (
@@ -711,7 +734,8 @@ def _prune_scans_locked(now=None):
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
-    for scan_id, _scan in terminal[SCAN_RETENTION_COUNT:]:
+    removable = [item for item in terminal if not item[1].get("_persisted_latest")]
+    for scan_id, _scan in removable[SCAN_RETENTION_COUNT:]:
         actor_scans.pop(scan_id, None)
 
 
@@ -723,6 +747,7 @@ def _active_scan_locked():
 
 
 def start_scan(path, lib_root=LIB_ROOT, synchronous=False, opener=None):
+    _ensure_cache_loaded()
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
@@ -793,6 +818,7 @@ def cancel_scan(scan_id=None):
 
 
 def status_payload(scan_id=None):
+    _ensure_cache_loaded()
     with actor_lock:
         _prune_scans_locked()
         if scan_id:
@@ -800,7 +826,9 @@ def status_payload(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         elif actor_scans:
-            scan = max(actor_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            active = _active_scan_locked()
+            successful = [item for item in actor_scans.values() if item.get("status") == "success"]
+            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(actor_scans.values(), key=lambda item: item.get("_created_ts") or 0))
         else:
             scan = None
     return {
@@ -810,6 +838,7 @@ def status_payload(scan_id=None):
 
 
 def items_payload(scan_id, status="all", offset=0, limit=ITEM_PAGE_DEFAULT):
+    _ensure_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "all").lower()
     allowed = {"all", "ready", "ambiguous", "no_candidate", "ignored", "manual", "blocked", "imported", "failed", "unresolved"}
@@ -860,9 +889,13 @@ def _candidate_by_id(item, candidate_id=""):
 
 
 def build_import_plan(payload, lib_root=LIB_ROOT):
+    _ensure_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Plan payload is invalid"
     scan_id = str(payload.get("scan_id") or "")
+    allowed, freshness_error = maintenance_scan_store.action_allowed("actor_images", scan_id)
+    if not allowed:
+        return None, freshness_error
     with actor_lock:
         scan = actor_scans.get(scan_id)
     if not scan:
