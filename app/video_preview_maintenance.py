@@ -12,6 +12,7 @@ import time
 
 from . import app_settings
 from . import emby_client
+from . import impact_metrics
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .maintenance import QUARANTINE_DIRNAME
@@ -385,6 +386,23 @@ def _run_scan(scan, lib_root):
             recommended_profile=recommendation,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
+        )
+        impact_metrics.record_scan(
+            scan["id"],
+            "video_previews",
+            "missing",
+            scan["path"],
+            [
+                {
+                    "issue_id": f"video-preview:{item.get('id')}",
+                    "finding_ids": ["missing"],
+                    "label": item.get("name") or "Missing video preview",
+                    "path": item.get("path") or scan["path"],
+                }
+                for item in items
+                if item.get("status") == "missing"
+            ],
+            timestamp=utc_iso(finished),
         )
         _write_log(
             "scan",
@@ -1100,6 +1118,23 @@ def _run_quality_scan(scan, lib_root):
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
+        impact_metrics.record_scan(
+            scan["id"],
+            "video_previews",
+            "quality",
+            scan["path"],
+            [
+                {
+                    "issue_id": f"video-preview:{_path_id(item.get('video_path'), lib_root)}",
+                    "finding_ids": [item.get("id")],
+                    "label": item.get("video_name") or "Video preview quality",
+                    "path": item.get("video_path") or item.get("path") or scan["path"],
+                }
+                for item in items
+                if item.get("status") in {"bad", "warning"}
+            ],
+            timestamp=utc_iso(finished),
+        )
         _write_log("quality-scan", {"scan_id": scan["id"], "path": scan["path"], "counts": counts})
     except ScanCancelled:
         finished = time.time()
@@ -1390,6 +1425,9 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
         files.append(
             {
                 "file_id": item.get("id", ""),
+                "impact_issue_id": f"video-preview:{_path_id(item.get('video_path'), lib_real)}",
+                "video_path": item.get("video_path", ""),
+                "video_name": item.get("video_name", ""),
                 "operation": operation,
                 "source_path": source,
                 "relative_path": _relative_path(source, lib_real),
@@ -1883,6 +1921,62 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
     }
     log_entry = _write_quality_repair_log(plan, result, log_records)
     result["log"] = {key: value for key, value in log_entry.items() if key != "path"}
+    applied_ids = {item.get("file_id") for item in applied}
+    affected_videos = {}
+    for item in plan.get("files") or []:
+        if item.get("file_id") in applied_ids and item.get("video_path"):
+            affected_videos[item.get("impact_issue_id")] = item
+    for issue_id, item in affected_videos.items():
+        video_path = item.get("video_path")
+        usable = False
+        for bif_path in _matching_bifs_for_video(video_path):
+            try:
+                if analyze_bif_quality(bif_path, video_path, plan.get("lib_root") or LIB_ROOT).get("status") == "ok":
+                    usable = True
+                    break
+            except Exception:
+                continue
+        impact_metrics.record_scan(
+            f"{plan.get('id')}:{issue_id}:post-cleanup",
+            "video_previews",
+            "missing",
+            video_path,
+            [] if usable else [
+                {
+                    "issue_id": issue_id,
+                    "finding_ids": ["missing"],
+                    "label": item.get("video_name") or "Missing video preview",
+                    "path": video_path,
+                }
+            ],
+            timestamp=utc_iso(),
+        )
+    resolutions = [
+        {
+            "issue_id": item.get("impact_issue_id"),
+            "stream": "quality",
+            "finding_ids": [item.get("file_id")],
+            "ensure_issue": True,
+            "label": item.get("source_name") or "Video preview quality",
+            "path": item.get("source_path") or plan.get("lib_root"),
+        }
+        for item in plan.get("files") or []
+        if item.get("file_id") in applied_ids
+    ]
+    operation = plan.get("action")
+    impact_metrics.record_maintenance_action(
+        plan.get("id"),
+        "video_previews",
+        resolutions=resolutions,
+        operations={
+            "quarantined_files": len(applied) if operation == "quarantine" else 0,
+            "quarantined_bytes": total if operation == "quarantine" else 0,
+            "deleted_files": len(applied) if operation == "delete" else 0,
+            "deleted_bytes": total if operation == "delete" else 0,
+        },
+        timestamp=utc_iso(),
+        label="Video preview cleanup",
+    )
     with preview_lock:
         plan["status"] = "applied"
         plan["applied_at"] = utc_iso()
@@ -2297,7 +2391,11 @@ def _execute_generation(run, plan):
                 parsed = _install_generated_bif(
                     work_bif, item["output_path"], video, plan["width"], plan["interval_seconds"]
                 )
-                result.update({"status": "generated", "frame_count": parsed.get("image_count", 0)})
+                result.update({
+                    "status": "generated",
+                    "frame_count": parsed.get("image_count", 0),
+                    "output_size_bytes": os.path.getsize(item["output_path"]),
+                })
                 generated += 1
             except Exception as exc:
                 result.update({"status": "refused", "reason": str(exc)})
@@ -2319,6 +2417,29 @@ def _execute_generation(run, plan):
             "result": {"items": results, "generated_count": generated, "refused_count": refused, "emby": emby, "scan_path": plan["scan_path"]},
         })
         _write_log("bif-generation", {"plan_id": plan["id"], "generated_count": generated, "refused_count": refused, "items": results})
+        generated_ids = {item.get("item_id") for item in results if item.get("status") == "generated"}
+        impact_metrics.record_maintenance_action(
+            plan.get("id"),
+            "video_previews",
+            resolutions=[
+                {
+                    "issue_id": f"video-preview:{item.get('item_id')}",
+                    "stream": "missing",
+                    "finding_ids": ["missing"],
+                    "ensure_issue": True,
+                    "label": os.path.basename(item.get("video_path") or "Video preview"),
+                    "path": item.get("video_path") or plan.get("scan_path"),
+                }
+                for item in plan.get("files") or []
+                if item.get("item_id") in generated_ids
+            ],
+            operations={
+                "other_files": generated,
+                "other_bytes": sum(int(item.get("output_size_bytes") or 0) for item in results),
+            },
+            timestamp=utc_iso(),
+            label="Video preview generation",
+        )
     except ScanCancelled:
         run.update({"status": "cancelled", "finished_at": utc_iso(), "progress_label": "BIF generation cancelled", "result": {"items": results}})
     except Exception as exc:

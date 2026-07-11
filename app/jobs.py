@@ -9,6 +9,7 @@ import shutil
 from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
 from .conversion_gate import conversion_lock
 from .estimate_history import record_successful_job
+from .impact_metrics import record_creative_output
 from .gif_optimizer import optimize_gif
 from .ffmpeg_utils import (
     get_duration,
@@ -407,6 +408,13 @@ def worker():
                             if os.path.isfile(job["out_gif"]):
                                 mark_job_finished(job, "success", job["out_gif"])
                                 record_successful_job(job)
+                                record_creative_output(
+                                    job.get("id"),
+                                    "standard",
+                                    output_bytes=job.get("output_size_bytes") or 0,
+                                    saved_bytes=job.get("gif_optimization_saved_bytes") or 0,
+                                    timestamp=job.get("finished_at"),
+                                )
                                 size = format_size(job.get("output_size_bytes"))
                                 elapsed = format_duration(job.get("elapsed_seconds"))
                                 job["logger"].info(

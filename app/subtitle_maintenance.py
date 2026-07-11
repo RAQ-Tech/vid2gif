@@ -8,6 +8,7 @@ import threading
 import time
 
 from . import app_settings
+from . import impact_metrics
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
@@ -434,6 +435,24 @@ def _run_scan(scan, settings, lib_root):
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
+        impact_metrics.record_scan(
+            scan["id"],
+            "subtitles",
+            "subtitles",
+            scan["path"],
+            [
+                {
+                    "issue_id": f"subtitle:{subtitle.get('id')}",
+                    "finding_ids": [subtitle.get("id")],
+                    "label": subtitle.get("name") or "Flagged subtitle",
+                    "path": subtitle.get("path") or scan["path"],
+                }
+                for item in items
+                for subtitle in item.get("srt_files") or []
+                if subtitle.get("actionable")
+            ],
+            timestamp=utc_iso(finished),
+        )
     except ScanCancelled:
         finished = time.time()
         _set_scan_progress(
@@ -771,6 +790,32 @@ def _run_action(plan, run):
         "result": {"records": records, "scan_path": plan.get("scan_path"), "applied_bytes": applied_bytes},
     })
     _save_action_log(plan, run, records)
+    applied_ids = {record.get("file_id") for record in records if record.get("status") == "applied"}
+    applied_files = [item for item in plan.get("files") or [] if item.get("file_id") in applied_ids]
+    operation = plan.get("operation")
+    impact_metrics.record_maintenance_action(
+        plan.get("id"),
+        "subtitles",
+        resolutions=[
+            {
+                "issue_id": f"subtitle:{item.get('file_id')}",
+                "stream": "subtitles",
+                "finding_ids": [item.get("file_id")],
+                "ensure_issue": True,
+                "label": os.path.basename(item.get("source_path") or "Flagged subtitle"),
+                "path": item.get("source_path") or plan.get("scan_path"),
+            }
+            for item in applied_files
+        ],
+        operations={
+            "quarantined_files": len(applied_files) if operation == "quarantine" else 0,
+            "quarantined_bytes": applied_bytes if operation == "quarantine" else 0,
+            "deleted_files": len(applied_files) if operation == "delete" else 0,
+            "deleted_bytes": applied_bytes if operation == "delete" else 0,
+        },
+        timestamp=run.get("finished_at") or utc_iso(),
+        label="Subtitle cleanup",
+    )
 
 
 def start_action_apply(plan_id, synchronous=False):

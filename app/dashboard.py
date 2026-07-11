@@ -5,6 +5,7 @@ import threading
 import time
 
 from . import actor_image_maintenance
+from . import impact_metrics
 from . import maintenance
 from . import poster_maintenance
 from . import subtitle_maintenance
@@ -217,6 +218,7 @@ def _poster_summary():
         "automation_enabled": bool(settings.get("enabled")),
         "emby_configured": bool(emby.get("configured")),
         "active": active,
+        "has_run": bool(current or last),
     }
 
 
@@ -735,6 +737,7 @@ def library_folders_payload(offset=0, limit=25, q="", sort="name", direction="as
 
 
 def status_payload():
+    impact = impact_metrics.status_payload()
     gifs = _job_summary()
     test_summary = _test_lab_summary()
     posters = _poster_summary()
@@ -745,8 +748,8 @@ def status_payload():
     library = library_scan_status()["scan"]
 
     preview_found = previews["missing_count"] + previews["bad_count"] + previews["warning_count"]
-    preview_remaining = previews["missing_count"] + max(0, previews["bad_count"] - previews["repaired_count"]) + previews["warning_count"]
-    actor_remaining = max(0, actors["missing_count"] - actors["imported_count"])
+    preview_remaining = previews["missing_count"] + previews["bad_count"] + previews["warning_count"]
+    actor_remaining = actors["missing_count"]
     workstreams = [
         _workstream(
             "gifs",
@@ -768,8 +771,8 @@ def status_payload():
             status=(duplicates["scan"] or {}).get("status", "not_scanned"),
             found=duplicates["found"],
             ready=duplicates["ready"],
-            resolved=duplicates["resolved"],
-            remaining=duplicates["remaining"],
+            resolved=0,
+            remaining=duplicates["found"],
             detail=f"{duplicates['found']} groups, {duplicates['reclaimable_label']} reclaimable",
             action_label="Review duplicates",
             needs_verification=duplicates["needs_verification"],
@@ -779,7 +782,7 @@ def status_payload():
             "posters",
             "Landscape Posters",
             "/maintenance#posters",
-            status="active" if posters["active"] else "ok",
+            status="active" if posters["active"] else ("ok" if posters["has_run"] else "not_scanned"),
             found=posters["changed_count"] + posters["error_count"],
             ready=posters["changed_count"],
             resolved=posters["changed_count"],
@@ -795,7 +798,7 @@ def status_payload():
             status=(previews["scan"] or {}).get("status") or (previews["quality"] or {}).get("status") or "not_scanned",
             found=preview_found,
             ready=previews["bad_count"],
-            resolved=previews["repaired_count"],
+            resolved=0,
             remaining=preview_remaining,
             detail=f"{previews['missing_count']} missing, {previews['bad_count']} bad, {previews['warning_count']} warnings",
             action_label="Open previews",
@@ -809,7 +812,7 @@ def status_payload():
             status=(subtitles["scan"] or {}).get("status", "not_scanned"),
             found=subtitles["review_count"],
             ready=subtitles["language_review_count"] + subtitles["unknown_count"],
-            resolved=subtitles["ok_count"],
+            resolved=0,
             remaining=subtitles["review_count"],
             detail=f"{subtitles['missing_count']} missing, {subtitles['language_review_count']} language review, {subtitles['unknown_count']} unknown",
             action_label="Open subtitles",
@@ -822,7 +825,7 @@ def status_payload():
             status=(actors["scan"] or {}).get("status", "not_scanned"),
             found=actors["missing_count"],
             ready=actors["ready_count"],
-            resolved=actors["imported_count"],
+            resolved=0,
             remaining=actor_remaining,
             detail=f"{actors['ready_count']} ready, {actors['unresolved_count']} unresolved",
             action_label="Open actors",
@@ -834,11 +837,21 @@ def status_payload():
     unresolved = sum(item["remaining"] for item in workstreams if item["key"] != "gifs")
     active = sum(1 for item in workstreams if item["active"])
     attention = sum(1 for item in workstreams if item["state"] in {"attention", "needs_verification"})
-    health_score = max(0, min(100, 100 - min(80, unresolved * 2) - min(20, attention * 4)))
+    maintenance_workstreams = [item for item in workstreams if item["key"] != "gifs"]
+    not_scanned = sum(1 for item in maintenance_workstreams if item["state"] == "not_scanned")
+    health_score = (
+        0
+        if not_scanned == len(maintenance_workstreams)
+        else max(0, min(100, 100 - min(80, unresolved * 2) - min(20, attention * 4)))
+    )
     if active:
         health_label = "Work running"
     elif unresolved:
         health_label = "Needs review"
+    elif not_scanned == len(maintenance_workstreams):
+        health_label = "Not scanned"
+    elif not_scanned:
+        health_label = "Partially scanned"
     else:
         health_label = "Clear"
 
@@ -851,7 +864,10 @@ def status_payload():
             "unresolved_count": unresolved,
             "active_count": active,
             "attention_count": attention,
+            "not_scanned_count": not_scanned,
         },
+        "impact": impact,
+        "creative_output": impact.get("creative_output") or {},
         "gifs": gifs,
         "test_lab": test_summary,
         "posters": posters,

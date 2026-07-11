@@ -7,7 +7,7 @@
   <div class="workspace-heading">
     <div>
       <h1 class="h3 mb-1">Dashboard</h1>
-      <div class="text-muted small">Library maintenance progress, active work, and cached library stats.</div>
+      <div class="text-muted small">Maintenance impact, current library health, and everything created with vid2gif.</div>
     </div>
     <div class="workspace-actions">
       <button id="dashboardRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
@@ -25,6 +25,80 @@
     </div>
   </div>
 
+  <section class="dashboard-impact-band" aria-labelledby="dashboardImpactTitle">
+    <div class="dashboard-impact-heading">
+      <div>
+        <div class="dashboard-impact-kicker">Library impact</div>
+        <h2 id="dashboardImpactTitle">Your maintenance record</h2>
+      </div>
+      <div id="dashboardTrackingSince" class="dashboard-tracking-since">Tracking starts now</div>
+    </div>
+    <div class="dashboard-impact-metrics">
+      <div class="dashboard-impact-primary">
+        <span>Maintenance fixes</span>
+        <strong id="dashboardTotalFixes">0</strong>
+        <small>Completed by vid2gif</small>
+      </div>
+      <div class="dashboard-impact-metric">
+        <span>Resolution rate</span>
+        <strong id="dashboardResolutionRate">0%</strong>
+        <small id="dashboardResolutionDetail">0 of 0 actionable issues</small>
+      </div>
+      <div class="dashboard-impact-metric">
+        <span>Problems discovered</span>
+        <strong id="dashboardDiscoveredCount">0</strong>
+        <small id="dashboardClearedElsewhere">0 cleared elsewhere</small>
+      </div>
+      <div class="dashboard-impact-metric">
+        <span>Open backlog</span>
+        <strong id="dashboardImpactOpenCount">0</strong>
+        <small>Actionable issues still open</small>
+      </div>
+    </div>
+    <div class="dashboard-impact-progress">
+      <div class="progress" role="progressbar" aria-label="Lifetime maintenance resolution" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="dashboardImpactProgressBar" class="progress-bar" style="width: 0%"></div>
+      </div>
+      <div class="dashboard-impact-operations">
+        <span><i class="bi bi-box-arrow-in-down" aria-hidden="true"></i><strong id="dashboardQuarantinedFiles">0</strong> quarantined <em id="dashboardQuarantinedSize">0 B</em></span>
+        <span><i class="bi bi-trash3" aria-hidden="true"></i><strong id="dashboardDeletedFiles">0</strong> deleted <em id="dashboardDeletedSize">0 B reclaimed</em></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="workspace-panel dashboard-panel mt-3" aria-labelledby="dashboardCategoryTitle">
+    <div class="panel-heading">
+      <div>
+        <h2 id="dashboardCategoryTitle" class="h5 mb-1">Impact by Category</h2>
+        <div class="text-muted small">Distinct actionable problems found and fixed since tracking began.</div>
+      </div>
+    </div>
+    <div id="dashboardImpactCategories" class="dashboard-impact-categories">
+      <div class="text-muted text-center py-4">No maintenance activity recorded yet.</div>
+    </div>
+  </section>
+
+  <section class="dashboard-achievement-grid mt-3">
+    <div class="workspace-panel dashboard-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">30-Day Activity</h2>
+          <div class="text-muted small">Fixes completed each day.</div>
+        </div>
+      </div>
+      <div id="dashboardImpactTrend" class="dashboard-impact-trend" aria-label="Maintenance fixes over the last 30 days"></div>
+    </div>
+    <div class="workspace-panel dashboard-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 class="h5 mb-1">Milestones</h2>
+          <div class="text-muted small">A durable record of the work completed.</div>
+        </div>
+      </div>
+      <div id="dashboardMilestones" class="dashboard-milestones"></div>
+    </div>
+  </section>
+
   <section class="status-strip dashboard-status-strip" aria-label="Dashboard summary">
     <div class="status-tile">
       <div class="metric-label">Health</div>
@@ -33,7 +107,7 @@
     <div class="status-tile status-tile-wide">
       <div class="d-flex justify-content-between gap-3">
         <div>
-          <div class="metric-label">Overall progress</div>
+          <div class="metric-label">Current health</div>
           <div id="dashboardHealthDetail" class="metric-value">Collecting status</div>
         </div>
         <span id="dashboardHealthScore" class="small text-muted">0%</span>
@@ -64,8 +138,8 @@
     <div class="workspace-panel dashboard-panel">
       <div class="panel-heading">
         <div>
-          <h2 class="h5 mb-1">Workstream Progress</h2>
-          <div class="text-muted small">Known issues and how far along they are.</div>
+          <h2 class="h5 mb-1">Current Work</h2>
+          <div class="text-muted small">Latest scan state and items ready for attention.</div>
         </div>
       </div>
       <div id="dashboardWorkstreams" class="dashboard-workstreams">
@@ -121,8 +195,8 @@
     <div class="workspace-panel dashboard-panel">
       <div class="panel-heading">
         <div>
-          <h2 class="h5 mb-1">GIF Activity</h2>
-          <div class="text-muted small">Queue, Test Lab, and generated GIF footprint.</div>
+          <h2 class="h5 mb-1">Created with vid2gif</h2>
+          <div class="text-muted small">Current queue and lifetime output since tracking began.</div>
         </div>
       </div>
       <div id="dashboardGifStats" class="dashboard-stat-grid"></div>
@@ -131,8 +205,8 @@
     <div class="workspace-panel dashboard-panel">
       <div class="panel-heading">
         <div>
-          <h2 class="h5 mb-1">Recent Maintenance Logs</h2>
-          <div class="text-muted small">Latest recorded cleanup, repair, and import activity.</div>
+          <h2 class="h5 mb-1">Recent Impact Activity</h2>
+          <div class="text-muted small">Latest discoveries, cleanup, repair, and import activity.</div>
         </div>
       </div>
       <div id="dashboardActivity" class="dashboard-activity">

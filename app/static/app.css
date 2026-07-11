@@ -617,6 +617,355 @@ body {
   border-radius: 8px;
 }
 
+.dashboard-impact-band {
+  position: relative;
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid #34424f;
+  border-left: 5px solid #36b37e;
+  border-radius: 8px;
+  background: #18232d;
+  color: #f5f7f9;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+.dashboard-impact-band::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 32%;
+  height: 4px;
+  background: #0aa2c0;
+  content: "";
+}
+
+.dashboard-impact-band.dashboard-impact-error {
+  border-left-color: #dc3545;
+}
+
+.dashboard-impact-heading,
+.dashboard-impact-category-heading,
+.dashboard-impact-category-meta,
+.dashboard-next-milestone > div:first-child,
+.dashboard-trend-summary,
+.dashboard-trend-axis {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-impact-heading h2 {
+  margin: 2px 0 0;
+  font-size: 1.25rem;
+  letter-spacing: 0;
+}
+
+.dashboard-impact-kicker,
+.dashboard-impact-primary span,
+.dashboard-impact-metric span,
+.dashboard-next-milestone span {
+  color: #aebbc6;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.dashboard-tracking-since {
+  max-width: 50%;
+  color: #cbd5dc;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.dashboard-impact-metrics {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.25fr) repeat(3, minmax(140px, 1fr));
+  gap: 0;
+  margin-top: 22px;
+  border-top: 1px solid #34424f;
+  border-bottom: 1px solid #34424f;
+}
+
+.dashboard-impact-primary,
+.dashboard-impact-metric {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 18px 20px;
+  border-right: 1px solid #34424f;
+}
+
+.dashboard-impact-primary {
+  padding-left: 0;
+}
+
+.dashboard-impact-metric:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.dashboard-impact-primary strong {
+  color: #67d9a5;
+  font-size: 2.8rem;
+  line-height: 1;
+}
+
+.dashboard-impact-metric strong {
+  font-size: 1.75rem;
+  line-height: 1.1;
+}
+
+.dashboard-impact-primary small,
+.dashboard-impact-metric small {
+  overflow-wrap: anywhere;
+  color: #aebbc6;
+  font-size: 0.78rem;
+}
+
+.dashboard-impact-progress {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(320px, 1fr);
+  gap: 24px;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.dashboard-impact-progress > .progress {
+  height: 8px;
+  background: #34424f;
+}
+
+.dashboard-impact-progress .progress-bar {
+  background: #36b37e;
+}
+
+.dashboard-impact-operations {
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
+  color: #cbd5dc;
+  font-size: 0.78rem;
+}
+
+.dashboard-impact-operations span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dashboard-impact-operations i {
+  color: #67d9a5;
+}
+
+.dashboard-impact-operations em {
+  color: #8fa0ad;
+  font-style: normal;
+}
+
+.dashboard-impact-categories {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.dashboard-impact-category {
+  --impact-color: #6c757d;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--bs-border-color);
+  border-top: 3px solid var(--impact-color);
+  border-radius: 8px;
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-body-color);
+  text-decoration: none;
+}
+
+.dashboard-impact-category:hover {
+  border-color: var(--impact-color);
+  color: var(--bs-body-color);
+}
+
+.dashboard-impact-duplicates { --impact-color: #0d6efd; }
+.dashboard-impact-video_previews { --impact-color: #fd7e14; }
+.dashboard-impact-subtitles { --impact-color: #0aa2c0; }
+.dashboard-impact-posters { --impact-color: #198754; }
+.dashboard-impact-actor_images { --impact-color: #6f42c1; }
+
+.dashboard-impact-category-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--bs-body-bg);
+  color: var(--impact-color);
+}
+
+.dashboard-impact-category-body {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.dashboard-impact-category-heading h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 0.88rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-impact-category-heading strong {
+  color: var(--impact-color);
+  font-size: 1.25rem;
+}
+
+.dashboard-impact-category-meta,
+.dashboard-impact-category small {
+  color: var(--bs-secondary-color);
+  font-size: 0.72rem;
+}
+
+.dashboard-impact-category .progress-bar {
+  background: var(--impact-color);
+}
+
+.dashboard-impact-category-arrow {
+  align-self: center;
+  color: var(--bs-secondary-color);
+  font-size: 0.72rem;
+}
+
+.dashboard-achievement-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.8fr);
+  gap: 14px;
+}
+
+.dashboard-impact-trend {
+  display: grid;
+  min-height: 180px;
+  gap: 10px;
+}
+
+.dashboard-trend-summary {
+  justify-content: flex-start;
+}
+
+.dashboard-trend-summary strong {
+  font-size: 1.6rem;
+}
+
+.dashboard-trend-summary span,
+.dashboard-trend-axis {
+  color: var(--bs-secondary-color);
+  font-size: 0.78rem;
+}
+
+.dashboard-trend-bars {
+  display: grid;
+  grid-template-columns: repeat(30, minmax(4px, 1fr));
+  gap: 3px;
+  align-items: end;
+  min-height: 105px;
+  padding-top: 8px;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+
+.dashboard-trend-bar {
+  position: relative;
+  min-height: 3px;
+  border-radius: 2px 2px 0 0;
+  background: var(--bs-border-color);
+}
+
+.dashboard-trend-bar.has-value {
+  background: #198754;
+}
+
+.dashboard-trend-bar i {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  clip: rect(0 0 0 0);
+}
+
+.dashboard-milestones {
+  display: grid;
+  gap: 16px;
+}
+
+.dashboard-milestone-earned {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dashboard-milestone-earned span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--bs-success-border-subtle);
+  border-radius: 6px;
+  background: var(--bs-success-bg-subtle);
+  color: var(--bs-success-text-emphasis);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.dashboard-milestone-empty,
+.dashboard-milestone-complete {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  color: var(--bs-secondary-color);
+  font-size: 0.85rem;
+}
+
+.dashboard-milestone-empty i,
+.dashboard-milestone-complete i {
+  color: #d39e00;
+  font-size: 1.5rem;
+}
+
+.dashboard-next-milestone {
+  display: grid;
+  gap: 9px;
+  padding-top: 14px;
+  border-top: 1px solid var(--bs-border-color);
+}
+
+.dashboard-next-milestone > div:first-child {
+  display: grid;
+  grid-template-columns: 1fr auto;
+}
+
+.dashboard-next-milestone span {
+  grid-column: 1 / -1;
+  color: var(--bs-secondary-color);
+}
+
+.dashboard-next-milestone strong {
+  font-size: 0.95rem;
+}
+
+.dashboard-next-milestone em {
+  color: var(--bs-secondary-color);
+  font-size: 0.78rem;
+  font-style: normal;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.85fr);
@@ -1552,6 +1901,37 @@ body {
   .test-lab-workbench {
     grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
   }
+
+  .dashboard-impact-categories {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-impact-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-impact-primary,
+  .dashboard-impact-metric {
+    padding: 14px;
+    border-bottom: 1px solid #34424f;
+  }
+
+  .dashboard-impact-primary {
+    padding-left: 0;
+  }
+
+  .dashboard-impact-metric:nth-child(2),
+  .dashboard-impact-metric:last-child {
+    border-right: 0;
+  }
+
+  .dashboard-impact-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-impact-operations {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 1000px) {
@@ -1586,11 +1966,42 @@ body {
   .log-metrics,
   .test-lab-grid,
   .dashboard-grid,
+  .dashboard-achievement-grid,
   .dashboard-workstreams,
   .system-grid,
   .system-storage-grid,
   .change-preview-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-impact-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-impact-primary,
+  .dashboard-impact-metric {
+    padding: 14px;
+    border-bottom: 1px solid #34424f;
+  }
+
+  .dashboard-impact-primary {
+    padding-left: 0;
+  }
+
+  .dashboard-impact-metric:nth-child(2) {
+    border-right: 0;
+  }
+
+  .dashboard-impact-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-impact-operations {
+    justify-content: flex-start;
+  }
+
+  .dashboard-impact-categories {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dashboard-library-bars,
@@ -1667,6 +2078,35 @@ body {
   .dashboard-activity-item,
   .change-preview-row {
     display: grid;
+  }
+
+  .dashboard-impact-band {
+    padding: 16px;
+  }
+
+  .dashboard-impact-heading,
+  .dashboard-impact-operations {
+    display: grid;
+  }
+
+  .dashboard-tracking-since {
+    max-width: none;
+    text-align: left;
+  }
+
+  .dashboard-impact-metrics,
+  .dashboard-impact-categories {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-impact-primary,
+  .dashboard-impact-metric {
+    padding: 12px 0;
+    border-right: 0;
+  }
+
+  .dashboard-impact-primary strong {
+    font-size: 2.2rem;
   }
 
   .change-preview-row {

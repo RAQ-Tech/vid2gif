@@ -10,6 +10,7 @@ import threading
 import time
 
 from . import app_settings
+from . import impact_metrics
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
@@ -648,8 +649,12 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
 
     folder = os.path.dirname(videos[0]["path"])
     normalized_name = normalize_duplicate_name(os.path.splitext(videos[0]["name"])[0])
+    impact_issue_id = "duplicate:" + hashlib.sha256(
+        "|".join(sorted(video["id"] for video in videos)).encode("utf-8")
+    ).hexdigest()[:24]
     return {
         "id": group_id,
+        "impact_issue_id": impact_issue_id,
         "folder": folder,
         "normalized_name": normalized_name,
         "videos": videos,
@@ -886,6 +891,22 @@ def _run_scan(scan, lib_root):
             reclaimable_bytes=reclaimable,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
+        )
+        impact_metrics.record_scan(
+            scan["id"],
+            "duplicates",
+            "duplicates",
+            scan["path"],
+            [
+                {
+                    "issue_id": group.get("impact_issue_id"),
+                    "finding_ids": [group.get("impact_issue_id")],
+                    "label": group.get("normalized_name") or "Duplicate group",
+                    "path": group.get("folder") or scan["path"],
+                }
+                for group in groups
+            ],
+            timestamp=utc_iso(finished),
         )
     except _ScanCancelled:
         finished = time.time()
@@ -1230,6 +1251,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     files = []
     skipped_groups = []
     manual_review = []
+    impact_groups = []
     lib_real = os.path.realpath(lib_root)
 
     for group_id in visible_group_ids:
@@ -1245,6 +1267,15 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
             keep_id = group.get("recommended_keep_id")
 
         removable_video_ids = [video_id for video_id in videos if video_id != keep_id]
+        impact_groups.append(
+            {
+                "issue_id": group.get("impact_issue_id", ""),
+                "group_id": group["id"],
+                "required_video_ids": list(removable_video_ids),
+                "label": group.get("normalized_name") or "Duplicate group",
+                "path": group.get("folder") or scan.get("path") or lib_real,
+            }
+        )
         raw_remove_ids = override.get("remove_video_ids")
         if isinstance(raw_remove_ids, list):
             allowed = {str(item) for item in raw_remove_ids}
@@ -1345,6 +1376,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "total_size_label": format_size(total_size),
         "skipped_groups": skipped_groups,
         "manual_review": manual_review,
+        "impact_groups": impact_groups,
         "settings": settings,
     }
     with maintenance_lock:
@@ -1818,6 +1850,8 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
 
         applied_item = {
             "file_id": file_id,
+            "group_id": item.get("group_id", ""),
+            "kind": item.get("kind", ""),
             "operation": operation,
             "source_path": source,
             "destination_path": item.get("destination_path", ""),
@@ -1860,6 +1894,45 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
     }
     log_entry = _write_cleanup_log(plan, result, log_records)
     result["log"] = {key: value for key, value in log_entry.items() if key != "path"}
+    applied_video_ids = {
+        item.get("file_id")
+        for item in applied
+        if item.get("kind") == "video" and item.get("operation") in {"move", "delete"}
+    }
+    resolutions = []
+    for group in plan.get("impact_groups") or []:
+        required = set(group.get("required_video_ids") or [])
+        if required and required.issubset(applied_video_ids):
+            resolutions.append(
+                {
+                    "issue_id": group.get("issue_id"),
+                    "stream": "duplicates",
+                    "resolve_all": True,
+                    "ensure_issue": True,
+                    "label": group.get("label"),
+                    "path": group.get("path"),
+                }
+            )
+    operation_counts = {
+        "quarantined_files": sum(1 for item in applied if item.get("operation") == "move"),
+        "quarantined_bytes": sum(
+            int(item.get("size_bytes") or 0) for item in applied if item.get("operation") == "move"
+        ),
+        "deleted_files": sum(1 for item in applied if item.get("operation") == "delete"),
+        "deleted_bytes": sum(
+            int(item.get("size_bytes") or 0) for item in applied if item.get("operation") == "delete"
+        ),
+        "other_files": sum(1 for item in applied if item.get("operation") == "rename"),
+        "other_bytes": 0,
+    }
+    impact_metrics.record_maintenance_action(
+        plan.get("id"),
+        "duplicates",
+        resolutions=resolutions,
+        operations=operation_counts,
+        timestamp=utc_iso(),
+        label="Duplicate cleanup",
+    )
     with maintenance_lock:
         plan["status"] = "applied"
         plan["applied_at"] = utc_iso()

@@ -4,7 +4,7 @@ import struct
 import urllib.error
 from pathlib import Path
 
-from app import routes, video_preview_maintenance
+from app import impact_metrics, routes, video_preview_maintenance
 
 
 def _write(path, data=b"x"):
@@ -20,6 +20,11 @@ def _reset_preview_state(monkeypatch, tmp_path):
     generation_root = tmp_path / "state" / "video-preview-generation"
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_ROOT", str(generation_root))
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_MANIFEST_PATH", str(generation_root / "manifest.json"))
+    impact_root = tmp_path / "state" / "dashboard"
+    monkeypatch.setattr(impact_metrics, "IMPACT_ROOT", str(impact_root))
+    monkeypatch.setattr(impact_metrics, "IMPACT_PATH", str(impact_root / "impact-metrics.json"))
+    monkeypatch.setattr(impact_metrics, "IMPACT_BACKUP_PATH", str(impact_root / "impact-metrics.json.bak"))
+    impact_metrics._last_error = ""
     monkeypatch.setattr(
         video_preview_maintenance.app_settings,
         "load_settings",
@@ -575,6 +580,28 @@ def test_bif_quality_apply_revalidates_identity(monkeypatch, tmp_path):
     assert result["applied_count"] == 0
     assert result["refused_count"] == 1
     assert bif.exists()
+
+
+def test_removing_last_bad_bif_keeps_preview_issue_open_as_missing(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"same")] * 8))
+    _write(lib / "Movie" / "Movie.mkv")
+    scan = _quality_scan(lib, monkeypatch, tmp_path)
+    plan, err = video_preview_maintenance.build_quality_repair_plan(
+        {"scan_id": scan["id"], "move_root": str(lib / "_repair")},
+        lib_root=str(lib),
+    )
+
+    result, apply_err = video_preview_maintenance.apply_quality_repair_plan(plan["id"])
+    impact = impact_metrics.status_payload()
+
+    assert err is None
+    assert apply_err is None
+    assert result["applied_count"] == 1
+    assert not bif.exists()
+    assert impact["total_fixes"] == 0
+    assert impact["discovered_count"] == 1
+    assert impact["open_count"] == 1
 
 
 def test_bif_quality_repair_plan_rejects_outside_destination(monkeypatch, tmp_path):

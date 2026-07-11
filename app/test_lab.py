@@ -23,6 +23,7 @@ from .config import (
 )
 from .conversion_gate import conversion_lock
 from .estimate_history import record_successful_job, sample_count
+from .impact_metrics import record_creative_output
 from .ffmpeg_utils import (
     build_segments,
     get_duration,
@@ -955,6 +956,13 @@ def _process_variant(run, variant):
     if os.path.isfile(variant["out_gif"]):
         mark_job_finished(variant, "success", variant["out_gif"])
         record_successful_job(variant)
+        record_creative_output(
+            f"{run.get('id')}:{variant.get('id')}",
+            "test_lab",
+            output_bytes=variant.get("output_size_bytes") or 0,
+            saved_bytes=variant.get("gif_optimization_saved_bytes") or 0,
+            timestamp=variant.get("finished_at"),
+        )
         size = format_size(variant.get("output_size_bytes"))
         elapsed = format_duration(variant.get("elapsed_seconds"))
         logger.info(f"Test GIF ready: {variant['out_gif']} ({size}, {elapsed})")

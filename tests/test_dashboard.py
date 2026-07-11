@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app import dashboard, routes
+from app import dashboard, impact_metrics, routes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +18,10 @@ def _reset_dashboard(monkeypatch, tmp_path, lib):
     monkeypatch.setattr(dashboard, "LIBRARY_INVENTORY_PATH", str(state / "library-inventory.json"))
     monkeypatch.setattr(dashboard, "LIB_ROOT", str(lib))
     monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
+    monkeypatch.setattr(impact_metrics, "IMPACT_ROOT", str(state))
+    monkeypatch.setattr(impact_metrics, "IMPACT_PATH", str(state / "impact-metrics.json"))
+    monkeypatch.setattr(impact_metrics, "IMPACT_BACKUP_PATH", str(state / "impact-metrics.json.bak"))
+    impact_metrics._last_error = ""
     dashboard.library_scan = None
 
 
@@ -39,6 +43,8 @@ def test_dashboard_page_and_status_api_render(monkeypatch, tmp_path):
     assert status.is_json
     payload = status.get_json()
     assert "workstreams" in payload
+    assert payload["impact"]["total_fixes"] == 0
+    assert payload["creative_output"]["standard_gifs"] == 0
     assert {item["key"] for item in payload["workstreams"]} >= {
         "gifs",
         "duplicates",
@@ -176,6 +182,9 @@ def test_dashboard_static_assets_escape_dynamic_output():
     script = (ROOT / "app" / "static" / "dashboard.js").read_text(encoding="utf-8")
 
     assert 'id="dashboardWorkstreams"' in template
+    assert 'id="dashboardTotalFixes"' in template
+    assert 'id="dashboardImpactCategories"' in template
+    assert 'id="dashboardImpactTrend"' in template
     assert 'id="dashboardIssueChart"' in template
     assert 'id="dashboardLibraries"' in template
     assert "fetch('/api/dashboard/status')" in script
@@ -186,3 +195,5 @@ def test_dashboard_static_assets_escape_dynamic_output():
     assert "escapeHtml(item.title)" in script
     assert "escapeHtml(root.path || scan.path || '')" in script
     assert "escapeHtml(item.area || 'Maintenance')" in script
+    assert "renderImpact(data)" in script
+    assert "escapeHtml(item.title" in script

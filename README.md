@@ -137,6 +137,13 @@ or unknown-language SRT sidecars. Video files and missing-subtitle findings are
 never cleanup targets, and plans are restricted to explicitly selected subtitle
 files on the visible page.
 
+The dashboard tracks maintenance impact from the first launch after this
+feature is installed. It does not backfill bounded historical logs. Distinct
+actionable issues, completed fixes, quarantine/delete totals, milestones, daily
+activity, and newly created GIF output persist in
+`/state/dashboard/impact-metrics.json`; retaining the `/state` volume retains
+the lifetime record across container updates.
+
 ## Example Workflow
 
 1. Start the server locally or via Docker.

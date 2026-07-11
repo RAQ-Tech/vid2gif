@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 
 from . import emby_client
+from . import impact_metrics
 from .config import (
     LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
     LANDSCAPE_POSTER_INTERVAL_SECONDS,
@@ -611,6 +612,9 @@ def _scan_and_apply(run, lib_root, settings):
     records = manifest.setdefault("records", {})
     counters = _empty_counters()
     items = []
+    impact_issues = []
+    impact_resolutions = []
+    impact_bytes = 0
     mode = run.get("mode") or "incremental"
     root = os.path.realpath(lib_root)
     scan_path = run["path"]
@@ -663,6 +667,31 @@ def _scan_and_apply(run, lib_root, settings):
             key = _path_key(candidate["background_path"], root)
             records[key] = _record_for(candidate, root, status, message)
             items.append(_public_item(candidate, root, status, message))
+            if status in {"updated", "error"}:
+                issue_id = f"poster:{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
+                impact_issues.append(
+                    {
+                        "issue_id": issue_id,
+                        "finding_ids": [issue_id],
+                        "label": os.path.basename(candidate["poster_path"]),
+                        "path": candidate["poster_path"],
+                    }
+                )
+                if status == "updated":
+                    impact_resolutions.append(
+                        {
+                            "issue_id": issue_id,
+                            "stream": "posters",
+                            "resolve_all": True,
+                            "ensure_issue": True,
+                            "label": os.path.basename(candidate["poster_path"]),
+                            "path": candidate["poster_path"],
+                        }
+                    )
+                    try:
+                        impact_bytes += os.path.getsize(candidate["poster_path"])
+                    except OSError:
+                        pass
             if len(items) > POSTER_RUN_ITEM_RETENTION_COUNT:
                 del items[: len(items) - POSTER_RUN_ITEM_RETENTION_COUNT]
         try:
@@ -676,6 +705,9 @@ def _scan_and_apply(run, lib_root, settings):
 
     run["counters"] = counters
     run["items"] = items
+    run["_impact_issues"] = impact_issues
+    run["_impact_resolutions"] = impact_resolutions
+    run["_impact_bytes"] = impact_bytes
     if mode == "full":
         manifest["last_full_run_at"] = utc_iso()
     manifest["last_run"] = _run_summary(run)
@@ -862,6 +894,37 @@ def _execute_run(run, lib_root, settings):
             progress_label="Scanning artwork",
         )
         counters = _scan_and_apply(run, lib_root, settings)
+        impact_issues = run.get("_impact_issues") or []
+        if run.get("mode") == "full":
+            impact_metrics.record_scan(
+                run["id"],
+                "posters",
+                "posters",
+                run["path"],
+                impact_issues,
+                timestamp=utc_iso(),
+            )
+        else:
+            for issue in impact_issues:
+                impact_metrics.record_scan(
+                    f"{run['id']}:{issue.get('issue_id')}",
+                    "posters",
+                    "posters",
+                    issue.get("path") or run["path"],
+                    [issue],
+                    timestamp=utc_iso(),
+                )
+        impact_metrics.record_maintenance_action(
+            run["id"],
+            "posters",
+            resolutions=run.get("_impact_resolutions") or [],
+            operations={
+                "other_files": counters.get("updated", 0),
+                "other_bytes": run.get("_impact_bytes", 0),
+            },
+            timestamp=utc_iso(),
+            label="Landscape poster updates",
+        )
         emby_result = {"status": "skipped", "message": "No poster changes"}
         if counters.get("updated"):
             emby_result = refresh_emby(settings, persist=True)

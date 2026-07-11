@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 
 from . import emby_client
+from . import impact_metrics
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
@@ -638,6 +639,23 @@ def _run_scan(scan, lib_root, opener=None):
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
+        impact_metrics.record_scan(
+            scan["id"],
+            "actor_images",
+            "actor_images",
+            scan["path"],
+            [
+                {
+                    "issue_id": f"actor-image:{item.get('id')}",
+                    "finding_ids": [item.get("id")],
+                    "label": item.get("name") or "Missing actor image",
+                    "path": scan["path"],
+                }
+                for item in items
+                if item.get("status") == "ready"
+            ],
+            timestamp=utc_iso(finished),
+        )
         _write_log(
             "scan",
             {
@@ -1170,6 +1188,29 @@ def _execute_import_apply(apply_id, opener=None):
     }
     log = _write_log("apply", {"summary": result}, records=records)
     result["log"] = log
+    imported_ids = {record.get("person_id") for record in imported}
+    imported_files = [item for item in plan.get("files") or [] if item.get("person_id") in imported_ids]
+    impact_metrics.record_maintenance_action(
+        plan.get("id"),
+        "actor_images",
+        resolutions=[
+            {
+                "issue_id": f"actor-image:{item.get('item_id')}",
+                "stream": "actor_images",
+                "finding_ids": [item.get("item_id")],
+                "ensure_issue": True,
+                "label": item.get("person_name") or "Missing actor image",
+                "path": plan.get("lib_root"),
+            }
+            for item in imported_files
+        ],
+        operations={
+            "other_files": len(imported_files),
+            "other_bytes": sum(int(item.get("size_bytes") or 0) for item in imported_files),
+        },
+        timestamp=utc_iso(),
+        label="Actor image import",
+    )
     finished = time.time()
     status = "success" if not failed else "failed"
     with actor_lock:
