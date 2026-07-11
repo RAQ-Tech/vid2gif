@@ -54,6 +54,9 @@
             <button id="embyTestButton" class="btn btn-outline-secondary btn-sm" type="button">
               <i class="bi bi-plug" aria-hidden="true"></i> Test connection
             </button>
+            <button id="embyPlaybackButton" class="btn btn-outline-secondary btn-sm" type="button">
+              <i class="bi bi-play-circle" aria-hidden="true"></i> Check active playback
+            </button>
             <span id="embyConfigured" class="badge {% if settings.emby_api_key_configured and settings.emby_url %}text-bg-success{% else %}text-bg-secondary{% endif %}">
               {% if settings.emby_api_key_configured and settings.emby_url %}Configured{% else %}Not configured{% endif %}
             </span>
@@ -68,6 +71,13 @@
               <label class="form-check-label" for="emby_sync_after_maintenance">Sync Emby after successful maintenance changes</label>
             </div>
             <div class="form-text">Uses targeted item refreshes and path notifications. It never starts a whole-library scan.</div>
+          </div>
+          <div class="col-12">
+            <div class="form-check form-switch">
+              <input id="emby_playback_protection" name="emby_playback_protection" class="form-check-input" type="checkbox" {% if settings.emby_playback_protection %}checked{% endif %}>
+              <label class="form-check-label" for="emby_playback_protection">Protect actively playing media during destructive maintenance</label>
+            </div>
+            <div class="form-text">Active or unverifiable targets are deferred; unrelated reviewed files can still proceed.</div>
           </div>
           <div id="embyTestMessage" class="col-12 form-text" role="status" aria-live="polite"></div>
         </div>

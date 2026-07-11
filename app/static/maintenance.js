@@ -262,6 +262,15 @@
     target.append(notice);
   }
 
+  function playbackGuardText(playback) {
+    if (!playback) return '';
+    if (playback.status === 'disabled') return 'Playback protection is disabled.';
+    if (playback.status === 'not_configured') return 'Playback protection is inactive because Emby is not configured.';
+    if (playback.status === 'unavailable') return `${playback.unverified_count || playback.target_count || 0} target(s) could not be verified and will be deferred.`;
+    if (playback.active_count) return `${playback.active_count} playback target(s) are active and will be deferred.`;
+    return 'No selected targets are actively playing in Emby.';
+  }
+
   function setOverviewProgress(scan) {
     const pct = clampPercent(scan?.progress_percent || 0);
     const state = byId('overviewScanState');
@@ -1217,11 +1226,12 @@
         {label: 'Files affected', value: plan.file_count || 0},
         {label: 'Disk data', value: plan.total_size_label || '0 B'},
         {label: 'Operations', value: operationSummary(plan.files)},
-        {label: 'Left unchanged', value: unchangedCount, detail: `${(plan.manual_review || []).length} manual review, ${(plan.skipped_groups || []).length} skipped groups`}
+        {label: 'Left unchanged', value: unchangedCount, detail: `${(plan.manual_review || []).length} manual review, ${(plan.skipped_groups || []).length} skipped groups`},
+        {label: 'Playback deferred', value: plan.emby_playback?.deferred_count || 0}
       ],
       note: plan.action === 'delete'
-        ? 'Delete operations are permanent. Rename operations shown below remain inside the library.'
-        : `Files marked move will be quarantined under ${plan.move_root || 'the configured move destination'}.`,
+        ? `Delete operations are permanent. Rename operations shown below remain inside the library. ${playbackGuardText(plan.emby_playback)}`
+        : `Files marked move will be quarantined under ${plan.move_root || 'the configured move destination'}. ${playbackGuardText(plan.emby_playback)}`,
       changeForFile: file => ({
         operation: file.operation || plan.action,
         operationLabel: file.operation || action,
@@ -1279,7 +1289,7 @@
     if (!apply) return;
     if (running) {
       const counts = `${apply.processed_count || 0} of ${apply.file_count || 0} files`;
-      const detail = `${counts}, ${apply.applied_count || 0} applied, ${apply.missing_count || 0} missing, ${apply.refused_count || 0} refused`;
+      const detail = `${counts}, ${apply.applied_count || 0} applied, ${apply.missing_count || 0} missing, ${apply.refused_count || 0} refused, ${apply.deferred_count || 0} deferred`;
       setMessage(apply.progress_label || 'Cleanup running', apply.large_operation ? `${detail}. Large cleanup is running in the background.` : detail);
       return;
     }
@@ -1288,7 +1298,7 @@
       const result = apply.result || {};
       setMessage(
         `${result.applied_count || apply.applied_count || 0} files processed`,
-        `${result.total_applied_label || '0 B'} cleaned, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused`
+        `${result.total_applied_label || '0 B'} cleaned, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
       );
       refreshMaintenanceLogs();
       currentPlan = null;
@@ -2101,9 +2111,10 @@
         {label: 'Files affected', value: plan.file_count || 0},
         {label: 'Disk data', value: plan.total_size_label || '0 B'},
         {label: 'Manual review', value: (plan.manual_review || []).length},
-        {label: 'Action', value: plan.action === 'delete' ? 'Permanent delete' : 'Quarantine'}
+        {label: 'Action', value: plan.action === 'delete' ? 'Permanent delete' : 'Quarantine'},
+        {label: 'Playback deferred', value: plan.emby_playback?.deferred_count || 0}
       ],
-      note: plan.action === 'delete' ? 'Selected BIF files will be permanently deleted; source videos are not modified.' : `Selected BIF files will be moved to ${plan.move_root || 'the repair quarantine'}; source videos are not modified.`,
+      note: `${plan.action === 'delete' ? 'Selected BIF files will be permanently deleted; source videos are not modified.' : `Selected BIF files will be moved to ${plan.move_root || 'the repair quarantine'}; source videos are not modified.`} ${playbackGuardText(plan.emby_playback)}`,
       changeForFile: file => ({
         operation: plan.action,
         operationLabel: plan.action === 'delete' ? 'Delete' : 'Quarantine',
@@ -2161,7 +2172,7 @@
     if (!apply) return;
     if (running) {
       const counts = `${apply.processed_count || 0} of ${apply.file_count || 0} BIF files`;
-      const detail = `${counts}, ${apply.applied_count || 0} applied, ${apply.missing_count || 0} missing, ${apply.refused_count || 0} refused`;
+      const detail = `${counts}, ${apply.applied_count || 0} applied, ${apply.missing_count || 0} missing, ${apply.refused_count || 0} refused, ${apply.deferred_count || 0} deferred`;
       setQualityMessage(apply.progress_label || 'BIF repair running', apply.large_operation ? `${detail}. Large repair is running in the background.` : detail);
       return;
     }
@@ -2170,7 +2181,7 @@
       const result = apply.result || {};
       setQualityMessage(
         `${result.applied_count || apply.applied_count || 0} BIF files processed`,
-        `${result.total_applied_label || '0 B'} affected, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused. Run a fresh missing scan before generation.`
+        `${result.total_applied_label || '0 B'} affected, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred. Run a fresh missing scan before generation.`
       );
       startPreviewScan(byId('previewPath')?.value || previewLastPath);
       qualityPlan = null;
@@ -2316,6 +2327,25 @@
     }).join('') + (files.length > 3 ? `<div class="text-muted small">${files.length - 3} more subtitle file(s)</div>` : '');
   }
 
+  function subtitleStreamsCell(item) {
+    const streams = item.emby_subtitle_streams || [];
+    if (!streams.length) {
+      const labels = {
+        not_checked: 'Not checked',
+        partial: 'Stream data unavailable',
+        ambiguous: 'Ambiguous media source',
+        mismatch: 'Emby index mismatch',
+        complete: 'No indexed streams'
+      };
+      return `<span class="text-muted">${escapeHtml(labels[item.emby_index_status] || 'No indexed streams')}</span>`;
+    }
+    return streams.slice(0, 5).map(stream => {
+      const flags = [stream.is_external ? 'external' : 'embedded', stream.is_forced ? 'forced' : '', stream.is_hearing_impaired ? 'HI' : '', stream.is_default ? 'default' : ''].filter(Boolean).join(', ');
+      const language = stream.language_code || stream.display_language || 'unknown';
+      return `<div class="small mb-1"><strong>${escapeHtml(language)}</strong> · ${escapeHtml(stream.codec || 'unknown')}<div class="text-muted">${escapeHtml(flags)}</div></div>`;
+    }).join('') + (streams.length > 5 ? `<div class="text-muted small">${streams.length - 5} more stream(s)</div>` : '');
+  }
+
   function renderSubtitleItems(page) {
     const target = byId('subtitleItems');
     if (!target) return;
@@ -2333,6 +2363,7 @@
         `<td>${subtitleStatusBadge(item.status)}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(item.path || '')}">${escapeHtml(item.relative_path || item.name || '')}</code><div class="text-muted small">${escapeHtml(item.size_label || '')}</div></td>` +
         `<td>${subtitleFilesCell(item)}</td>` +
+        `<td>${subtitleStreamsCell(item)}</td>` +
         `<td>${escapeHtml(codes)}</td>` +
         `<td>${escapeHtml(item.detail || '')}</td>` +
         `</tr>`;
@@ -2341,7 +2372,7 @@
       `${subtitlePager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
       `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-subtitles" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || subtitleSort.column)}" data-current-direction="${escapeHtml(page.direction || subtitleSort.direction)}">` +
-      `<thead><tr><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="subtitles" data-sortable="true" data-sort-type="number">Select flagged SRTs</th><th data-column-id="language" data-sortable="true">Language</th><th data-column-id="reason" data-sortable="true">Reason</th></tr></thead>` +
+      `<thead><tr><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="subtitles" data-sortable="true" data-sort-type="number">Select flagged SRTs</th><th data-column-id="streams" data-sortable="true" data-sort-type="number">Emby Streams</th><th data-column-id="language" data-sortable="true">Language</th><th data-column-id="reason" data-sortable="true">Reason</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${subtitlePager(page)}`;
   }
@@ -2399,9 +2430,13 @@
       setSubtitleMessage('No subtitle scan yet.', '');
     } else if (scan.status === 'success') {
       const settings = scan.settings || {};
+      const streams = scan.emby_streams || {};
+      const streamDetail = ['complete', 'partial'].includes(streams.status)
+        ? `Emby streams: ${streams.stream_count || 0}, mismatches: ${streams.index_mismatch_count || 0}.`
+        : (streams.message || 'Emby stream details are unavailable.');
       setSubtitleMessage(
         `${scan.review_count || 0} subtitle review item${(scan.review_count || 0) === 1 ? '' : 's'}`,
-        withEmbyCoverage(`${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`, scan)
+        withEmbyCoverage(`${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. ${streamDetail} Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`, scan)
       );
       if (subtitleItemsPage?.scan?.id !== scan.id) {
         loadSubtitleItems(0);
@@ -2510,11 +2545,12 @@
       metrics: [
         {label: 'Subtitle files', value: plan.file_count || 0},
         {label: 'Disk data', value: plan.total_size_label || '0 B'},
-        {label: 'Page', value: subtitlePageRangeText(subtitleItemsPage)}
+        {label: 'Page', value: subtitlePageRangeText(subtitleItemsPage)},
+        {label: 'Playback deferred', value: plan.emby_playback?.deferred_count || 0}
       ],
       note: plan.operation === 'delete'
-        ? 'Deletion is permanent.'
-        : `Files will be moved under ${plan.quarantine_root || 'the subtitle quarantine'}.`,
+        ? `Deletion is permanent. ${playbackGuardText(plan.emby_playback)}`
+        : `Files will be moved under ${plan.quarantine_root || 'the subtitle quarantine'}. ${playbackGuardText(plan.emby_playback)}`,
       changeForFile: file => ({
         operation: plan.operation,
         operationLabel: plan.operation === 'delete' ? 'Delete' : 'Quarantine',
@@ -2567,7 +2603,7 @@
       }
       stopSubtitleApplyPolling();
       if (subtitleApply.status === 'success') {
-        setSubtitleMessage('Subtitle cleanup complete', `${subtitleApply.applied_count || 0} applied, ${subtitleApply.refused_count || 0} refused`);
+        setSubtitleMessage('Subtitle cleanup complete', `${subtitleApply.applied_count || 0} applied, ${subtitleApply.refused_count || 0} refused, ${subtitleApply.deferred_count || 0} deferred`);
         appendEmbySyncNotice('subtitleMessageDetail', embySyncFrom(subtitleApply));
         subtitlePlan = null;
         byId('subtitleApplyButton').disabled = true;

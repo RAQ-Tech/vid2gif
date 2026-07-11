@@ -17,6 +17,7 @@ from . import actor_image_maintenance
 from . import dashboard
 from . import estimate_history
 from . import emby_sync
+from . import emby_playback
 from . import maintenance
 from . import maintenance_scan_orchestrator
 from . import maintenance_scan_store
@@ -340,6 +341,9 @@ def settings_page():
                 "emby_sync_after_maintenance": _truthy(
                     request.form.get("emby_sync_after_maintenance")
                 ),
+                "emby_playback_protection": _truthy(
+                    request.form.get("emby_playback_protection")
+                ),
             }
         )
         if update_error:
@@ -386,6 +390,12 @@ def api_emby_test():
             "status": poster_maintenance.emby_status_payload(),
         }
     )
+
+
+@app.route("/api/emby/playback")
+def api_emby_playback():
+    snapshot = emby_playback.load_snapshot(force=True)
+    return jsonify({"playback": emby_playback.public_snapshot(snapshot)})
 
 
 @app.route("/api/emby/sync/<sync_id>")

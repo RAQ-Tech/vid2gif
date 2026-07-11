@@ -664,6 +664,48 @@ def test_bif_quality_apply_does_not_trigger_emby_extraction(monkeypatch, tmp_pat
     assert "secret" not in str(result)
 
 
+def test_bif_quality_cleanup_defers_when_playback_is_unverified(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"same")] * 8))
+    scan = _quality_scan(lib, monkeypatch, tmp_path)
+
+    def unavailable(targets, **kwargs):
+        return {
+            "status": "unavailable",
+            "checked_at": "now",
+            "active_session_count": 0,
+            "active_item_count": 0,
+            "target_count": len(targets),
+            "clear_count": 0,
+            "active_count": 0,
+            "unverified_count": len(targets),
+            "deferred_count": len(targets),
+            "message": "Unavailable",
+            "_target_statuses": {target["id"]: "unverified" for target in targets},
+        }
+
+    monkeypatch.setattr(video_preview_maintenance.emby_playback, "check_targets", unavailable)
+    monkeypatch.setattr(
+        video_preview_maintenance.emby_sync,
+        "sync_changes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync should not run")),
+    )
+    plan, err = video_preview_maintenance.build_quality_repair_plan(
+        {"scan_id": scan["id"], "move_root": str(lib / "_repair")},
+        lib_root=str(lib),
+    )
+    result, apply_err = video_preview_maintenance.apply_quality_repair_plan(plan["id"])
+
+    assert err is None
+    assert apply_err is None
+    assert plan["emby_playback"]["unverified_count"] == 1
+    assert result["applied_count"] == 0
+    assert result["deferred_count"] == 1
+    assert result["refused_count"] == 0
+    assert bif.exists()
+
+
 def test_bif_generation_plan_requires_mismatch_confirmation(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write(lib / "Movie" / "Movie.mkv")

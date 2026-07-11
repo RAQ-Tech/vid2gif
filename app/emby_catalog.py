@@ -13,7 +13,7 @@ from .progress import utc_iso
 SUCCESS_CACHE_SECONDS = 300
 FAILURE_CACHE_SECONDS = 30
 CATALOG_ITEM_TYPES = "Movie,Episode,Video,Series,Season,BoxSet"
-CATALOG_FIELDS = "Path,MediaSources"
+CATALOG_FIELDS = "Path,MediaSources,MediaStreams"
 
 _cache = {}
 _cache_lock = threading.Lock()
@@ -98,6 +98,50 @@ def _catalog_entry(item):
     }
 
 
+def _subtitle_stream(stream, media_source_id=""):
+    if not isinstance(stream, dict) or str(stream.get("Type") or "").lower() != "subtitle":
+        return None
+    path = str(stream.get("Path") or "")
+    language = str(stream.get("Language") or "").strip().lower().replace("_", "-")
+    if language in {"und", "unk", "unknown"}:
+        language = ""
+    return {
+        "media_source_id": str(media_source_id or ""),
+        "index": int(stream.get("Index") or 0),
+        "language_code": language,
+        "display_language": str(stream.get("DisplayLanguage") or ""),
+        "codec": str(stream.get("Codec") or ""),
+        "display_title": str(stream.get("DisplayTitle") or stream.get("Title") or ""),
+        "is_external": bool(stream.get("IsExternal")),
+        "is_text": bool(stream.get("IsTextSubtitleStream")),
+        "is_default": bool(stream.get("IsDefault")),
+        "is_forced": bool(stream.get("IsForced")),
+        "is_hearing_impaired": bool(stream.get("IsHearingImpaired")),
+        "delivery_method": str(stream.get("DeliveryMethod") or ""),
+        "_path": path,
+        "_normalized_path": normalize_path(path),
+    }
+
+
+def public_subtitle_stream(stream):
+    return {key: value for key, value in (stream or {}).items() if not str(key).startswith("_")}
+
+
+def _stream_source(path, streams, media_source_id="", present=False):
+    sanitized = []
+    for raw in streams or []:
+        value = _subtitle_stream(raw, media_source_id)
+        if value:
+            sanitized.append(value)
+    return {
+        "media_source_id": str(media_source_id or ""),
+        "path": str(path or ""),
+        "normalized_path": normalize_path(path),
+        "streams_present": bool(present),
+        "subtitle_streams": sanitized,
+    }
+
+
 def _build_catalog(items, system_info, fingerprint):
     entries = {}
     items_by_id = {}
@@ -108,6 +152,26 @@ def _build_catalog(items, system_info, fingerprint):
         item_id = entry["emby_item_id"]
         if not item_id:
             continue
+        sources = []
+        if item.get("Path") or "MediaStreams" in item:
+            sources.append(
+                _stream_source(
+                    item.get("Path"),
+                    item.get("MediaStreams") or [],
+                    present="MediaStreams" in item,
+                )
+            )
+        for source in item.get("MediaSources") or []:
+            if isinstance(source, dict):
+                sources.append(
+                    _stream_source(
+                        source.get("Path"),
+                        source.get("MediaStreams") or [],
+                        source.get("Id"),
+                        present="MediaStreams" in source,
+                    )
+                )
+        entry["_stream_sources"] = sources
         items_by_id[item_id] = entry
         paths = [item.get("Path")]
         for source in item.get("MediaSources") or []:
@@ -129,6 +193,41 @@ def _build_catalog(items, system_info, fingerprint):
         "item_count": len(items_by_id),
         "configuration_fingerprint": fingerprint,
     }
+
+
+def subtitle_streams_for_path(catalog, item_id, local_path, mappings=None):
+    if not catalog or not item_id:
+        return {"status": "not_checked", "streams": []}
+    entry = (catalog.get("items_by_id") or {}).get(str(item_id)) or {}
+    sources = entry.get("_stream_sources") or []
+    local = normalize_path(local_path)
+    mapped = mapped_emby_paths(local_path, mappings)
+    candidates = {path for path in [local, *mapped] if path}
+    matches = [source for source in sources if source.get("normalized_path") in candidates]
+    identified = [source for source in matches if source.get("media_source_id")]
+    if identified:
+        top_level = [source for source in matches if not source.get("media_source_id")]
+        matches = (
+            identified
+            if any(source.get("streams_present") for source in identified) or not any(source.get("streams_present") for source in top_level)
+            else top_level
+        )
+    source_ids = {source.get("media_source_id") or source.get("normalized_path") for source in matches}
+    if len(mapped) > 1 or len(source_ids) > 1:
+        return {"status": "ambiguous", "streams": []}
+    if not matches:
+        return {"status": "partial", "streams": []}
+    present = any(source.get("streams_present") for source in matches)
+    streams = []
+    seen = set()
+    for source in matches:
+        for stream in source.get("subtitle_streams") or []:
+            key = (stream.get("media_source_id"), stream.get("index"), stream.get("_normalized_path"))
+            if key in seen:
+                continue
+            seen.add(key)
+            streams.append(dict(stream))
+    return {"status": "complete" if present else "partial", "streams": streams}
 
 
 def load_catalog(settings, *, force=False, opener=None, before_page=None, now=None):
@@ -282,7 +381,11 @@ def match_path(catalog, local_path, mappings=None):
             "emby_match_status": "ambiguous" if len(ids) > 1 else "unmatched",
         }
     item_id = next(iter(ids))
-    entry = dict((catalog.get("items_by_id") or {}).get(item_id) or {})
+    entry = {
+        key: value
+        for key, value in dict((catalog.get("items_by_id") or {}).get(item_id) or {}).items()
+        if not str(key).startswith("_")
+    }
     return {**entry, "emby_match_status": "matched"}
 
 

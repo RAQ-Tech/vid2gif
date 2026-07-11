@@ -63,7 +63,7 @@ def test_catalog_requests_documented_fields_and_indexes_media_sources():
     request = captured[-1]
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)
     assert query["Recursive"] == ["true"]
-    assert query["Fields"] == ["Path,MediaSources"]
+    assert query["Fields"] == ["Path,MediaSources,MediaStreams"]
     assert query["IncludeItemTypes"] == ["Movie,Episode,Video,Series,Season,BoxSet"]
     assert emby_catalog.match_path(catalog, "/media/Movie.mkv")["emby_item_id"] == "m1"
     assert emby_catalog.match_path(catalog, "d:/movies/movie.mkv")["emby_item_id"] == "m1"
@@ -196,3 +196,76 @@ def test_mapped_local_paths_uses_longest_emby_prefix():
     assert emby_catalog.mapped_local_paths("/media/tv/Show/Episode.mkv", mappings) == [
         "/library/shows/show/episode.mkv"
     ]
+
+
+def test_catalog_selects_exact_media_source_and_sanitizes_subtitle_streams():
+    catalog = emby_catalog._build_catalog(
+        [
+            {
+                "Id": "movie",
+                "Path": "/media/Movie.mkv",
+                "MediaSources": [
+                    {
+                        "Id": "version-1080",
+                        "Path": "/media/Movie.mkv",
+                        "DirectStreamUrl": "/secret-url",
+                        "RequiredHttpHeaders": {"Secret": "value"},
+                        "MediaStreams": [
+                            {
+                                "Type": "Subtitle",
+                                "Index": 4,
+                                "Language": "en_US",
+                                "Codec": "subrip",
+                                "DisplayTitle": "English SDH",
+                                "IsExternal": True,
+                                "IsTextSubtitleStream": True,
+                                "IsForced": True,
+                                "IsHearingImpaired": True,
+                                "Path": "/media/Movie.en.srt",
+                                "DeliveryUrl": "/secret-subtitle",
+                            }
+                        ],
+                    },
+                    {
+                        "Id": "version-4k",
+                        "Path": "/media/Movie.4k.mkv",
+                        "MediaStreams": [{"Type": "Subtitle", "Index": 5, "Language": "spa"}],
+                    },
+                ],
+            }
+        ],
+        {"Id": "server"},
+        "fingerprint",
+    )
+
+    selected = emby_catalog.subtitle_streams_for_path(
+        catalog, "movie", "/library/Movie.mkv", [{"emby_prefix": "/media", "local_prefix": "/library"}]
+    )
+    stream = selected["streams"][0]
+    public = emby_catalog.public_subtitle_stream(stream)
+
+    assert selected["status"] == "complete"
+    assert stream["media_source_id"] == "version-1080"
+    assert stream["language_code"] == "en-us"
+    assert stream["is_forced"] is True
+    assert stream["is_hearing_impaired"] is True
+    assert public["codec"] == "subrip"
+    assert "_path" not in public
+    assert "DeliveryUrl" not in str(public)
+    assert "secret" not in str(public)
+    assert "_stream_sources" not in emby_catalog.match_path(catalog, "/media/Movie.mkv")
+
+
+def test_catalog_reports_partial_or_ambiguous_stream_coverage():
+    catalog = emby_catalog._build_catalog(
+        [{"Id": "movie", "Path": "/media/Movie.mkv", "MediaSources": [{"Path": "/media/Movie.mkv"}]}],
+        {},
+        "fingerprint",
+    )
+    assert emby_catalog.subtitle_streams_for_path(catalog, "movie", "/media/Movie.mkv")["status"] == "partial"
+
+    mappings = [
+        {"emby_prefix": "/one", "local_prefix": "/library"},
+        {"emby_prefix": "/two", "local_prefix": "/library"},
+    ]
+    assert emby_catalog.subtitle_streams_for_path(catalog, "movie", "/library/Movie.mkv", mappings)["status"] == "ambiguous"

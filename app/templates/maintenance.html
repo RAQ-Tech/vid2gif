@@ -552,7 +552,7 @@
         <div class="panel-heading">
           <div>
             <h2 class="h5 mb-1">Subtitle Health Check</h2>
-            <div class="text-muted small">Find missing SRT sidecars and Subgen language-code mismatches before you regenerate anything.</div>
+            <div class="text-muted small">Compare filesystem sidecars with Emby’s embedded and external subtitle streams before making changes.</div>
           </div>
           <a class="btn btn-outline-secondary btn-sm" href="/settings">
             <i class="bi bi-gear" aria-hidden="true"></i>
@@ -605,6 +605,7 @@
                 <option value="missing">Missing SRTs</option>
                 <option value="unknown">Unknown Language</option>
                 <option value="ok">OK</option>
+                <option value="index_mismatch">Emby Index Mismatch</option>
                 <option value="all">All videos</option>
               </select>
             </label>

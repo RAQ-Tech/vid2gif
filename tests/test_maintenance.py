@@ -382,6 +382,64 @@ def test_cleanup_move_refuses_existing_destination_file_and_continues(monkeypatc
     assert second_dest.read_bytes() == b"d" * 100
 
 
+def test_duplicate_cleanup_defers_active_group_and_applies_clear_group(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    first_keep, first_remove = _write_duplicate_pair(lib, "First")
+    second_keep, second_remove = _write_duplicate_pair(lib, "Second")
+    scan = _scan(lib, lib, monkeypatch)
+
+    def playback(targets, **kwargs):
+        statuses = {
+            target["id"]: ("active" if "First" in target.get("local_path", "") else "clear")
+            for target in targets
+        }
+        active_count = sum(value == "active" for value in statuses.values())
+        return {
+            "status": "active",
+            "checked_at": "now",
+            "active_session_count": 1,
+            "active_item_count": 1,
+            "target_count": len(targets),
+            "clear_count": len(targets) - active_count,
+            "active_count": active_count,
+            "unverified_count": 0,
+            "deferred_count": active_count,
+            "message": "Active",
+            "_target_statuses": statuses,
+        }
+
+    sync_calls = []
+    monkeypatch.setattr(maintenance.emby_playback, "check_targets", playback)
+    monkeypatch.setattr(
+        maintenance.emby_sync,
+        "sync_changes",
+        lambda changes, **kwargs: sync_calls.append(changes)
+        or {"id": "sync", "status": "success", "retryable": False},
+    )
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "visible_group_ids": _visible_group_ids(scan),
+        },
+        lib_root=str(lib),
+    )
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert err is None
+    assert apply_err is None
+    assert result["applied_count"] == 1
+    assert result["deferred_count"] == 1
+    assert result["refused_count"] == 0
+    assert first_keep.exists() and first_remove.exists()
+    assert second_keep.exists() and not second_remove.exists()
+    assert not (lib / ".vid2gif-duplicates" / "First" / first_remove.name).exists()
+    assert (lib / ".vid2gif-duplicates" / "Second" / second_remove.name).exists()
+    assert len(sync_calls) == 1
+    assert {change["local_path"] for change in sync_calls[0]} == {str(second_remove)}
+
+
 def test_cleanup_plan_rejects_move_root_outside_library(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     outside = tmp_path / "outside"

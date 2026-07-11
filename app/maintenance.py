@@ -11,6 +11,7 @@ import time
 
 from . import app_settings
 from . import emby_catalog
+from . import emby_playback
 from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
@@ -1416,6 +1417,25 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         for item in files
         if item.get("operation") in {"move", "delete"}
     )
+    selected_group_ids = {item.get("group_id") for item in files}
+    playback_targets = []
+    for group_id in selected_group_ids:
+        group = groups_by_id.get(group_id) or {}
+        for video in group.get("videos") or []:
+            playback_targets.append(
+                {
+                    "id": f"{group_id}:{video.get('id')}",
+                    "group_id": group_id,
+                    "local_path": video.get("path", ""),
+                    "emby_item_id": video.get("emby_item_id", ""),
+                    "ambiguous": video.get("emby_match_status") == "ambiguous",
+                }
+            )
+    playback = emby_playback.check_targets(playback_targets, force=True)
+    for item in files:
+        item["emby_playback_status"] = emby_playback.group_status(
+            playback, playback_targets, item.get("group_id")
+        )
     plan = {
         "id": plan_id,
         "scan_id": scan_id,
@@ -1435,6 +1455,8 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "manual_review": manual_review,
         "impact_groups": impact_groups,
         "settings": settings,
+        "playback_targets": playback_targets,
+        "emby_playback": playback,
     }
     with maintenance_lock:
         cleanup_plans[plan_id] = plan
@@ -1459,6 +1481,7 @@ def public_plan(plan):
         "total_size_label": plan.get("total_size_label", ""),
         "skipped_groups": list(plan.get("skipped_groups") or []),
         "manual_review": list(plan.get("manual_review") or []),
+        "emby_playback": emby_playback.public_result(plan.get("emby_playback")),
         "files": [
             {
                 "file_id": item.get("file_id", ""),
@@ -1474,6 +1497,7 @@ def public_plan(plan):
                 "size_label": item.get("size_label", ""),
                 "emby_item_id": item.get("emby_item_id", ""),
                 "emby_item_type": item.get("emby_item_type", ""),
+                "emby_playback_status": item.get("emby_playback_status", "not_checked"),
             }
             for item in plan.get("files") or []
         ],
@@ -1518,6 +1542,8 @@ def _write_cleanup_log(plan, result, records):
         "applied_count": result.get("applied_count", 0),
         "missing_count": result.get("missing_count", 0),
         "refused_count": result.get("refused_count", 0),
+        "deferred_count": result.get("deferred_count", 0),
+        "deferred_bytes": result.get("deferred_bytes", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "move_root": plan.get("move_root", ""),
     }
@@ -1558,6 +1584,7 @@ def _write_cleanup_log(plan, result, records):
         "applied_count": header["applied_count"],
         "missing_count": header["missing_count"],
         "refused_count": header["refused_count"],
+        "deferred_count": header["deferred_count"],
         "size_bytes": os.path.getsize(path),
         "size_label": format_size(os.path.getsize(path)),
         "truncated": truncated,
@@ -1642,9 +1669,12 @@ def _public_apply_result(result):
         "applied_count": result.get("applied_count", 0),
         "missing_count": result.get("missing_count", 0),
         "refused_count": result.get("refused_count", 0),
+        "deferred_count": result.get("deferred_count", 0),
+        "deferred_bytes": result.get("deferred_bytes", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "total_applied_label": result.get("total_applied_label", "0 B"),
         "emby_sync": result.get("emby_sync"),
+        "emby_playback": emby_playback.public_result(result.get("emby_playback")),
         "log": {key: value for key, value in log.items() if key != "path"},
     }
 
@@ -1669,11 +1699,13 @@ def public_apply_run(run):
         "applied_count": run.get("applied_count", 0),
         "missing_count": run.get("missing_count", 0),
         "refused_count": run.get("refused_count", 0),
+        "deferred_count": run.get("deferred_count", 0),
         "current_path": run.get("current_path", ""),
         "current_name": run.get("current_name", ""),
         "error": run.get("error", ""),
         "large_operation": bool(run.get("large_operation")),
         "emby_sync": result.get("emby_sync") if result else None,
+        "emby_playback": emby_playback.public_result(result.get("emby_playback")) if result else None,
         "result": _public_apply_result(result) if result else None,
         "log": (result.get("log") or None) if result else None,
     }
@@ -1787,6 +1819,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
     applied = []
     missing = []
     refused = []
+    deferred = []
     log_records = []
     total = 0
     files = list(plan.get("files") or [])
@@ -1801,7 +1834,13 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             progress_percent=0,
             progress_label=f"Processing 0 of {file_count} files",
             file_count=file_count,
+            deferred_count=0,
         )
+
+    playback_targets = list(plan.get("playback_targets") or [])
+    playback = emby_playback.check_targets(playback_targets, force=True)
+    playback_checked = time.monotonic()
+    group_decisions = {}
 
     def _finish_item(index, source):
         if not apply_run:
@@ -1813,6 +1852,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             applied_count=len(applied),
             missing_count=len(missing),
             refused_count=len(refused),
+            deferred_count=len(deferred),
             progress_percent=pct,
             progress_label=f"Processed {index} of {file_count} files",
             current_path=source if index < file_count else "",
@@ -1823,6 +1863,15 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         source = item.get("source_path", "")
         file_id = item.get("file_id", "")
         operation = item.get("operation") or action
+        group_id = item.get("group_id", "")
+        if group_id not in group_decisions:
+            if time.monotonic() - playback_checked >= emby_playback.RUN_REFRESH_SECONDS:
+                playback = emby_playback.check_targets(playback_targets, force=True)
+                playback_checked = time.monotonic()
+            group_decisions[group_id] = emby_playback.group_status(
+                playback, playback_targets, group_id
+            )
+        playback_status = group_decisions[group_id]
         if apply_run:
             _set_apply_progress(
                 apply_run,
@@ -1830,6 +1879,24 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
                 current_name=os.path.basename(source),
                 progress_label=f"Processing {index} of {file_count} files",
             )
+        if playback_status in {"active", "unverified"}:
+            reason = (
+                "Duplicate group is actively playing in Emby"
+                if playback_status == "active"
+                else "Duplicate group playback could not be verified"
+            )
+            value = {
+                "file_id": file_id,
+                "group_id": group_id,
+                "path": source,
+                "reason": reason,
+                "playback_status": playback_status,
+                "size_bytes": item.get("size_bytes", 0),
+            }
+            deferred.append(value)
+            log_records.append({"type": "file", "result": "deferred", **value})
+            _finish_item(index, source)
+            continue
         if not source or not path_is_under(source, lib_root):
             refusal = _refusal(file_id, source, "Source is outside the library")
             refused.append(refusal)
@@ -1976,12 +2043,16 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         "applied": applied,
         "missing": missing,
         "refused": refused,
+        "deferred": deferred,
         "applied_count": len(applied),
         "missing_count": len(missing),
         "refused_count": len(refused),
+        "deferred_count": len(deferred),
+        "deferred_bytes": sum(int(item.get("size_bytes") or 0) for item in deferred),
         "total_applied_bytes": total,
         "total_applied_label": format_size(total),
         "emby_sync": emby_sync_result,
+        "emby_playback": playback,
     }
     log_entry = _write_cleanup_log(plan, result, log_records)
     result["log"] = {key: value for key, value in log_entry.items() if key != "path"}
@@ -2040,6 +2111,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             applied_count=len(applied),
             missing_count=len(missing),
             refused_count=len(refused),
+            deferred_count=len(deferred),
             current_path="",
             current_name="",
             _finished_ts=finished,

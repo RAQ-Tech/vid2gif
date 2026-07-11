@@ -7,7 +7,7 @@ from .config import LANDSCAPE_POSTER_ROOT, LIB_ROOT, STATE_ROOT
 from .utils import path_is_under
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
@@ -55,6 +55,7 @@ _SETTING_KEYS = {
     "emby_api_key_clear",
     "emby_path_mappings",
     "emby_sync_after_maintenance",
+    "emby_playback_protection",
     "table_preferences",
 }
 
@@ -99,6 +100,7 @@ def default_settings():
         "emby_api_key": str(os.getenv("EMBY_API_KEY", "") or "").strip(),
         "emby_path_mappings": [],
         "emby_sync_after_maintenance": _bool(os.getenv("EMBY_SYNC_AFTER_MAINTENANCE"), True),
+        "emby_playback_protection": _bool(os.getenv("EMBY_PLAYBACK_PROTECTION"), True),
         "table_preferences": {},
     }
 
@@ -341,6 +343,10 @@ def _coerce_settings(data):
             data.get("emby_sync_after_maintenance", defaults["emby_sync_after_maintenance"]),
             defaults["emby_sync_after_maintenance"],
         ),
+        "emby_playback_protection": _bool(
+            data.get("emby_playback_protection", defaults["emby_playback_protection"]),
+            defaults["emby_playback_protection"],
+        ),
         "table_preferences": _coerce_table_preferences(
             data.get("table_preferences", defaults["table_preferences"])
         ),
@@ -366,6 +372,7 @@ def _load_settings_unlocked(path):
         or "emby_url" not in data
         or "emby_api_key" not in data
         or "emby_sync_after_maintenance" not in data
+        or "emby_playback_protection" not in data
     ):
         legacy = _read_settings_file(LEGACY_EMBY_SETTINGS_PATH) or {}
         data = dict(data or {})
@@ -378,6 +385,9 @@ def _load_settings_unlocked(path):
             data["emby_sync_after_maintenance"] = bool(
                 legacy.get("emby_refresh_enabled", default_settings()["emby_sync_after_maintenance"])
             )
+            migrated = True
+        if "emby_playback_protection" not in data:
+            data["emby_playback_protection"] = default_settings()["emby_playback_protection"]
             migrated = True
         if migrated:
             settings = _coerce_settings(data)
@@ -493,11 +503,17 @@ def update_settings(updates, path=None):
         settings = _coerce_settings(merged)
         if not _write_settings_unlocked(path, settings):
             return None, "Settings could not be saved"
-    if any(key in updates for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings")):
+    if any(key in updates for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings", "emby_playback_protection")):
         try:
             from . import emby_catalog
 
             emby_catalog.clear_cache()
+        except ImportError:
+            pass
+        try:
+            from . import emby_playback
+
+            emby_playback.clear_cache()
         except ImportError:
             pass
     return settings, None

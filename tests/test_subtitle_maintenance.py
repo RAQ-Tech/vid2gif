@@ -349,6 +349,7 @@ def test_subtitle_ui_assets_render():
     assert 'id="pane-subtitles"' in html
     assert 'id="subtitleScanButton"' in html
     assert 'id="subtitleItemStatus"' in html
+    assert 'value="index_mismatch"' in html
     assert 'id="subtitleSearch"' in html
     assert 'id="subtitleAction"' in html
     assert 'id="subtitlePlanButton"' in html
@@ -360,6 +361,8 @@ def test_subtitle_ui_assets_render():
     assert "fetch('/api/maintenance/subtitles/apply'" in script
     assert "/api/maintenance/subtitles/apply/status?apply_id=" in script
     assert "escapeHtml(item.detail || '')" in script
+    assert "subtitleStreamsCell" in script
+    assert "Playback deferred" in script
 
 
 def test_subtitle_scan_and_plan_carry_parent_emby_id(monkeypatch, tmp_path):
@@ -393,3 +396,235 @@ def test_subtitle_scan_and_plan_carry_parent_emby_id(monkeypatch, tmp_path):
     )
     assert err is None
     assert plan["files"][0]["emby_item_id"] == "movie-1"
+
+
+def test_embedded_expected_stream_satisfies_subtitle_health(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    catalog = emby_catalog._build_catalog(
+        [
+            {
+                "Id": "movie-1",
+                "Name": "Movie",
+                "Type": "Movie",
+                "Path": str(video),
+                "MediaSources": [
+                    {
+                        "Id": "source-1",
+                        "Path": str(video),
+                        "MediaStreams": [
+                            {
+                                "Type": "Subtitle",
+                                "Index": 2,
+                                "Language": "eng",
+                                "Codec": "ass",
+                                "IsForced": True,
+                                "IsHearingImpaired": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        {"Id": "server"},
+        emby_catalog.configuration_fingerprint({}),
+    )
+    summary = emby_catalog.known_matches_summary({}, 1, catalog_item_count=1, server_id="server")
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, summary),
+    )
+
+    scan = _scan(lib, monkeypatch)
+    item = scan["items"][0]
+
+    assert item["status"] == "ok"
+    assert item["subtitle_count"] == 0
+    assert item["emby_subtitle_stream_count"] == 1
+    assert item["embedded_subtitle_count"] == 1
+    assert item["emby_subtitle_streams"][0]["is_forced"] is True
+    assert item["emby_subtitle_streams"][0]["is_hearing_impaired"] is True
+    assert scan["emby_streams"]["status"] == "complete"
+    assert scan["emby_streams"]["stream_count"] == 1
+    assert scan["counts"]["missing_count"] == 0
+
+
+def test_emby_only_unexpected_stream_is_reviewable_but_not_actionable(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    catalog = emby_catalog._build_catalog(
+        [
+            {
+                "Id": "movie-1",
+                "Path": str(video),
+                "MediaSources": [
+                    {
+                        "Id": "source",
+                        "Path": str(video),
+                        "MediaStreams": [{"Type": "Subtitle", "Index": 3, "Language": "spa"}],
+                    }
+                ],
+            }
+        ],
+        {"Id": "server"},
+        "fingerprint",
+    )
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 1)),
+    )
+
+    scan = _scan(lib, monkeypatch)
+    item = scan["items"][0]
+
+    assert item["status"] == "language_review"
+    assert item["srt_files"] == []
+    assert item["emby_subtitle_streams"][0]["language_code"] == "spa"
+
+
+def test_unknown_emby_stream_language_is_classified_unknown(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    catalog = emby_catalog._build_catalog(
+        [
+            {
+                "Id": "movie-1",
+                "Path": str(video),
+                "MediaSources": [
+                    {
+                        "Id": "source",
+                        "Path": str(video),
+                        "MediaStreams": [{"Type": "Subtitle", "Index": 1, "Language": "und"}],
+                    }
+                ],
+            }
+        ],
+        {},
+        "fingerprint",
+    )
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 1)),
+    )
+
+    scan = _scan(lib, monkeypatch)
+
+    assert scan["items"][0]["status"] == "unknown"
+    assert scan["items"][0]["emby_subtitle_streams"][0]["language_code"] == ""
+
+
+def test_stream_summary_becomes_stale_after_emby_settings_change():
+    summary = subtitle_maintenance._stream_summary("complete", "complete", {"emby_url": "http://one"})
+    public = subtitle_maintenance.public_stream_summary(summary, {"emby_url": "http://two"})
+    assert public["status"] == "stale"
+    assert "rescan" in public["message"].lower()
+
+
+def test_external_stream_matching_and_index_mismatch_filter(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    expected = _write(lib / "Movie" / "Movie.eng.srt")
+    unexpected = _write(lib / "Movie" / "Movie.nno.srt")
+    catalog = emby_catalog._build_catalog(
+        [
+            {
+                "Id": "movie-1",
+                "Path": str(video),
+                "MediaSources": [
+                    {
+                        "Id": "source",
+                        "Path": str(video),
+                        "MediaStreams": [
+                            {
+                                "Type": "Subtitle",
+                                "Index": 4,
+                                "Language": "eng",
+                                "IsExternal": True,
+                                "Path": str(expected),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        {"Id": "server"},
+        "fingerprint",
+    )
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 1)),
+    )
+
+    scan = _scan(lib, monkeypatch)
+    item = scan["items"][0]
+    by_path = {sidecar["path"]: sidecar for sidecar in item["srt_files"]}
+    page, err = subtitle_maintenance.items_payload(scan["id"], status="index_mismatch")
+
+    assert err is None
+    assert by_path[str(expected)]["emby_stream_match_status"] == "matched"
+    assert by_path[str(expected)]["emby_stream_index"] == 4
+    assert by_path[str(unexpected)]["emby_stream_match_status"] == "unmatched"
+    assert item["emby_index_status"] == "mismatch"
+    assert scan["emby_streams"]["index_mismatch_count"] == 1
+    assert page["total"] == 1
+
+
+def test_legacy_subtitle_cache_reports_streams_not_checked():
+    public = subtitle_maintenance.public_scan(
+        {"id": "legacy", "status": "success", "counts": {}, "settings": {}}
+    )
+    assert public["emby_streams"]["status"] == "not_checked"
+
+
+def test_subtitle_cleanup_defers_active_parent_without_sync(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    flagged = _write(lib / "Movie" / "Movie.nno.srt")
+    scan = _scan(lib, monkeypatch)
+    child = scan["items"][0]["srt_files"][0]
+
+    def active(targets, **kwargs):
+        return {
+            "status": "active",
+            "checked_at": "now",
+            "active_session_count": 1,
+            "active_item_count": 1,
+            "target_count": len(targets),
+            "clear_count": 0,
+            "active_count": len(targets),
+            "unverified_count": 0,
+            "deferred_count": len(targets),
+            "message": "Active",
+            "_target_statuses": {target["id"]: "active" for target in targets},
+        }
+
+    monkeypatch.setattr(subtitle_maintenance.emby_playback, "check_targets", active)
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_sync,
+        "sync_changes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync should not run")),
+    )
+    plan, err = subtitle_maintenance.build_action_plan(
+        {
+            "scan_id": scan["id"],
+            "operation": "delete",
+            "visible_file_ids": [child["id"]],
+            "selected_file_ids": [child["id"]],
+        },
+        lib_root=str(lib),
+    )
+    run, apply_err = subtitle_maintenance.start_action_apply(plan["id"], synchronous=True)
+
+    assert err is None
+    assert apply_err is None
+    assert plan["emby_playback"]["deferred_count"] == 1
+    assert run["status"] == "success"
+    assert run["applied_count"] == 0
+    assert run["refused_count"] == 0
+    assert run["deferred_count"] == 1
+    assert run["result"]["records"][0]["status"] == "deferred"
+    assert flagged.exists()

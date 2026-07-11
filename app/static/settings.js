@@ -121,4 +121,22 @@
       button.disabled = false;
     }
   });
+
+  document.getElementById('embyPlaybackButton')?.addEventListener('click', async () => {
+    const button = document.getElementById('embyPlaybackButton');
+    const message = document.getElementById('embyTestMessage');
+    button.disabled = true;
+    message.textContent = 'Checking active Emby playback…';
+    try {
+      const response = await fetch('/api/emby/playback');
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Playback check failed');
+      const playback = data.playback || {};
+      message.textContent = `${playback.message || 'Playback check completed.'} Active sessions: ${playback.active_session_count || 0}.`;
+    } catch (error) {
+      message.textContent = error.message || 'Playback check failed.';
+    } finally {
+      button.disabled = false;
+    }
+  });
 })();
