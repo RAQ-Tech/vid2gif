@@ -338,9 +338,9 @@
           </div>
         </div>
         <div class="table-responsive workspace-table-wrap">
-          <table class="table table-hover align-middle workspace-table">
+          <table class="table table-hover align-middle workspace-table" data-table-id="test-lab-saved-gifs" data-sort-mode="client">
             <thead>
-              <tr><th>Select</th><th>Name</th><th>Source</th><th>Size</th><th>Optimization</th><th>Settings</th><th>Actions</th></tr>
+              <tr><th data-column-id="select" data-resizable="false">Select</th><th data-column-id="name" data-sortable="true">Name</th><th data-column-id="source" data-sortable="true">Source</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="optimization" data-sortable="true">Optimization</th><th data-column-id="settings" data-sortable="true">Settings</th><th data-column-id="actions" data-resizable="false">Actions</th></tr>
             </thead>
             <tbody id="testLabFilesBody">
               <tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>
@@ -415,9 +415,9 @@
         </div>
 
         <div class="table-responsive workspace-table-wrap">
-          <table class="table table-hover align-middle workspace-table">
+          <table class="table table-hover align-middle workspace-table" data-table-id="gif-queue" data-sort-mode="none">
             <thead>
-              <tr><th>Move</th><th>ID</th><th>Video</th><th>Status</th><th>Progress</th><th>Log</th></tr>
+              <tr><th data-column-id="move" data-resizable="false">Move</th><th data-column-id="id">ID</th><th data-column-id="video">Video</th><th data-column-id="status">Status</th><th data-column-id="progress">Progress</th><th data-column-id="log" data-resizable="false">Log</th></tr>
             </thead>
             <tbody id="queue-body">
             {% for j in running_jobs %}
@@ -475,9 +475,9 @@
           </div>
         </div>
         <div class="table-responsive workspace-table-wrap">
-          <table class="table table-hover align-middle workspace-table">
+          <table class="table table-hover align-middle workspace-table" data-table-id="gif-completed" data-sort-mode="client">
             <thead>
-              <tr><th>ID</th><th>Video</th><th>Status</th><th>Duration</th><th>Size</th><th>Optimization</th><th>Output</th><th>Log</th></tr>
+              <tr><th data-column-id="id" data-sortable="true">ID</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="duration" data-sortable="true" data-sort-type="number">Duration</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="optimization" data-sortable="true">Optimization</th><th data-column-id="output" data-sortable="true">Output</th><th data-column-id="log" data-resizable="false">Log</th></tr>
             </thead>
             <tbody id="completed-body">
             {% for j in completed_jobs %}

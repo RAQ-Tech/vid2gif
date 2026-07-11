@@ -636,11 +636,11 @@ function renderSavedTable() {
     const name = state.renameDrafts.has(file.id) ? state.renameDrafts.get(file.id) : file.name;
     return `<tr>
       <td><input class="form-check-input" type="checkbox" data-test-file-id="${escapeHtml(file.id)}" aria-label="Select ${escapeHtml(file.name)}"${state.selectedFileIds.has(file.id) ? ' checked' : ''}></td>
-      <td><div class="rename-inline"><input class="form-control form-control-sm" data-test-rename-id="${escapeHtml(file.id)}" value="${escapeHtml(name)}" maxlength="80" aria-label="Saved GIF name"><button type="button" class="btn btn-outline-secondary btn-icon btn-sm" data-save-rename="${escapeHtml(file.id)}" title="Save name" aria-label="Save name"><i class="bi bi-check-lg" aria-hidden="true"></i></button></div></td>
-      <td class="path-cell"><code title="${escapeHtml(file.source_name || '')}">${escapeHtml(file.source_name || '')}</code></td>
-      <td>${escapeHtml(file.size_label || '')}</td>
-      <td>${escapeHtml(file.gif_optimization_label || '')}</td>
-      <td>${escapeHtml(file.settings_label || '')}</td>
+      <td data-sort-value="${escapeHtml(name)}"><div class="rename-inline"><input class="form-control form-control-sm" data-test-rename-id="${escapeHtml(file.id)}" value="${escapeHtml(name)}" maxlength="80" aria-label="Saved GIF name"><button type="button" class="btn btn-outline-secondary btn-icon btn-sm" data-save-rename="${escapeHtml(file.id)}" title="Save name" aria-label="Save name"><i class="bi bi-check-lg" aria-hidden="true"></i></button></div></td>
+      <td class="path-cell" data-sort-value="${escapeHtml(file.source_name || '')}"><code title="${escapeHtml(file.source_name || '')}">${escapeHtml(file.source_name || '')}</code></td>
+      <td data-sort-value="${Number(file.size_bytes || 0)}">${escapeHtml(file.size_label || '')}</td>
+      <td data-sort-value="${escapeHtml(file.gif_optimization_label || '')}">${escapeHtml(file.gif_optimization_label || '')}</td>
+      <td data-sort-value="${escapeHtml(file.settings_label || '')}">${escapeHtml(file.settings_label || '')}</td>
       <td><div class="table-actions"><a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.original_url || file.url)}" target="_blank" rel="noopener" title="Open original" aria-label="Open original"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></a><a class="btn btn-outline-secondary btn-icon btn-sm" href="${escapeHtml(file.download_url || file.url)}" title="Download original" aria-label="Download original"><i class="bi bi-download" aria-hidden="true"></i></a></div></td>
     </tr>`;
   }).join('') : '<tr><td colspan="7" class="text-muted text-center py-4">No saved test GIFs.</td></tr>';

@@ -102,6 +102,53 @@ def test_app_settings_invalid_file_falls_back_to_default(tmp_path):
     assert app_settings.load_settings(str(path))["test_lab_preview_height"] == 720
 
 
+def test_app_settings_preserves_recognized_values_from_older_schema(tmp_path):
+    path = tmp_path / "app_settings.json"
+    path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "test_lab_preview_height": 1080,
+            "subtitle_flag_missing": False,
+            "duplicate_keeper_rule": "largest",
+        }),
+        encoding="utf-8",
+    )
+
+    settings = app_settings.load_settings(str(path))
+
+    assert settings["schema_version"] == app_settings.SCHEMA_VERSION
+    assert settings["test_lab_preview_height"] == 1080
+    assert settings["subtitle_flag_missing"] is False
+    assert settings["duplicate_keeper_rule"] == "largest"
+
+
+def test_app_settings_recovers_last_known_good_backup(tmp_path):
+    path = tmp_path / "app_settings.json"
+    assert app_settings.save_settings({"test_lab_preview_height": 900}, str(path))
+    assert app_settings.save_settings({"test_lab_preview_height": 1080}, str(path))
+    path.write_text("{broken", encoding="utf-8")
+
+    assert app_settings.load_settings(str(path))["test_lab_preview_height"] == 900
+
+
+def test_app_settings_partial_updates_merge_table_preferences(tmp_path):
+    path = tmp_path / "app_settings.json"
+    settings, err = app_settings.update_settings(
+        {"subtitle_flag_missing": False, "table_preferences": {"first": {"widths": {"name": 240}}}},
+        str(path),
+    )
+    assert err is None
+    settings, err = app_settings.update_settings(
+        {"table_preferences": {"second": {"widths": {"size": 120}, "sort": {"column": "size", "direction": "desc"}}}},
+        str(path),
+    )
+
+    assert err is None
+    assert settings["subtitle_flag_missing"] is False
+    assert settings["table_preferences"]["first"]["widths"]["name"] == 240
+    assert settings["table_preferences"]["second"]["sort"] == {"column": "size", "direction": "desc"}
+
+
 def test_settings_page_renders_and_saves(monkeypatch, tmp_path):
     path = tmp_path / "app_settings.json"
     monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
@@ -162,3 +209,18 @@ def test_settings_page_rejects_invalid_custom_value(monkeypatch, tmp_path):
 
     assert res.status_code == 400
     assert "Choose a positive preview height." in res.get_data(as_text=True)
+
+
+def test_settings_api_gets_and_partially_updates(monkeypatch, tmp_path):
+    path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(path))
+    client = routes.app.test_client()
+
+    update = client.patch("/api/settings", json={"subtitle_flag_missing": False})
+    fetched = client.get("/api/settings")
+
+    assert update.status_code == 200
+    assert fetched.status_code == 200
+    assert fetched.get_json()["settings"]["subtitle_flag_missing"] is False
+    assert fetched.get_json()["settings"]["test_lab_preview_height"] == 720

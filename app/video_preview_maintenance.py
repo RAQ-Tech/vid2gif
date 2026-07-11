@@ -18,6 +18,7 @@ from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .maintenance import QUARANTINE_DIRNAME
 from .progress import format_size, utc_iso
+from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
 
 
@@ -566,7 +567,7 @@ def status_payload(scan_id=None):
     return {"scan": public_scan(scan)}, None
 
 
-def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT):
+def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, sort="video", direction="asc"):
     _ensure_preview_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "missing").lower()
@@ -585,11 +586,24 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT):
             items = [item for item in items if item.get("status") != "missing"]
         else:
             items = [item for item in items if item.get("status") == status]
+    items, sort, direction = sort_records(
+        items, sort, direction,
+        {
+            "status": lambda item: item.get("status"),
+            "video": lambda item: item.get("relative_path") or item.get("name"),
+            "size": lambda item: item.get("size_bytes"),
+            "detail": lambda item: item.get("detail"),
+            "bifs": lambda item: len(item.get("bifs") or []),
+        },
+        "video",
+    )
     total = len(items)
     page = items[offset : offset + limit]
     return {
         "scan": public_scan(scan),
         "status": status,
+        "sort": sort,
+        "direction": direction,
         "offset": offset,
         "limit": limit,
         "total": total,
@@ -1316,7 +1330,7 @@ def quality_status_payload(scan_id=None):
     return {"scan": public_quality_scan(scan)}, None
 
 
-def quality_items_payload(scan_id, status="problem", offset=0, limit=ITEM_PAGE_DEFAULT):
+def quality_items_payload(scan_id, status="problem", offset=0, limit=ITEM_PAGE_DEFAULT, sort="bif", direction="asc"):
     _ensure_quality_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "problem").lower()
@@ -1334,11 +1348,27 @@ def quality_items_payload(scan_id, status="problem", offset=0, limit=ITEM_PAGE_D
         items = [item for item in items if item.get("status") in {"bad", "warning"}]
     elif status != "all":
         items = [item for item in items if item.get("status") == status]
+    items, sort, direction = sort_records(
+        items, sort, direction,
+        {
+            "status": lambda item: item.get("status"),
+            "bif": lambda item: item.get("relative_path") or item.get("name"),
+            "video": lambda item: item.get("video_relative_path") or item.get("video_name"),
+            "confidence": lambda item: item.get("confidence"),
+            "frames": lambda item: item.get("frame_count"),
+            "interval": lambda item: item.get("interval_seconds"),
+            "reason": lambda item: item.get("reason"),
+            "size": lambda item: item.get("size_bytes"),
+        },
+        "bif",
+    )
     total = len(items)
     page = items[offset : offset + limit]
     return {
         "scan": public_quality_scan(scan),
         "status": status,
+        "sort": sort,
+        "direction": direction,
         "offset": offset,
         "limit": limit,
         "total": total,
@@ -2254,10 +2284,13 @@ def save_generation_settings(payload):
         return None, "BIF width must be between 64 and 1920"
     if not 1 <= interval <= 3600:
         return None, "BIF interval must be between 1 and 3600 seconds"
-    settings = app_settings.load_settings()
-    settings["video_preview_bif_width"] = width
-    settings["video_preview_bif_interval_seconds"] = interval
-    if not app_settings.save_settings(settings):
+    _settings, err = app_settings.update_settings(
+        {
+            "video_preview_bif_width": width,
+            "video_preview_bif_interval_seconds": interval,
+        }
+    )
+    if err:
         return None, "BIF settings could not be saved"
     return {"width": width, "interval_seconds": interval}, None
 

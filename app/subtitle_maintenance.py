@@ -12,6 +12,7 @@ from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
+from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
 
 
@@ -621,7 +622,7 @@ def _filter_items(items, status, query):
     return status, filtered
 
 
-def items_payload(scan_id, status="language_review", offset=0, limit=ITEM_PAGE_DEFAULT, q=""):
+def items_payload(scan_id, status="language_review", offset=0, limit=ITEM_PAGE_DEFAULT, q="", sort="video", direction="asc"):
     _ensure_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     with subtitle_lock:
@@ -633,12 +634,25 @@ def items_payload(scan_id, status="language_review", offset=0, limit=ITEM_PAGE_D
             return None, "Scan is not complete"
         items = list(scan.get("items") or [])
     status, items = _filter_items(items, status, q)
+    items, sort, direction = sort_records(
+        items, sort, direction,
+        {
+            "status": lambda item: item.get("status"),
+            "video": lambda item: item.get("relative_path") or item.get("name"),
+            "subtitles": lambda item: len(item.get("srt_files") or []),
+            "language": lambda item: item.get("language_codes") or [],
+            "reason": lambda item: item.get("detail"),
+        },
+        "video",
+    )
     total = len(items)
     page = items[offset : offset + limit]
     return {
         "scan": public_scan(scan),
         "status": status,
         "q": q or "",
+        "sort": sort,
+        "direction": direction,
         "offset": offset,
         "limit": limit,
         "total": total,

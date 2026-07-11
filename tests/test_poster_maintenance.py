@@ -439,6 +439,38 @@ def test_landscape_poster_settings_save_without_exposing_api_key(monkeypatch, tm
     assert "secret" not in str(payload)
 
 
+def test_landscape_poster_settings_migrate_and_recover_backup(monkeypatch, tmp_path):
+    root = _reset_poster_state(monkeypatch, tmp_path)
+    path = root / "settings.json"
+    path.write_text('{"schema_version":0,"enabled":false,"scan_interval_seconds":120}', encoding="utf-8")
+
+    migrated = poster_maintenance.load_settings()
+    assert migrated["enabled"] is False
+    assert migrated["scan_interval_seconds"] == 120
+
+    assert poster_maintenance.save_settings(_settings(enabled=False, scan_interval_seconds=180))
+    assert poster_maintenance.save_settings(_settings(enabled=True, scan_interval_seconds=240))
+    path.write_text("{broken", encoding="utf-8")
+
+    recovered = poster_maintenance.load_settings()
+    assert recovered["enabled"] is False
+    assert recovered["scan_interval_seconds"] == 180
+
+
+def test_landscape_poster_partial_patch_preserves_api_key(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    assert poster_maintenance.save_settings(_settings(emby_url="http://emby:8096", emby_api_key="secret"))
+
+    res = routes.app.test_client().patch(
+        "/api/maintenance/landscape-posters/settings",
+        json={"enabled": True},
+    )
+
+    assert res.status_code == 200
+    assert poster_maintenance.load_settings()["emby_api_key"] == "secret"
+    assert "secret" not in str(res.get_json())
+
+
 def test_landscape_poster_emby_test_route_uses_saved_key_fallback(monkeypatch, tmp_path):
     _reset_poster_state(monkeypatch, tmp_path)
     poster_maintenance.save_settings(

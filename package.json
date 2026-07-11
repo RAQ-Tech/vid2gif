@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:frontend": "esbuild frontend/test-lab/index.js --bundle --minify --legal-comments=linked --target=es2020 --outfile=app/static/test-lab.bundle.js",
-    "test:frontend": "node --test frontend/test-lab/*.test.js frontend/dashboard/*.test.js"
+    "build:frontend": "esbuild frontend/test-lab/index.js --bundle --minify --legal-comments=linked --target=es2020 --outfile=app/static/test-lab.bundle.js && esbuild frontend/tables/index.js --bundle --minify --legal-comments=none --target=es2020 --outfile=app/static/workspace-tables.bundle.js",
+    "test:frontend": "node --test frontend/test-lab/*.test.js frontend/dashboard/*.test.js frontend/tables/*.test.js"
   },
   "dependencies": {
     "gifuct-js": "2.1.2",

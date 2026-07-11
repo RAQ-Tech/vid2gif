@@ -311,39 +311,28 @@ def settings_page():
                 ),
                 400,
             )
-        settings = app_settings.load_settings()
-        settings.update(
+        _settings, update_error = app_settings.update_settings(
             {
                 "test_lab_preview_height": height,
                 "duplicate_grouping_mode": request.form.get("duplicate_grouping_mode"),
                 "duplicate_keeper_rule": request.form.get("duplicate_keeper_rule"),
                 "duplicate_accessory_policy": request.form.get("duplicate_accessory_policy"),
                 "duplicate_move_root": request.form.get("duplicate_move_root"),
-                "duplicate_excluded_folders": app_settings.parse_excluded_folders(
-                    request.form.get("duplicate_excluded_folders")
-                ),
-                "subtitle_expected_languages": app_settings.parse_subtitle_languages(
-                    request.form.get("subtitle_expected_languages")
-                ),
-                "subtitle_flag_missing": _truthy(
-                    request.form.get("subtitle_flag_missing")
-                ),
-                "subtitle_flag_unknown_language": _truthy(
-                    request.form.get("subtitle_flag_unknown_language")
-                ),
-                "subtitle_subgen_detection": _truthy(
-                    request.form.get("subtitle_subgen_detection")
-                ),
+                "duplicate_excluded_folders": request.form.get("duplicate_excluded_folders"),
+                "subtitle_expected_languages": request.form.get("subtitle_expected_languages"),
+                "subtitle_flag_missing": _truthy(request.form.get("subtitle_flag_missing")),
+                "subtitle_flag_unknown_language": _truthy(request.form.get("subtitle_flag_unknown_language")),
+                "subtitle_subgen_detection": _truthy(request.form.get("subtitle_subgen_detection")),
                 "video_preview_bif_width": request.form.get("video_preview_bif_width"),
                 "video_preview_bif_interval_seconds": request.form.get("video_preview_bif_interval_seconds"),
             }
         )
-        if not app_settings.save_settings(settings):
+        if update_error:
             return (
                 render_template(
                     "settings.html",
                     **_settings_context(
-                        error="Settings could not be saved.",
+                        error=update_error,
                         form_values=request.form,
                     ),
                 ),
@@ -355,6 +344,16 @@ def settings_page():
         "settings.html",
         **_settings_context(saved=request.args.get("saved") == "1"),
     )
+
+
+@app.route("/api/settings", methods=["GET", "PATCH"])
+def api_settings():
+    if request.method == "GET":
+        return jsonify({"settings": app_settings.load_settings()})
+    settings, err = app_settings.update_settings(request.get_json(silent=True))
+    if err:
+        return jsonify({"error": err}), 400 if err != "Settings could not be saved" else 500
+    return jsonify({"settings": settings})
 
 
 @app.route("/maintenance")
@@ -843,7 +842,12 @@ def api_maintenance_landscape_posters_scan_cancel():
 @app.route("/api/maintenance/landscape-posters/items")
 def api_maintenance_landscape_posters_items():
     payload, err = poster_maintenance.poster_items_payload(
-        request.args.get("scan_id"), request.args.get("offset"), request.args.get("limit"), request.args.get("status") or "all"
+        request.args.get("scan_id"),
+        request.args.get("offset"),
+        request.args.get("limit"),
+        request.args.get("status") or "all",
+        sort=request.args.get("sort"),
+        direction=request.args.get("direction"),
     )
     if err:
         return jsonify({"error": err}), 404 if err == "Scan not found" else 400
@@ -889,7 +893,7 @@ def api_maintenance_landscape_posters_run():
     return jsonify({"run": poster_maintenance.public_run(run)})
 
 
-@app.route("/api/maintenance/landscape-posters/settings", methods=["POST"])
+@app.route("/api/maintenance/landscape-posters/settings", methods=["POST", "PATCH"])
 def api_maintenance_landscape_posters_settings():
     settings, err = poster_maintenance.update_settings(request.get_json(silent=True) or {})
     if err:
@@ -955,6 +959,8 @@ def api_maintenance_video_previews_items():
         status=request.args.get("status"),
         offset=request.args.get("offset"),
         limit=request.args.get("limit"),
+        sort=request.args.get("sort"),
+        direction=request.args.get("direction"),
     )
     if err:
         status = 404 if err == "Scan not found" else 400
@@ -1077,6 +1083,8 @@ def api_maintenance_video_previews_quality_items():
         status=request.args.get("status"),
         offset=request.args.get("offset"),
         limit=request.args.get("limit"),
+        sort=request.args.get("sort"),
+        direction=request.args.get("direction"),
     )
     if err:
         status = 404 if err == "Scan not found" else 400
@@ -1150,6 +1158,8 @@ def api_maintenance_subtitles_items():
         offset=request.args.get("offset"),
         limit=request.args.get("limit"),
         q=request.args.get("q"),
+        sort=request.args.get("sort"),
+        direction=request.args.get("direction"),
     )
     if err:
         status = 404 if err == "Scan not found" else 400
@@ -1238,6 +1248,8 @@ def api_maintenance_actor_images_items():
         status=request.args.get("status"),
         offset=request.args.get("offset"),
         limit=request.args.get("limit"),
+        sort=request.args.get("sort"),
+        direction=request.args.get("direction"),
     )
     if err:
         status = 404 if err == "Scan not found" else 400

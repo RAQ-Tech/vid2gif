@@ -22,6 +22,7 @@
   let previewItemsPage = null;
   let previewPageOffset = 0;
   let previewPageLimit = 25;
+  let previewSort = {column: 'video', direction: 'asc'};
   let previewLastPath = '';
   const previewSelectedMissing = new Set();
   let previewGenerationPlan = null;
@@ -32,6 +33,7 @@
   let qualityItemsPage = null;
   let qualityPageOffset = 0;
   let qualityPageLimit = 25;
+  let qualitySort = {column: 'bif', direction: 'asc'};
   let qualityPlan = null;
   let qualityApply = null;
   let qualityApplyPollTimer = null;
@@ -43,6 +45,7 @@
   let subtitleItemsPage = null;
   let subtitlePageOffset = 0;
   let subtitlePageLimit = 25;
+  let subtitleSort = {column: 'video', direction: 'asc'};
   let subtitleSearchTimer = null;
   const subtitleSelected = new Set();
   let subtitlePlan = null;
@@ -53,17 +56,26 @@
   let actorItemsPage = null;
   let actorPageOffset = 0;
   let actorPageLimit = 25;
+  let actorSort = {column: 'actor', direction: 'asc'};
   let actorPlan = null;
   let actorApply = null;
   let actorApplyPollTimer = null;
   const actorSelected = new Set();
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
+  let posterSettingsPending = 0;
+  const posterSettingsFailures = new Set();
+  let posterSettingsSaveChain = Promise.resolve();
+  const posterSettingsDirty = new Set();
+  const posterSettingGenerations = new Map();
+  const posterSettingInputTimers = new Map();
   let posterScan = null;
   let posterItemsPage = null;
+  let posterSort = {column: 'background', direction: 'asc'};
   let posterPlan = null;
   let posterApply = null;
   const posterSelected = new Set();
+  const groupDetailGenerations = new Map();
   let maintenanceFreshnessTimer = null;
 
   function byId(id) {
@@ -459,7 +471,8 @@
     return file.default_selected !== false && file.default_operation !== 'keep';
   }
 
-  function fileOperationOptions(group, file, state) {
+  function fileOperationOptions(group, file, state, locked = false) {
+    if (locked) return '<span class="badge text-bg-secondary">Keep</span>';
     const selected = state.fileOperations?.get(file.id) || 'default';
     const options = file.kind === 'video'
       ? [
@@ -488,6 +501,20 @@
     return files;
   }
 
+  function groupDisplayFiles(group) {
+    const files = [];
+    (group.videos || []).forEach(video => {
+      files.push(video);
+      (video.accessories || []).forEach(accessory => files.push(accessory));
+    });
+    return files;
+  }
+
+  function fileBelongsToKeeper(file, state) {
+    const keeperId = state.keepId || '';
+    return file.kind === 'video' ? file.id === keeperId : file.parent_video_id === keeperId;
+  }
+
   function ensureGroupState(group) {
     if (!group?.id) {
       return {
@@ -498,7 +525,9 @@
         candidateSignature: '',
         dirty: false,
         expanded: false,
-        loading: false
+        loading: false,
+        projectionPending: false,
+        appliedKeepId: ''
       };
     }
     if (!groupState.has(group.id)) {
@@ -510,16 +539,22 @@
         candidateSignature: '',
         dirty: false,
         expanded: false,
-        loading: false
+        loading: false,
+        projectionPending: false,
+        appliedKeepId: group.recommended_keep_id
       });
     }
     const state = groupState.get(group.id);
     if (!state.keepId && group.recommended_keep_id) {
       state.keepId = group.recommended_keep_id;
     }
+    if (!state.appliedKeepId && group.recommended_keep_id) {
+      state.appliedKeepId = group.recommended_keep_id;
+    }
     if (!(group.videos || []).length) {
       return state;
     }
+    if (state.projectionPending) return state;
     const candidates = groupCandidateFiles(group, state);
     const signature = candidates.map(file => file.id).join('|');
     if (state.candidateSignature !== signature) {
@@ -607,22 +642,25 @@
   }
 
   function fileRow(group, file, state) {
-    const checked = state.includedFileIds.has(file.id) ? ' checked' : '';
-    const disabled = state.enabled ? '' : ' disabled';
+    const locked = fileBelongsToKeeper(file, state);
+    const checked = !locked && state.includedFileIds.has(file.id) ? ' checked' : '';
+    const disabled = state.enabled && !locked ? '' : ' disabled';
     const kind = file.kind === 'video' ? 'Video' : 'Accessory';
     return `<tr>` +
       `<td><input class="form-check-input" type="checkbox" data-maint-file="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}" aria-label="Include ${escapeHtml(file.name)}"${checked}${disabled}></td>` +
-      `<td>${escapeHtml(kind)}</td>` +
-      `<td class="path-cell"><code title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
-      `<td class="path-cell"><code title="${escapeHtml(fileDetails(file))}">${escapeHtml(fileDetails(file))}</code></td>` +
-      `<td>${fileOperationOptions(group, file, state)}</td>` +
-      `<td>${escapeHtml(file.size_label || formatSize(file.size_bytes))}</td>` +
+      `<td data-sort-value="${escapeHtml(kind)}">${escapeHtml(kind)}</td>` +
+      `<td class="path-cell" data-sort-value="${escapeHtml(file.name)}"><code title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
+      `<td class="path-cell" data-sort-value="${escapeHtml(fileDetails(file))}"><code title="${escapeHtml(fileDetails(file))}">${escapeHtml(fileDetails(file))}</code></td>` +
+      `<td data-sort-value="${locked ? 'keep' : escapeHtml(state.fileOperations?.get(file.id) || file.default_operation || 'default')}">${fileOperationOptions(group, file, state, locked)}</td>` +
+      `<td data-sort-value="${Number(file.size_bytes || 0)}">${escapeHtml(file.size_label || formatSize(file.size_bytes))}</td>` +
       `</tr>`;
   }
 
   async function loadGroupDetails(groupId, keepVideoId = '') {
     if (!currentScan?.id || !groupId) return;
     const state = groupState.get(groupId);
+    const generation = (groupDetailGenerations.get(groupId) || 0) + 1;
+    groupDetailGenerations.set(groupId, generation);
     if (state) state.loading = true;
     renderGroups();
     try {
@@ -631,13 +669,34 @@
       const res = await fetch(`/api/maintenance/duplicates/groups/${encodeURIComponent(groupId)}?${params.toString()}`);
       const data = await readJsonResponse(res);
       if (!res.ok) {
+        if (groupDetailGenerations.get(groupId) === generation) {
+          const latest = groupState.get(groupId);
+          if (latest?.projectionPending) {
+            latest.keepId = latest.appliedKeepId || latest.keepId;
+            latest.projectionPending = false;
+          }
+        }
         setMessage(data.error || 'Group details unavailable', '');
         return;
       }
+      if (groupDetailGenerations.get(groupId) !== generation) return;
+      const latest = groupState.get(groupId);
+      if (latest) {
+        latest.projectionPending = false;
+        latest.appliedKeepId = keepVideoId || latest.keepId;
+        latest.candidateSignature = '';
+      }
       mergeGroupDetail(data.group);
     } catch (e) {
+      if (groupDetailGenerations.get(groupId) !== generation) return;
+      const latest = groupState.get(groupId);
+      if (latest?.projectionPending) {
+        latest.keepId = latest.appliedKeepId || latest.keepId;
+        latest.projectionPending = false;
+      }
       setMessage('Group details unavailable', e.message || '');
     } finally {
+      if (groupDetailGenerations.get(groupId) !== generation) return;
       const latest = groupState.get(groupId);
       if (latest) latest.loading = false;
       renderGroups();
@@ -683,10 +742,10 @@
     const expanded = Boolean(state.expanded);
     const hasDetails = Boolean((group.videos || []).length);
     const loading = Boolean(state.loading);
-    const candidates = hasDetails ? groupCandidateFiles(group, state) : [];
-    const rows = candidates.length
-      ? candidates.map(file => fileRow(group, file, state)).join('')
-      : '<tr><td colspan="6" class="text-muted text-center py-3">No files selected for cleanup in this group.</td></tr>';
+    const displayFiles = hasDetails ? groupDisplayFiles(group) : [];
+    const rows = displayFiles.length
+      ? displayFiles.map(file => fileRow(group, file, state)).join('')
+      : '<tr><td colspan="6" class="text-muted text-center py-3">No files are available in this group.</td></tr>';
     const keeper = hasDetails
       ? (group.videos || []).find(video => video.id === state.keepId)
       : null;
@@ -701,8 +760,8 @@
             `${(group.videos || []).map(video => groupOption(video, state.keepId)).join('')}` +
             `</select></label>` +
             `<div class="table-responsive workspace-table-wrap mt-2">` +
-            `<table class="table table-hover align-middle workspace-table maintenance-table">` +
-            `<thead><tr><th>Include</th><th>Kind</th><th>File</th><th>Details</th><th>Operation</th><th>Size</th></tr></thead>` +
+            `<table class="table table-hover align-middle workspace-table maintenance-table" data-table-id="maintenance-duplicate-files" data-sort-mode="client">` +
+            `<thead><tr><th data-column-id="include" data-resizable="false">Include</th><th data-column-id="kind" data-sortable="true">Kind</th><th data-column-id="file" data-sortable="true">File</th><th data-column-id="details" data-sortable="true">Details</th><th data-column-id="operation" data-sortable="true">Operation</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th></tr></thead>` +
             `<tbody>${rows}</tbody>` +
             `</table></div></div>`
           : '<div class="text-muted small mt-3">Open this group to load file details.</div>'))
@@ -1240,8 +1299,8 @@
     ).join('');
     list.innerHTML =
       `<div class="table-responsive workspace-table-wrap">` +
-      `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th></th><th>Time</th><th>Action</th><th>Result</th><th>Log size</th></tr></thead>` +
+      `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-duplicate-logs" data-sort-mode="client">` +
+      `<thead><tr><th data-column-id="open" data-resizable="false"></th><th data-column-id="time" data-sortable="true">Time</th><th data-column-id="action" data-sortable="true">Action</th><th data-column-id="result" data-sortable="true">Result</th><th data-column-id="size" data-sortable="true">Log size</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>`;
   }
 
@@ -1363,8 +1422,8 @@
     target.innerHTML =
       `${previewPager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
-      `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Generate</th><th>Status</th><th>Video</th><th>Size</th><th>Detail</th><th>BIF files</th></tr></thead>` +
+      `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-missing-bifs" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || previewSort.column)}" data-current-direction="${escapeHtml(page.direction || previewSort.direction)}">` +
+      `<thead><tr><th data-column-id="generate" data-resizable="false">Generate</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="detail" data-sortable="true">Detail</th><th data-column-id="bifs" data-sortable="true" data-sort-type="number">BIF files</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${previewPager(page)}`;
   }
@@ -1375,13 +1434,14 @@
     const target = byId('previewItems');
     if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading video preview results...</div>';
     try {
-      const res = await fetch(`/api/maintenance/video-previews/items?scan_id=${encodeURIComponent(previewScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(previewPageLimit)}`);
+      const res = await fetch(`/api/maintenance/video-previews/items?scan_id=${encodeURIComponent(previewScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(previewPageLimit)}&sort=${encodeURIComponent(previewSort.column)}&direction=${encodeURIComponent(previewSort.direction)}`);
       const data = await readJsonResponse(res);
       if (!res.ok) {
         setPreviewMessage(data.error || 'Video preview results unavailable', '');
         return;
       }
       previewItemsPage = data;
+      previewSort = {column: data.sort || previewSort.column, direction: data.direction || previewSort.direction};
       previewPageOffset = Number(data.offset || 0);
       previewSelectedMissing.clear();
       (data.items || []).filter(item => item.status === 'missing').forEach(item => previewSelectedMissing.add(item.id));
@@ -1806,8 +1866,8 @@
     target.innerHTML =
       `${qualityPager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
-      `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Clean up</th><th>Status</th><th>BIF</th><th>Video</th><th>Confidence</th><th>Frames Actual / Expected</th><th>Interval</th><th>Sample</th><th>Reason</th><th>Size</th></tr></thead>` +
+      `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-quality-bifs" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || qualitySort.column)}" data-current-direction="${escapeHtml(page.direction || qualitySort.direction)}">` +
+      `<thead><tr><th data-column-id="cleanup" data-resizable="false">Clean up</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="bif" data-sortable="true">BIF</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="confidence" data-sortable="true" data-sort-type="number">Confidence</th><th data-column-id="frames" data-sortable="true" data-sort-type="number">Frames Actual / Expected</th><th data-column-id="interval" data-sortable="true" data-sort-type="number">Interval</th><th data-column-id="sample">Sample</th><th data-column-id="reason" data-sortable="true">Reason</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${qualityPager(page)}`;
   }
@@ -1818,13 +1878,14 @@
     const target = byId('qualityItems');
     if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading BIF quality results...</div>';
     try {
-      const res = await fetch(`/api/maintenance/video-previews/quality/items?scan_id=${encodeURIComponent(qualityScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(qualityPageLimit)}`);
+      const res = await fetch(`/api/maintenance/video-previews/quality/items?scan_id=${encodeURIComponent(qualityScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(qualityPageLimit)}&sort=${encodeURIComponent(qualitySort.column)}&direction=${encodeURIComponent(qualitySort.direction)}`);
       const data = await readJsonResponse(res);
       if (!res.ok) {
         setQualityMessage(data.error || 'BIF quality results unavailable', '');
         return;
       }
       qualityItemsPage = data;
+      qualitySort = {column: data.sort || qualitySort.column, direction: data.direction || qualitySort.direction};
       qualityPageOffset = Number(data.offset || 0);
       renderQualityItems(data);
       if (data.large_result) {
@@ -2202,8 +2263,8 @@
     target.innerHTML =
       `${subtitlePager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
-      `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Status</th><th>Video</th><th>Select flagged SRTs</th><th>Language</th><th>Reason</th></tr></thead>` +
+      `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-subtitles" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || subtitleSort.column)}" data-current-direction="${escapeHtml(page.direction || subtitleSort.direction)}">` +
+      `<thead><tr><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="subtitles" data-sortable="true" data-sort-type="number">Select flagged SRTs</th><th data-column-id="language" data-sortable="true">Language</th><th data-column-id="reason" data-sortable="true">Reason</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${subtitlePager(page)}`;
   }
@@ -2220,7 +2281,9 @@
         status,
         offset: String(offset),
         limit: String(subtitlePageLimit),
-        q: query
+        q: query,
+        sort: subtitleSort.column,
+        direction: subtitleSort.direction
       });
       const res = await fetch(`/api/maintenance/subtitles/items?${params.toString()}`);
       const data = await readJsonResponse(res);
@@ -2229,6 +2292,7 @@
         return;
       }
       subtitleItemsPage = data;
+      subtitleSort = {column: data.sort || subtitleSort.column, direction: data.direction || subtitleSort.direction};
       subtitlePageOffset = Number(data.offset || 0);
       subtitleSelected.clear();
       (data.items || []).forEach(item => (item.srt_files || []).forEach(file => {
@@ -2589,8 +2653,8 @@
     target.innerHTML =
       `${actorPager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
-      `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Import</th><th>Actor</th><th>Candidate Image</th><th>Related Video</th><th>Exception</th></tr></thead>` +
+      `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-actor-images" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || actorSort.column)}" data-current-direction="${escapeHtml(page.direction || actorSort.direction)}">` +
+      `<thead><tr><th data-column-id="import" data-resizable="false">Import</th><th data-column-id="actor" data-sortable="true">Actor</th><th data-column-id="candidate" data-sortable="true">Candidate Image</th><th data-column-id="video" data-sortable="true">Related Video</th><th data-column-id="exception" data-sortable="true">Exception</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${actorPager(page)}`;
   }
@@ -2601,13 +2665,14 @@
     const target = byId('actorItems');
     if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading actor image results...</div>';
     try {
-      const res = await fetch(`/api/maintenance/actor-images/items?scan_id=${encodeURIComponent(actorScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(actorPageLimit)}`);
+      const res = await fetch(`/api/maintenance/actor-images/items?scan_id=${encodeURIComponent(actorScan.id)}&status=${encodeURIComponent(status)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(actorPageLimit)}&sort=${encodeURIComponent(actorSort.column)}&direction=${encodeURIComponent(actorSort.direction)}`);
       const data = await readJsonResponse(res);
       if (!res.ok) {
         setActorMessage(data.error || 'Actor image results unavailable', '');
         return;
       }
       actorItemsPage = data;
+      actorSort = {column: data.sort || actorSort.column, direction: data.direction || actorSort.direction};
       actorPageOffset = Number(data.offset || 0);
       if (!actorSelected.size && status === 'ready') {
         (data.items || []).forEach(item => {
@@ -2985,7 +3050,7 @@
     }
   }
 
-  function applyPosterSettings(settings) {
+  function applyPosterSettings(settings, force = false) {
     if (!settings) return;
     const enabled = byId('posterAutomationEnabled');
     const scan = byId('posterScanInterval');
@@ -2993,12 +3058,13 @@
     const embyEnabled = byId('posterEmbyRefreshEnabled');
     const embyUrl = byId('posterEmbyUrl');
     const apiKey = byId('posterEmbyApiKey');
-    if (enabled) enabled.checked = Boolean(settings.enabled);
-    if (scan) scan.value = settings.scan_interval_seconds || 900;
-    if (full) full.value = settings.full_scan_interval_seconds || 86400;
-    if (embyEnabled) embyEnabled.checked = Boolean(settings.emby_refresh_enabled);
-    if (embyUrl) embyUrl.value = settings.emby_url || '';
-    if (apiKey) {
+    const canApply = element => element && (force || (!posterSettingsDirty.has(element.id) && document.activeElement !== element));
+    if (canApply(enabled)) enabled.checked = Boolean(settings.enabled);
+    if (canApply(scan)) scan.value = settings.scan_interval_seconds || 900;
+    if (canApply(full)) full.value = settings.full_scan_interval_seconds || 86400;
+    if (canApply(embyEnabled)) embyEnabled.checked = Boolean(settings.emby_refresh_enabled);
+    if (canApply(embyUrl)) embyUrl.value = settings.emby_url || '';
+    if (canApply(apiKey)) {
       apiKey.value = '';
       apiKey.placeholder = settings.emby_api_key_configured ? 'Configured; leave blank to keep current' : 'API key';
     }
@@ -3033,8 +3099,8 @@
     const end = Math.min(Number(page?.total || 0), Number(page?.offset || 0) + Number(page?.count || 0));
     wrap.innerHTML =
       `<div class="maintenance-pager"><div class="text-muted small">${start}-${end} of ${Number(page?.total || 0)}</div><div class="toolbar-row mb-0"><button class="btn btn-outline-secondary btn-sm" type="button" data-poster-page="prev"${page?.has_previous ? '' : ' disabled'}>Previous</button><button class="btn btn-outline-secondary btn-sm" type="button" data-poster-page="next"${page?.has_next ? '' : ' disabled'}>Next</button></div></div>` +
-      `<table class="table table-hover align-middle workspace-table">` +
-      `<thead><tr><th>Apply</th><th>Status</th><th>Background</th><th>Poster</th><th>Detail</th></tr></thead>` +
+      `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-posters" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || posterSort.column)}" data-current-direction="${escapeHtml(page.direction || posterSort.direction)}">` +
+      `<thead><tr><th data-column-id="apply" data-resizable="false">Apply</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="background" data-sortable="true">Background</th><th data-column-id="poster" data-sortable="true">Poster</th><th data-column-id="detail" data-sortable="true">Detail</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
     if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !posterSelected.size || posterScan?.freshness?.status === 'changed';
   }
@@ -3042,9 +3108,10 @@
   async function loadPosterItems(offset = 0) {
     if (!posterScan?.id || posterScan.status !== 'success') return;
     try {
-      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=10`);
+      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=10&sort=${encodeURIComponent(posterSort.column)}&direction=${encodeURIComponent(posterSort.direction)}`);
       const data = await readJsonResponse(res);
       posterItemsPage = data;
+      posterSort = {column: data.sort || posterSort.column, direction: data.direction || posterSort.direction};
       posterSelected.clear();
       (data.items || []).filter(item => item.eligible).forEach(item => posterSelected.add(item.id));
       posterPlan = null;
@@ -3109,10 +3176,8 @@
         setPosterMessage(data.error || 'Landscape poster status unavailable', '');
         return;
       }
-      if (!posterSettingsLoaded) {
-        applyPosterSettings(data.settings);
-        posterSettingsLoaded = true;
-      }
+      applyPosterSettings(data.settings);
+      posterSettingsLoaded = true;
       renderPosterStatus(data);
       clearTimeout(posterPollTimer);
       if (!document.hidden && (data.analysis_scan?.active || data.current_run?.status === 'running')) {
@@ -3123,41 +3188,61 @@
     }
   }
 
-  function collectPosterSettings() {
-    const apiKeyValue = byId('posterEmbyApiKey')?.value || '';
-    const payload = {
-      enabled: Boolean(byId('posterAutomationEnabled')?.checked),
-      scan_interval_seconds: Number(byId('posterScanInterval')?.value || 900),
-      full_scan_interval_seconds: Number(byId('posterFullScanInterval')?.value || 86400),
-      emby_refresh_enabled: Boolean(byId('posterEmbyRefreshEnabled')?.checked),
-      emby_url: byId('posterEmbyUrl')?.value.trim() || ''
-    };
-    if (apiKeyValue) {
-      payload.emby_api_key = apiKeyValue;
-    }
-    return payload;
+  function setPosterSettingsSaveState(state, message) {
+    const target = byId('posterSettingsSaveState');
+    if (!target) return;
+    const icon = state === 'saving' ? 'bi-cloud-arrow-up' : state === 'error' ? 'bi-exclamation-triangle' : 'bi-cloud-check';
+    target.className = `settings-save-state ${state === 'error' ? 'text-danger' : 'text-muted'}`;
+    target.innerHTML = `<i class="bi ${icon}" aria-hidden="true"></i><span>${escapeHtml(message)}</span>`;
   }
 
-  async function savePosterSettings() {
-    setPosterMessage('Saving landscape poster settings', '');
-    try {
-      const res = await fetch('/api/maintenance/landscape-posters/settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(collectPosterSettings())
-      });
-      const data = await readJsonResponse(res);
-      if (!res.ok) {
-        setPosterMessage(data.error || 'Settings could not be saved', '');
-        return;
-      }
-      applyPosterSettings(data.settings);
-      posterSettingsLoaded = true;
-      renderPosterStatus(data.status);
-      setPosterMessage('Landscape poster settings saved', '');
-    } catch (e) {
-      setPosterMessage('Settings could not be saved', e.message || '');
+  function posterSettingPayload(element) {
+    if (!element?.checkValidity()) return null;
+    if (element.id === 'posterAutomationEnabled') return {enabled: element.checked};
+    if (element.id === 'posterScanInterval') return {scan_interval_seconds: Number(element.value)};
+    if (element.id === 'posterFullScanInterval') return {full_scan_interval_seconds: Number(element.value)};
+    if (element.id === 'posterEmbyRefreshEnabled') return {emby_refresh_enabled: element.checked};
+    if (element.id === 'posterEmbyUrl') return {emby_url: element.value.trim()};
+    if (element.id === 'posterEmbyApiKey') return element.value ? {emby_api_key: element.value} : {};
+    return null;
+  }
+
+  function savePosterSettings(element) {
+    const payload = posterSettingPayload(element);
+    if (!payload) {
+      posterSettingsFailures.add(element?.id || 'validation');
+      setPosterSettingsSaveState('error', 'Not saved: check the highlighted value');
+      return;
     }
+    if (!Object.keys(payload).length) return;
+    posterSettingsDirty.add(element.id);
+    const generation = (posterSettingGenerations.get(element.id) || 0) + 1;
+    posterSettingGenerations.set(element.id, generation);
+    posterSettingsPending += 1;
+    setPosterSettingsSaveState('saving', 'Saving changes');
+    posterSettingsSaveChain = posterSettingsSaveChain.then(async () => {
+      try {
+        const res = await fetch('/api/maintenance/landscape-posters/settings', {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await readJsonResponse(res);
+        if (!res.ok) throw new Error(data.error || 'Settings could not be saved');
+        posterSettingsFailures.delete(element.id);
+        posterSettingsFailures.delete('validation');
+        if (posterSettingGenerations.get(element.id) === generation) posterSettingsDirty.delete(element.id);
+        applyPosterSettings(data.settings);
+        posterSettingsLoaded = true;
+        renderPosterStatus(data.status);
+      } catch (e) {
+        posterSettingsFailures.add(element.id);
+        setPosterSettingsSaveState('error', `Not saved: ${e.message || 'request failed'}`);
+      } finally {
+        posterSettingsPending = Math.max(0, posterSettingsPending - 1);
+        if (!posterSettingsPending && !posterSettingsFailures.size) setPosterSettingsSaveState('saved', 'All changes saved');
+      }
+    });
   }
 
   async function testEmbyConnection() {
@@ -3173,7 +3258,10 @@
       const res = await fetch('/api/maintenance/landscape-posters/emby/test', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(collectPosterSettings())
+        body: JSON.stringify({
+          emby_url: byId('posterEmbyUrl')?.value.trim() || '',
+          ...(byId('posterEmbyApiKey')?.value ? {emby_api_key: byId('posterEmbyApiKey').value} : {})
+        })
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -3489,7 +3577,19 @@
       actorPageOffset = 0;
       loadActorItems(0);
     });
-    byId('posterSaveSettingsButton')?.addEventListener('click', savePosterSettings);
+    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval', 'posterEmbyRefreshEnabled', 'posterEmbyUrl', 'posterEmbyApiKey'].forEach(id => {
+      const element = byId(id);
+      element?.addEventListener('change', event => {
+        clearTimeout(posterSettingInputTimers.get(element));
+        savePosterSettings(event.target);
+      });
+      if (element && ['posterScanInterval', 'posterFullScanInterval', 'posterEmbyUrl'].includes(id)) {
+        element.addEventListener('input', event => {
+          clearTimeout(posterSettingInputTimers.get(element));
+          posterSettingInputTimers.set(element, setTimeout(() => savePosterSettings(event.target), 500));
+        });
+      }
+    });
     byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
     byId('posterPlanButton')?.addEventListener('click', reviewPosterPlan);
@@ -3752,7 +3852,7 @@
         const state = groupState.get(groupId);
         if (state) {
           state.keepId = keep.value;
-          state.candidateSignature = '';
+          state.projectionPending = true;
           state.dirty = true;
         }
         markGroupDirty(groupId);
@@ -3804,6 +3904,36 @@
   document.addEventListener('DOMContentLoaded', () => {
     initMaintenanceTabs();
     initEvents();
+    document.addEventListener('vid2gif:table-sort', event => {
+      const {tableId, column, direction} = event.detail || {};
+      if (!column || !direction) return;
+      if (tableId === 'maintenance-missing-bifs') {
+        previewSort = {column, direction};
+        previewSelectedMissing.clear();
+        loadPreviewItems(0);
+      } else if (tableId === 'maintenance-quality-bifs') {
+        qualitySort = {column, direction};
+        qualityExcludedItems.clear();
+        qualityIncludedItems.clear();
+        qualityPlan = null;
+        loadQualityItems(0);
+      } else if (tableId === 'maintenance-subtitles') {
+        subtitleSort = {column, direction};
+        subtitleSelected.clear();
+        subtitlePlan = null;
+        loadSubtitleItems(0);
+      } else if (tableId === 'maintenance-actor-images') {
+        actorSort = {column, direction};
+        actorSelected.clear();
+        actorPlan = null;
+        loadActorItems(0);
+      } else if (tableId === 'maintenance-posters') {
+        posterSort = {column, direction};
+        posterSelected.clear();
+        posterPlan = null;
+        loadPosterItems(0);
+      }
+    });
     setProgress(null);
     setOverviewProgress(null);
     setPreviewProgress(null);
@@ -3828,7 +3958,7 @@
       if (document.hidden) clearTimeout(maintenanceFreshnessTimer);
       else checkMaintenanceFreshness();
     });
-    window.addEventListener('beforeunload', () => {
+    window.addEventListener('beforeunload', event => {
       clearTimeout(overviewPollTimer);
       clearTimeout(overviewSearchTimer);
       clearTimeout(subtitleSearchTimer);
@@ -3837,6 +3967,10 @@
       stopGenerationPolling();
       clearTimeout(posterPollTimer);
       clearTimeout(maintenanceFreshnessTimer);
+      if (posterSettingsPending || posterSettingsFailures.size) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
     });
   });
 }());

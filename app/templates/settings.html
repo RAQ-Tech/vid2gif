@@ -17,6 +17,10 @@
         <h2 class="h5 mb-1">Application Preferences</h2>
         <div class="text-muted small">Configure generation, comparison, and maintenance defaults.</div>
       </div>
+      <div id="settingsSaveState" class="settings-save-state text-muted" role="status" aria-live="polite">
+        <i class="bi bi-cloud-check" aria-hidden="true"></i>
+        <span>All changes saved</span>
+      </div>
     </div>
 
     {% if saved %}
@@ -143,31 +147,11 @@
         </div>
       </div>
 
-      <div class="settings-panel settings-panel-actions">
-        <button type="submit" class="btn btn-primary ms-md-auto">
-          <i class="bi bi-save" aria-hidden="true"></i>
-          <span>Save Settings</span>
-        </button>
-      </div>
     </form>
   </section>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script>
-  (function () {
-    const preset = document.getElementById('preview_height_preset');
-    const custom = document.getElementById('preview_height_custom');
-    if (!preset || !custom) return;
-    function syncCustom() {
-      const show = preset.value === 'custom';
-      custom.classList.toggle('d-none', !show);
-      custom.disabled = !show;
-      if (!show) custom.value = '';
-    }
-    preset.addEventListener('change', syncCustom);
-    syncCustom();
-  })();
-</script>
+<script src="{{ url_for('static', filename='settings.js') }}"></script>
 {% endblock %}

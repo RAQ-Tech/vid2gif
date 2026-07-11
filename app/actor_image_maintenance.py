@@ -16,6 +16,7 @@ from . import maintenance_scan_store
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .progress import format_size, utc_iso
+from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
 
 
@@ -837,7 +838,7 @@ def status_payload(scan_id=None):
     }, None
 
 
-def items_payload(scan_id, status="all", offset=0, limit=ITEM_PAGE_DEFAULT):
+def items_payload(scan_id, status="all", offset=0, limit=ITEM_PAGE_DEFAULT, sort="actor", direction="asc"):
     _ensure_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "all").lower()
@@ -856,11 +857,24 @@ def items_payload(scan_id, status="all", offset=0, limit=ITEM_PAGE_DEFAULT):
         items = [item for item in items if item.get("status") in {"ambiguous", "no_candidate", "manual", "blocked", "failed"}]
     elif status != "all":
         items = [item for item in items if item.get("status") == status]
+    items, sort, direction = sort_records(
+        items, sort, direction,
+        {
+            "status": lambda item: item.get("status"),
+            "actor": lambda item: item.get("name"),
+            "candidate": lambda item: (item.get("recommended_candidate") or {}).get("relative_path"),
+            "video": lambda item: ((item.get("related_videos") or [{}])[0]).get("relative_path"),
+            "exception": lambda item: item.get("exception"),
+        },
+        "actor",
+    )
     total = len(items)
     page = items[offset : offset + limit]
     return {
         "scan": public_scan(scan),
         "status": status,
+        "sort": sort,
+        "direction": direction,
         "offset": offset,
         "limit": limit,
         "total": total,

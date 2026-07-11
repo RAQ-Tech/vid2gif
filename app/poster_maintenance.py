@@ -20,6 +20,7 @@ from .config import (
     LIB_ROOT,
 )
 from .progress import format_duration, utc_iso
+from .table_sort import sort_records
 from .utils import BACKGROUND_IMAGE_EXTS, path_is_under, resolve_case_insensitive
 
 
@@ -46,7 +47,7 @@ POSTER_RUN_ITEM_RETENTION_COUNT = max(50, _env_int("POSTER_RUN_ITEM_RETENTION_CO
 IMAGE_PROBE_TIMEOUT_SECONDS = max(1, _env_int("POSTER_IMAGE_PROBE_TIMEOUT", 10))
 __test__ = False
 
-_settings_lock = threading.Lock()
+_settings_lock = threading.RLock()
 _manifest_lock = threading.Lock()
 _emby_status_lock = threading.Lock()
 _run_start_lock = threading.Lock()
@@ -145,6 +146,13 @@ def _write_json_atomic(path, data):
     return True
 
 
+def _write_settings_atomic(path, data):
+    current = _read_json(path, None)
+    if current is not None and not _write_json_atomic(f"{path}.bak", current):
+        return False
+    return _write_json_atomic(path, data)
+
+
 def default_settings():
     return {
         "schema_version": SETTINGS_SCHEMA_VERSION,
@@ -191,42 +199,48 @@ def _coerce_settings(data, base=None):
 
 def load_settings(path=None):
     path = path or SETTINGS_PATH
-    data = _read_json(path, {})
-    if not data or data.get("schema_version") != SETTINGS_SCHEMA_VERSION:
-        return default_settings()
-    return _coerce_settings(data)
+    with _settings_lock:
+        data = _read_json(path, None)
+        if data is None:
+            data = _read_json(f"{path}.bak", None)
+        return _coerce_settings(data) if data is not None else default_settings()
 
 
 def save_settings(settings, path=None):
     path = path or SETTINGS_PATH
     settings = _coerce_settings(settings)
     with _settings_lock:
-        return _write_json_atomic(path, settings)
+        return _write_settings_atomic(path, settings)
 
 
 def update_settings(updates, path=None):
     if not isinstance(updates, dict):
         return None, "Settings are invalid"
-    current = load_settings(path)
-    merged = dict(current)
-    for key in (
-        "enabled",
-        "scan_interval_seconds",
-        "full_scan_interval_seconds",
-        "emby_refresh_enabled",
-        "emby_url",
-    ):
-        if key in updates:
-            merged[key] = updates[key]
-    if "emby_api_key" in updates:
-        merged["emby_api_key"] = updates.get("emby_api_key") or ""
-    settings = _coerce_settings(merged, base=current)
-    if settings["emby_refresh_enabled"] and (
-        not settings["emby_url"] or not settings["emby_api_key"]
-    ):
-        return None, "Emby URL and API key are required when refresh is enabled"
-    if not save_settings(settings, path):
-        return None, "Settings could not be saved"
+    path = path or SETTINGS_PATH
+    with _settings_lock:
+        current_data = _read_json(path, None)
+        if current_data is None:
+            current_data = _read_json(f"{path}.bak", None)
+        current = _coerce_settings(current_data) if current_data is not None else default_settings()
+        merged = dict(current)
+        for key in (
+            "enabled",
+            "scan_interval_seconds",
+            "full_scan_interval_seconds",
+            "emby_refresh_enabled",
+            "emby_url",
+        ):
+            if key in updates:
+                merged[key] = updates[key]
+        if "emby_api_key" in updates:
+            merged["emby_api_key"] = updates.get("emby_api_key") or ""
+        settings = _coerce_settings(merged, base=current)
+        if settings["emby_refresh_enabled"] and (
+            not settings["emby_url"] or not settings["emby_api_key"]
+        ):
+            return None, "Emby URL and API key are required when refresh is enabled"
+        if not _write_settings_atomic(path, settings):
+            return None, "Settings could not be saved"
     _wake_event.set()
     return public_settings(settings), None
 
@@ -781,7 +795,7 @@ def poster_scan_status(scan_id=None):
     return {"scan": public_poster_scan(scan)}, None
 
 
-def poster_items_payload(scan_id, offset=0, limit=10, status="all"):
+def poster_items_payload(scan_id, offset=0, limit=10, status="all", sort="background", direction="asc"):
     _ensure_poster_cache_loaded()
     try:
         offset = max(0, int(offset or 0)); limit = max(1, min(100, int(limit or 10)))
@@ -796,9 +810,20 @@ def poster_items_payload(scan_id, offset=0, limit=10, status="all"):
         items = list(scan.get("items") or [])
     if status != "all":
         items = [item for item in items if item.get("status") == status]
+    items, sort, direction = sort_records(
+        items, sort, direction,
+        {
+            "status": lambda item: item.get("status"),
+            "background": lambda item: item.get("source"),
+            "poster": lambda item: item.get("poster"),
+            "detail": lambda item: item.get("message"),
+        },
+        "background",
+    )
     total = len(items); page = items[offset:offset + limit]
     return {
         "scan": public_poster_scan(scan), "offset": offset, "limit": limit,
+        "sort": sort, "direction": direction,
         "total": total, "count": len(page), "has_previous": offset > 0,
         "has_next": offset + limit < total, "items": [_public_analysis_item(item) for item in page],
     }, None

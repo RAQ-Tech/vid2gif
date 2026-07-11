@@ -214,13 +214,13 @@
   }
 
   function completedRow(j) {
-    return `<tr><td><code>${escapeHtml(j.id)}</code></td>` +
-           `<td class="path-cell"><code title="${escapeHtml(j.video)}">${escapeHtml(j.video)}</code></td>` +
-           `<td>${statusBadge(j.status)}</td>` +
-           `<td>${escapeHtml(formatDuration(j.elapsed_seconds, ''))}</td>` +
-           `<td>${escapeHtml(formatSize(j.output_size_bytes, ''))}</td>` +
-           `<td>${escapeHtml(j.gif_optimization_label || '')}</td>` +
-           `<td class="path-cell"><code title="${escapeHtml(j.out_gif)}">${escapeHtml(j.out_gif)}</code></td>` +
+    return `<tr><td data-sort-value="${escapeHtml(j.id)}"><code>${escapeHtml(j.id)}</code></td>` +
+           `<td class="path-cell" data-sort-value="${escapeHtml(j.video)}"><code title="${escapeHtml(j.video)}">${escapeHtml(j.video)}</code></td>` +
+           `<td data-sort-value="${escapeHtml(j.status)}">${statusBadge(j.status)}</td>` +
+           `<td data-sort-value="${Number(j.elapsed_seconds || 0)}">${escapeHtml(formatDuration(j.elapsed_seconds, ''))}</td>` +
+           `<td data-sort-value="${Number(j.output_size_bytes || 0)}">${escapeHtml(formatSize(j.output_size_bytes, ''))}</td>` +
+           `<td data-sort-value="${escapeHtml(j.gif_optimization_label || '')}">${escapeHtml(j.gif_optimization_label || '')}</td>` +
+           `<td class="path-cell" data-sort-value="${escapeHtml(j.out_gif)}"><code title="${escapeHtml(j.out_gif)}">${escapeHtml(j.out_gif)}</code></td>` +
            `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${jobLogHref(j.id)}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td></tr>`;
   }
 
