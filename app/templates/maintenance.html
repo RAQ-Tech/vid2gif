@@ -9,32 +9,6 @@
       <h1 class="h3 mb-1">Library Maintenance</h1>
       <div class="text-muted small">Review focused maintenance tools without one long cleanup page.</div>
     </div>
-    <div class="workspace-actions">
-      <a class="btn btn-primary btn-sm" href="#overview" data-maint-tab-shortcut="overview">
-        <i class="bi bi-speedometer2" aria-hidden="true"></i>
-        <span>Overview</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#posters" data-maint-tab-shortcut="posters">
-        <i class="bi bi-image" aria-hidden="true"></i>
-        <span>Posters</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#duplicates" data-maint-tab-shortcut="duplicates">
-        <i class="bi bi-files" aria-hidden="true"></i>
-        <span>Duplicates</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#video-previews" data-maint-tab-shortcut="video-previews">
-        <i class="bi bi-film" aria-hidden="true"></i>
-        <span>Video Previews</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#subtitles" data-maint-tab-shortcut="subtitles">
-        <i class="bi bi-badge-cc" aria-hidden="true"></i>
-        <span>Subtitles</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#actor-images" data-maint-tab-shortcut="actor-images">
-        <i class="bi bi-person-bounding-box" aria-hidden="true"></i>
-        <span>Actor Images</span>
-      </a>
-    </div>
   </div>
 
   <ul class="nav nav-tabs workspace-tabs" role="tablist" aria-label="Library maintenance sections">
@@ -211,7 +185,7 @@
             <button id="posterPlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
               <i class="bi bi-clipboard-check" aria-hidden="true"></i><span>Review Selected</span>
             </button>
-            <button id="posterApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+            <button id="posterApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
               <i class="bi bi-check2" aria-hidden="true"></i><span>Apply Updates</span>
             </button>
             <button id="posterRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
@@ -551,7 +525,7 @@
               <i class="bi bi-list-check" aria-hidden="true"></i>
               <span>Review Repair Plan</span>
             </button>
-            <button id="qualityApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+            <button id="qualityApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
               <i class="bi bi-box-arrow-right" aria-hidden="true"></i>
               <span>Apply Repair</span>
             </button>
@@ -677,7 +651,9 @@
               </select>
             </label>
             <button id="subtitlePlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>Review Plan</button>
-            <button id="subtitleApplyButton" class="btn btn-danger btn-sm" type="button" disabled>Apply</button>
+            <button id="subtitleApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
+              <i class="bi bi-check2-circle" aria-hidden="true"></i><span>Apply</span>
+            </button>
           </div>
         </div>
 
@@ -798,7 +774,7 @@
               <i class="bi bi-list-check" aria-hidden="true"></i>
               <span>Review Import Plan</span>
             </button>
-            <button id="actorApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+            <button id="actorApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
               <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
               <span>Import Images</span>
             </button>
@@ -904,7 +880,7 @@
               <i class="bi bi-list-check" aria-hidden="true"></i>
               <span>Review Plan</span>
             </button>
-            <button id="maintenanceApplyButton" class="btn btn-danger btn-sm" type="button" disabled>
+            <button id="maintenanceApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
               <i class="bi bi-check2-circle" aria-hidden="true"></i>
               <span>Apply</span>
             </button>

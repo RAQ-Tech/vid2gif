@@ -3,16 +3,15 @@
 {% block title %}vid2gif Dashboard{% endblock %}
 
 {% block content %}
-<div class="workspace-shell">
+<div class="workspace-shell dashboard-shell">
   <div class="workspace-heading">
     <div>
       <h1 class="h3 mb-1">Dashboard</h1>
       <div class="text-muted small">Maintenance impact, current library health, and everything created with vid2gif.</div>
     </div>
     <div class="workspace-actions">
-      <button id="dashboardRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
+      <button id="dashboardRefreshButton" class="btn btn-outline-secondary btn-sm btn-icon" type="button" title="Refresh dashboard" aria-label="Refresh dashboard">
         <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-        <span>Refresh</span>
       </button>
       <a class="btn btn-primary btn-sm" href="/gifs">
         <i class="bi bi-filetype-gif" aria-hidden="true"></i>

@@ -9,20 +9,6 @@
       <h1 class="h3 mb-1">GIFs</h1>
       <div class="text-muted small">ffmpeg: {{ ffmpeg }}</div>
     </div>
-    <div class="workspace-actions">
-      <a class="btn btn-primary btn-sm" href="#new" data-tab-shortcut="new">
-        <i class="bi bi-plus-lg" aria-hidden="true"></i>
-        <span>New Job</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#test" data-tab-shortcut="test">
-        <i class="bi bi-columns-gap" aria-hidden="true"></i>
-        <span>Test Lab</span>
-      </a>
-      <a class="btn btn-outline-secondary btn-sm" href="#logs" data-tab-shortcut="logs">
-        <i class="bi bi-terminal" aria-hidden="true"></i>
-        <span>Live Logs</span>
-      </a>
-    </div>
   </div>
 
   <section class="status-strip" aria-label="GIF workspace status">
@@ -400,19 +386,19 @@
 
         <div class="toolbar-row">
           <form method="post" action="/api/queue/start?limit={{ limit }}">
-            <button type="submit" class="btn btn-success btn-sm">
+            <button type="submit" class="btn btn-primary btn-sm">
               <i class="bi bi-play-fill" aria-hidden="true"></i>
               <span>Start</span>
             </button>
           </form>
           <form method="post" action="/api/queue/pause?limit={{ limit }}">
-            <button type="submit" class="btn btn-warning btn-sm">
+            <button type="submit" class="btn btn-outline-secondary btn-sm">
               <i class="bi bi-pause-fill" aria-hidden="true"></i>
               <span>Pause</span>
             </button>
           </form>
           <form method="post" action="/api/queue/stop?limit={{ limit }}">
-            <button type="submit" class="btn btn-danger btn-sm">
+            <button type="submit" class="btn btn-outline-danger btn-sm">
               <i class="bi bi-stop-fill" aria-hidden="true"></i>
               <span>Stop</span>
             </button>
