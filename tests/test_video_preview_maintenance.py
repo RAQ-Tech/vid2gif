@@ -630,6 +630,7 @@ def test_bif_quality_apply_does_not_trigger_emby_extraction(monkeypatch, tmp_pat
         lib_root=str(lib),
     )
     calls = []
+    sync_calls = []
     monkeypatch.setattr(
         video_preview_maintenance,
         "_settings",
@@ -642,6 +643,12 @@ def test_bif_quality_apply_does_not_trigger_emby_extraction(monkeypatch, tmp_pat
             return FakeResponse([{"Id": "thumbs", "Name": "Thumbnail Image Extraction"}])
         return FakeResponse(None, status=204)
 
+    def fake_sync(changes, **kwargs):
+        sync_calls.append((changes, kwargs))
+        return {"id": "sync-quality", "status": "success", "retryable": False}
+
+    monkeypatch.setattr(video_preview_maintenance.emby_sync, "sync_changes", fake_sync)
+
     result, apply_err = video_preview_maintenance.apply_quality_repair_plan(
         plan["id"],
         opener=fake_open,
@@ -651,7 +658,9 @@ def test_bif_quality_apply_does_not_trigger_emby_extraction(monkeypatch, tmp_pat
     assert apply_err is None
     assert result["applied_count"] == 1
     assert calls == []
-    assert result["emby"] == {}
+    assert result["emby_sync"]["id"] == "sync-quality"
+    assert sync_calls[0][0][0]["update_type"] == "Deleted"
+    assert sync_calls[0][0][0]["refresh_scope"] == "thumbnail"
     assert "secret" not in str(result)
 
 
@@ -693,7 +702,13 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
         _write(Path(pattern % 2), _jpeg(b"frame-two"))
 
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
-    monkeypatch.setattr(video_preview_maintenance, "_refresh_emby_library", lambda **_kwargs: {"status": "success"})
+    sync_calls = []
+
+    def fake_sync(changes, **kwargs):
+        sync_calls.append((changes, kwargs))
+        return {"id": "sync-generation", "status": "success", "retryable": False}
+
+    monkeypatch.setattr(video_preview_maintenance.emby_sync, "sync_changes", fake_sync)
 
     run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
 
@@ -706,6 +721,9 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
     assert parsed["valid"] is True
     assert parsed["image_count"] == 2
     assert parsed["timestamp_multiplier_ms"] == 10_000
+    assert sync_calls[0][0][0]["local_path"] == str(output)
+    assert sync_calls[0][0][0]["update_type"] == "Created"
+    assert sync_calls[0][0][0]["refresh_scope"] == "thumbnail"
 
 
 def test_bif_generation_refuses_late_matching_bif(monkeypatch, tmp_path):

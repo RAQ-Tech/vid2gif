@@ -9,6 +9,7 @@ import time
 
 from . import app_settings
 from . import emby_catalog
+from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -846,15 +847,29 @@ def _run_action(plan, run):
             "progress_label": f"Processed {index} of {len(plan.get('files') or [])} subtitles",
         })
     run.update({
-        "status": "success",
-        "finished_at": utc_iso(),
-        "progress_label": "Subtitle cleanup complete",
+        "progress_label": "Subtitle files processed",
         "applied_bytes": applied_bytes,
         "result": {"records": records, "scan_path": plan.get("scan_path"), "applied_bytes": applied_bytes},
     })
     _save_action_log(plan, run, records)
     applied_ids = {record.get("file_id") for record in records if record.get("status") == "applied"}
     applied_files = [item for item in plan.get("files") or [] if item.get("file_id") in applied_ids]
+    if applied_files:
+        run.update(progress_label="Synchronizing subtitle changes with Emby")
+    sync_result = emby_sync.sync_changes(
+        [
+            {
+                "local_path": item.get("source_path"),
+                "update_type": "Deleted",
+                "emby_item_id": item.get("emby_item_id", ""),
+                "refresh_scope": "metadata",
+            }
+            for item in applied_files
+        ],
+        workflow="subtitles",
+        run_id=run["id"],
+    ) if applied_files else None
+    run["result"]["emby_sync"] = sync_result
     operation = plan.get("operation")
     impact_metrics.record_maintenance_action(
         plan.get("id"),
@@ -878,6 +893,12 @@ def _run_action(plan, run):
         },
         timestamp=run.get("finished_at") or utc_iso(),
         label="Subtitle cleanup",
+    )
+    run.update(
+        status="success",
+        finished_at=utc_iso(),
+        progress_label="Subtitle cleanup complete",
+        emby_sync=sync_result,
     )
 
 

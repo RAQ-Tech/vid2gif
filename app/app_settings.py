@@ -7,7 +7,7 @@ from .config import LANDSCAPE_POSTER_ROOT, LIB_ROOT, STATE_ROOT
 from .utils import path_is_under
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
@@ -54,6 +54,7 @@ _SETTING_KEYS = {
     "emby_api_key",
     "emby_api_key_clear",
     "emby_path_mappings",
+    "emby_sync_after_maintenance",
     "table_preferences",
 }
 
@@ -97,6 +98,7 @@ def default_settings():
         "emby_url": str(os.getenv("EMBY_URL", "") or "").strip(),
         "emby_api_key": str(os.getenv("EMBY_API_KEY", "") or "").strip(),
         "emby_path_mappings": [],
+        "emby_sync_after_maintenance": _bool(os.getenv("EMBY_SYNC_AFTER_MAINTENANCE"), True),
         "table_preferences": {},
     }
 
@@ -335,6 +337,10 @@ def _coerce_settings(data):
         "emby_url": str(data.get("emby_url", defaults["emby_url"]) or "").strip(),
         "emby_api_key": str(data.get("emby_api_key", defaults["emby_api_key"]) or "").strip(),
         "emby_path_mappings": _coerce_emby_path_mappings(data.get("emby_path_mappings", [])),
+        "emby_sync_after_maintenance": _bool(
+            data.get("emby_sync_after_maintenance", defaults["emby_sync_after_maintenance"]),
+            defaults["emby_sync_after_maintenance"],
+        ),
         "table_preferences": _coerce_table_preferences(
             data.get("table_preferences", defaults["table_preferences"])
         ),
@@ -355,12 +361,25 @@ def _load_settings_unlocked(path):
     if data is None:
         data = _read_settings_file(f"{path}.bak")
     should_migrate = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(SETTINGS_PATH))
-    if should_migrate and (data is None or "emby_url" not in data or "emby_api_key" not in data):
+    if should_migrate and (
+        data is None
+        or "emby_url" not in data
+        or "emby_api_key" not in data
+        or "emby_sync_after_maintenance" not in data
+    ):
         legacy = _read_settings_file(LEGACY_EMBY_SETTINGS_PATH) or {}
+        data = dict(data or {})
+        migrated = False
         if legacy.get("emby_url") or legacy.get("emby_api_key"):
-            data = dict(data or {})
             data.setdefault("emby_url", legacy.get("emby_url") or "")
             data.setdefault("emby_api_key", legacy.get("emby_api_key") or "")
+            migrated = True
+        if "emby_sync_after_maintenance" not in data:
+            data["emby_sync_after_maintenance"] = bool(
+                legacy.get("emby_refresh_enabled", default_settings()["emby_sync_after_maintenance"])
+            )
+            migrated = True
+        if migrated:
             settings = _coerce_settings(data)
             _write_settings_unlocked(path, settings)
             return settings

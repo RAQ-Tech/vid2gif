@@ -279,9 +279,16 @@ def test_global_settings_import_legacy_emby_connection_once(monkeypatch, tmp_pat
     legacy_path = tmp_path / "state" / "landscape-posters" / "settings.json"
     legacy_path.parent.mkdir(parents=True)
     legacy_path.write_text(
-        json.dumps({"emby_url": "http://legacy:8096", "emby_api_key": "legacy-key"}),
+        json.dumps(
+            {
+                "emby_url": "http://legacy:8096",
+                "emby_api_key": "legacy-key",
+                "emby_refresh_enabled": True,
+            }
+        ),
         encoding="utf-8",
     )
+    monkeypatch.setenv("EMBY_SYNC_AFTER_MAINTENANCE", "false")
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(app_path))
     monkeypatch.setattr(app_settings, "LEGACY_EMBY_SETTINGS_PATH", str(legacy_path))
 
@@ -295,7 +302,8 @@ def test_global_settings_import_legacy_emby_connection_once(monkeypatch, tmp_pat
     assert imported["emby_url"] == "http://legacy:8096"
     assert imported["emby_api_key"] == "legacy-key"
     assert reloaded["emby_url"] == "http://legacy:8096"
-    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == 6
+    assert imported["emby_sync_after_maintenance"] is True
+    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == 7
 
 
 def test_settings_page_contains_global_emby_controls_without_echoing_secret(monkeypatch, tmp_path):
@@ -312,6 +320,7 @@ def test_settings_page_contains_global_emby_controls_without_echoing_secret(monk
     assert 'id="emby_url"' in html
     assert 'id="emby_api_key"' in html
     assert 'id="emby_path_mappings"' in html
+    assert 'id="emby_sync_after_maintenance"' in html
     assert 'id="embyTestButton"' in html
     assert "html-secret" not in html
 

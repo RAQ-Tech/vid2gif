@@ -10,6 +10,7 @@ import time
 from . import app_settings
 from . import emby_catalog
 from . import emby_client
+from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import (
@@ -169,7 +170,6 @@ def default_settings():
             LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
             MIN_FULL_SCAN_INTERVAL_SECONDS,
         ),
-        "emby_refresh_enabled": _env_truthy("EMBY_REFRESH_ENABLED", False),
     }
 
 
@@ -191,9 +191,6 @@ def _coerce_settings(data, base=None):
         "enabled": bool(data.get("enabled", base["enabled"])),
         "scan_interval_seconds": scan_interval,
         "full_scan_interval_seconds": full_interval,
-        "emby_refresh_enabled": bool(
-            data.get("emby_refresh_enabled", base["emby_refresh_enabled"])
-        ),
     }
 
 
@@ -208,6 +205,8 @@ def load_settings(path=None):
         settings["emby_url"] = global_emby.get("emby_url", "")
         settings["emby_api_key"] = global_emby.get("emby_api_key", "")
         settings["emby_path_mappings"] = list(global_emby.get("emby_path_mappings") or [])
+        settings["emby_sync_after_maintenance"] = bool(global_emby.get("emby_sync_after_maintenance", True))
+        settings["emby_refresh_enabled"] = settings["emby_sync_after_maintenance"]
         return settings
 
 
@@ -215,7 +214,7 @@ def save_settings(settings, path=None):
     path = path or SETTINGS_PATH
     emby_updates = {
         key: settings[key]
-        for key in ("emby_url", "emby_api_key", "emby_path_mappings")
+        for key in ("emby_url", "emby_api_key", "emby_path_mappings", "emby_sync_after_maintenance")
         if isinstance(settings, dict) and key in settings
     }
     if emby_updates:
@@ -230,9 +229,12 @@ def save_settings(settings, path=None):
 def update_settings(updates, path=None):
     if not isinstance(updates, dict):
         return None, "Settings are invalid"
+    updates = dict(updates)
+    if "emby_refresh_enabled" in updates and "emby_sync_after_maintenance" not in updates:
+        updates["emby_sync_after_maintenance"] = updates.get("emby_refresh_enabled")
     global_updates = {
         key: updates[key]
-        for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings")
+        for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings", "emby_sync_after_maintenance")
         if key in updates
     }
     if global_updates:
@@ -250,16 +252,10 @@ def update_settings(updates, path=None):
             "enabled",
             "scan_interval_seconds",
             "full_scan_interval_seconds",
-            "emby_refresh_enabled",
         ):
             if key in updates:
                 merged[key] = updates[key]
         settings = _coerce_settings(merged, base=current)
-        emby_settings = _emby_settings(settings)
-        if settings["emby_refresh_enabled"] and (
-            not emby_settings.get("emby_url") or not emby_settings.get("emby_api_key")
-        ):
-            return None, "Emby URL and API key are required when refresh is enabled"
         if not _write_settings_atomic(path, settings):
             return None, "Settings could not be saved"
     _wake_event.set()
@@ -276,14 +272,17 @@ def public_settings(settings=None):
         "full_scan_interval_label": format_duration(
             settings.get("full_scan_interval_seconds")
         ),
-        "emby_refresh_enabled": bool(settings.get("emby_refresh_enabled")),
+        "emby_refresh_enabled": bool(settings.get("emby_sync_after_maintenance", True)),
         "emby_api_key_configured": bool(settings.get("emby_api_key")),
     }
 
 
 def _emby_settings(settings=None):
+    provided = dict(settings or {})
     combined = dict(app_settings.load_settings())
-    combined.update(settings or {})
+    combined.update(provided)
+    if "emby_refresh_enabled" in provided and "emby_sync_after_maintenance" not in provided:
+        combined["emby_sync_after_maintenance"] = bool(provided.get("emby_refresh_enabled"))
     return combined
 
 
@@ -971,7 +970,7 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
 def public_poster_apply(run):
     if not run:
         return None
-    return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results")}
+    return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results", "emby_sync")}
 
 
 def _run_poster_apply(run, plan, lib_root):
@@ -996,10 +995,26 @@ def _run_poster_apply(run, plan, lib_root):
             run.update(progress_percent=int(100 * index / len(plan["items"])), progress_label=f"Applied {index} of {len(plan['items'])} poster updates")
         updated = sum(1 for item in results if item["status"] == "updated")
         failed = len(results) - updated
+        sync_result = None
         if updated:
-            refresh_emby(load_settings(), persist=True)
+            run.update(progress_label="Synchronizing poster changes with Emby")
+            changed_ids = {result["id"] for result in results if result.get("status") == "updated"}
+            sync_result = emby_sync.sync_changes(
+                [
+                    {
+                        "local_path": (item.get("candidate") or {}).get("poster_path") or item.get("poster"),
+                        "update_type": "Modified",
+                        "emby_item_id": item.get("emby_item_id", ""),
+                        "refresh_scope": "image",
+                    }
+                    for item in plan.get("items") or []
+                    if item.get("id") in changed_ids
+                ],
+                workflow="posters",
+                run_id=run["id"],
+            )
             impact_metrics.record_maintenance_action(run["id"], "posters", resolutions=[{"issue_id": f"poster:{item['id']}", "stream": "posters", "resolve_all": True, "ensure_issue": True, "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in plan["items"] if any(result["id"] == item["id"] and result["status"] == "updated" for result in results)], operations={"other_files": updated}, timestamp=utc_iso(), label="Landscape poster updates")
-        run.update(status="success" if not failed else "complete_with_issues", finished_at=utc_iso(), progress_percent=100, progress_label=f"{updated} posters updated", updated_count=updated, failed_count=failed, results=results)
+        run.update(status="success" if not failed else "complete_with_issues", finished_at=utc_iso(), progress_percent=100, progress_label=f"{updated} posters updated", updated_count=updated, failed_count=failed, results=results, emby_sync=sync_result)
     except Exception as exc:
         run.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed", results=results)
     finally:
@@ -1048,7 +1063,8 @@ def _run_summary(run):
         "error": run.get("error", ""),
         "counters": dict(counters),
         "items": list(run.get("items") or [])[-50:],
-        "emby_refresh": dict(run.get("emby_refresh") or {}),
+        "emby_sync": dict(run.get("emby_sync") or {}),
+        "emby_refresh": dict(run.get("emby_sync") or run.get("emby_refresh") or {}),
     }
 
 
@@ -1113,6 +1129,7 @@ def _scan_and_apply(run, lib_root, settings):
     impact_issues = []
     impact_resolutions = []
     impact_bytes = 0
+    sync_candidates = []
     mode = run.get("mode") or "incremental"
     root = os.path.realpath(lib_root)
     scan_path = run["path"]
@@ -1176,6 +1193,7 @@ def _scan_and_apply(run, lib_root, settings):
                     }
                 )
                 if status == "updated":
+                    sync_candidates.append(dict(candidate))
                     impact_resolutions.append(
                         {
                             "issue_id": issue_id,
@@ -1206,6 +1224,7 @@ def _scan_and_apply(run, lib_root, settings):
     run["_impact_issues"] = impact_issues
     run["_impact_resolutions"] = impact_resolutions
     run["_impact_bytes"] = impact_bytes
+    run["_sync_candidates"] = sync_candidates
     if mode == "full":
         manifest["last_full_run_at"] = utc_iso()
     manifest["last_run"] = _run_summary(run)
@@ -1279,58 +1298,6 @@ def test_emby_connection(updates=None, opener=None, persist=True):
     return result, None
 
 
-def refresh_emby(settings, opener=None, persist=False):
-    settings = _emby_settings(settings)
-    if not settings.get("emby_refresh_enabled"):
-        result = emby_client.result("disabled", "Emby refresh is disabled")
-        if persist:
-            _save_emby_status_value("last_refresh", result)
-        return result
-    api_key = str(settings.get("emby_api_key") or "")
-    request_result = emby_client.request_no_content(
-        settings,
-        "/Library/Refresh",
-        method="POST",
-        body=b"",
-        opener=opener,
-        timeout=15,
-    )
-    if request_result.get("error_code") == "missing_config":
-        result = emby_client.result(
-            "skipped",
-            "Emby refresh is not configured",
-            api_key=api_key,
-            error_code="missing_config",
-        )
-    elif request_result.get("error_code") == "http_error":
-        result = emby_client.result(
-            "failed",
-            f"Emby refresh rejected ({request_result.get('http_status') or 'unknown'})",
-            api_key=api_key,
-            http_status=request_result.get("http_status"),
-            error_code="http_error",
-        )
-    elif request_result.get("error_code") == "timeout":
-        result = emby_client.result(
-            "failed",
-            "Emby refresh timed out",
-            api_key=api_key,
-            error_code="timeout",
-        )
-    elif request_result.get("status") == "success":
-        result = emby_client.result(
-            "success",
-            f"Emby refresh requested ({request_result.get('http_status')})",
-            api_key=api_key,
-            http_status=request_result.get("http_status"),
-        )
-    else:
-        result = request_result
-    if persist:
-        _save_emby_status_value("last_refresh", result)
-    return result
-
-
 def _execute_run(run, lib_root, settings):
     global _current_run_id
     if not _run_execution_lock.acquire(blocking=False):
@@ -1381,9 +1348,38 @@ def _execute_run(run, lib_root, settings):
             timestamp=utc_iso(),
             label="Landscape poster updates",
         )
-        emby_result = {"status": "skipped", "message": "No poster changes"}
+        sync_result = None
         if counters.get("updated"):
-            emby_result = refresh_emby(settings, persist=True)
+            _set_run_state(run, progress_label="Synchronizing poster changes with Emby")
+            candidates = run.get("_sync_candidates") or []
+            emby_settings = _emby_settings(settings)
+            changes = [
+                {
+                    "local_path": candidate.get("poster_path"),
+                    "update_type": "Modified",
+                    "emby_item_id": "",
+                    "refresh_scope": "image",
+                }
+                for candidate in candidates
+            ]
+            if (
+                emby_settings.get("emby_sync_after_maintenance", True)
+                and emby_settings.get("emby_url")
+                and emby_settings.get("emby_api_key")
+            ):
+                catalog, _summary = emby_catalog.load_catalog(emby_settings)
+                mappings = emby_settings.get("emby_path_mappings") or []
+                for change, candidate in zip(changes, candidates):
+                    match = emby_catalog.match_paths(catalog, _poster_video_paths({"candidate": candidate}), mappings)
+                    if match.get("emby_match_status") == "unmatched":
+                        match = emby_catalog.match_path(catalog, os.path.dirname(candidate.get("poster_path") or ""), mappings)
+                    change["emby_item_id"] = match.get("emby_item_id", "")
+            sync_result = emby_sync.sync_changes(
+                changes,
+                workflow="posters",
+                run_id=run["id"],
+                settings=emby_settings,
+            )
         _set_run_state(
             run,
             status="success",
@@ -1392,7 +1388,8 @@ def _execute_run(run, lib_root, settings):
                 f"{counters.get('updated', 0)} updated, "
                 f"{counters.get('already_matching', 0)} already matching"
             ),
-            emby_refresh=emby_result,
+            emby_sync=sync_result,
+            emby_refresh=sync_result or {},
         )
         manifest = load_manifest()
         manifest["last_run"] = _run_summary(run)
@@ -1503,14 +1500,18 @@ def emby_status_payload(settings=None, latest_run=None):
     stored = load_emby_status()
     last_refresh = stored.get("last_refresh")
     if not last_refresh and latest_run:
-        last_refresh = (latest_run.get("emby_refresh") or None)
+        last_refresh = latest_run.get("emby_sync") or latest_run.get("emby_refresh") or None
+    if isinstance(last_refresh, dict) and last_refresh.get("id"):
+        public_last_refresh = dict(last_refresh)
+    else:
+        public_last_refresh = _public_emby_result(last_refresh)
     return {
         "configured": bool(settings.get("emby_url") and settings.get("emby_api_key")),
         "url_configured": bool(settings.get("emby_url")),
         "api_key_configured": bool(settings.get("emby_api_key")),
-        "refresh_enabled": bool(poster_settings.get("emby_refresh_enabled")),
+        "refresh_enabled": bool(settings.get("emby_sync_after_maintenance", True)),
         "last_test": _public_emby_result(stored.get("last_test")),
-        "last_refresh": _public_emby_result(last_refresh),
+        "last_refresh": public_last_refresh,
     }
 
 

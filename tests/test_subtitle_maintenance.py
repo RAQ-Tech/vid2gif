@@ -56,6 +56,14 @@ def test_subtitle_plan_quarantines_only_flagged_visible_srt(monkeypatch, tmp_pat
     assert err is None
     assert plan["file_count"] == 1
     assert expected_item["id"] not in {item["file_id"] for item in plan["files"]}
+    subtitle_maintenance.subtitle_plans[plan["id"]]["files"][0]["emby_item_id"] = "movie-1"
+    sync_calls = []
+
+    def fake_sync(changes, **kwargs):
+        sync_calls.append((changes, kwargs))
+        return {"id": "sync-subtitles", "status": "failed", "retryable": True}
+
+    monkeypatch.setattr(subtitle_maintenance.emby_sync, "sync_changes", fake_sync)
 
     run, err = subtitle_maintenance.start_action_apply(plan["id"], synchronous=True)
 
@@ -64,6 +72,15 @@ def test_subtitle_plan_quarantines_only_flagged_visible_srt(monkeypatch, tmp_pat
     assert expected.exists()
     assert not flagged.exists()
     assert (lib / ".vid2gif-subtitle-quarantine" / "Movie" / flagged.name).read_bytes() == b"norwegian"
+    assert run["emby_sync"]["status"] == "failed"
+    assert sync_calls[0][0] == [
+        {
+            "local_path": str(flagged),
+            "update_type": "Deleted",
+            "emby_item_id": "movie-1",
+            "refresh_scope": "metadata",
+        }
+    ]
 
 
 def test_subtitle_plan_rejects_offscreen_selection(monkeypatch, tmp_path):

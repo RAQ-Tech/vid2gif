@@ -224,6 +224,13 @@ def test_cleanup_plan_moves_duplicate_video_and_renames_unmatched_accessory(monk
     assert plan["file_count"] == 2
     assert {item["operation"] for item in plan["files"]} == {"move", "rename"}
     assert plan["total_size_bytes"] == remove.stat().st_size
+    sync_calls = []
+
+    def fake_sync(changes, **kwargs):
+        sync_calls.append((changes, kwargs))
+        return {"id": "sync-duplicates", "status": "failed", "retryable": True}
+
+    monkeypatch.setattr(maintenance.emby_sync, "sync_changes", fake_sync)
 
     result, err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
 
@@ -234,8 +241,18 @@ def test_cleanup_plan_moves_duplicate_video_and_renames_unmatched_accessory(monk
     assert not remove.exists()
     assert not sidecar.exists()
     assert (movie / "Movie.1080p.en.srt").read_bytes() == b"subtitle"
-    assert (lib / ".vid2gif-duplicates" / "Movie" / "Movie.720p.mkv").is_file()
+    quarantine = lib / ".vid2gif-duplicates" / "Movie" / "Movie.720p.mkv"
+    assert quarantine.is_file()
     assert result["log"]["id"].endswith(".jsonl")
+    assert result["emby_sync"]["status"] == "failed"
+    assert maintenance._public_apply_result(result)["emby_sync"]["id"] == "sync-duplicates"
+    changes = sync_calls[0][0]
+    assert {(item["local_path"], item["update_type"]) for item in changes} == {
+        (str(remove), "Deleted"),
+        (str(sidecar), "Deleted"),
+        (str(movie / "Movie.1080p.en.srt"), "Created"),
+    }
+    assert str(quarantine) not in {item["local_path"] for item in changes}
 
 
 def test_cleanup_plan_moves_equivalent_accessory(monkeypatch, tmp_path):

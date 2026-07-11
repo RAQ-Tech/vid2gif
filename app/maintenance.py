@@ -11,6 +11,7 @@ import time
 
 from . import app_settings
 from . import emby_catalog
+from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -1643,6 +1644,7 @@ def _public_apply_result(result):
         "refused_count": result.get("refused_count", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "total_applied_label": result.get("total_applied_label", "0 B"),
+        "emby_sync": result.get("emby_sync"),
         "log": {key: value for key, value in log.items() if key != "path"},
     }
 
@@ -1671,6 +1673,7 @@ def public_apply_run(run):
         "current_name": run.get("current_name", ""),
         "error": run.get("error", ""),
         "large_operation": bool(run.get("large_operation")),
+        "emby_sync": result.get("emby_sync") if result else None,
         "result": _public_apply_result(result) if result else None,
         "log": (result.get("log") or None) if result else None,
     }
@@ -1917,6 +1920,8 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             "destination_name": item.get("destination_name", ""),
             "size_bytes": item.get("size_bytes", 0),
             "size_label": item.get("size_label", ""),
+            "emby_item_id": item.get("emby_item_id", ""),
+            "emby_item_type": item.get("emby_item_type", ""),
         }
         applied.append(applied_item)
         log_records.append(
@@ -1937,6 +1942,33 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         total += item.get("size_bytes") or 0
         _finish_item(index, source)
 
+    sync_changes = []
+    for item in applied:
+        is_video = item.get("kind") == "video"
+        sync_changes.append(
+            {
+                "local_path": item.get("source_path"),
+                "update_type": "Deleted",
+                "emby_item_id": item.get("emby_item_id", ""),
+                "refresh_scope": "media" if is_video else "metadata",
+            }
+        )
+        if item.get("operation") == "rename" and item.get("destination_path"):
+            sync_changes.append(
+                {
+                    "local_path": item.get("destination_path"),
+                    "update_type": "Created",
+                    "refresh_scope": "metadata",
+                    "prefer_path": True,
+                }
+            )
+    if apply_run and sync_changes:
+        _set_apply_progress(apply_run, progress_label="Synchronizing cleanup changes with Emby")
+    emby_sync_result = emby_sync.sync_changes(
+        sync_changes,
+        workflow="duplicates",
+        run_id=(apply_run or {}).get("id") or plan.get("id"),
+    ) if sync_changes else None
     result = {
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
@@ -1949,6 +1981,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         "refused_count": len(refused),
         "total_applied_bytes": total,
         "total_applied_label": format_size(total),
+        "emby_sync": emby_sync_result,
     }
     log_entry = _write_cleanup_log(plan, result, log_records)
     result["log"] = {key: value for key, value in log_entry.items() if key != "path"}

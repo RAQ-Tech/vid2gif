@@ -98,6 +98,40 @@ def test_landscape_poster_run_replaces_existing_poster_and_preserves_backup(monk
     assert marker.read_bytes() == b"old marker"
 
 
+def test_disabled_automatic_poster_sync_does_not_load_emby_catalog(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"landscape")
+    _write(movie / "Movie-poster.jpg", b"portrait")
+    sync_calls = []
+    monkeypatch.setattr(
+        poster_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("catalog should not load")),
+    )
+    monkeypatch.setattr(
+        poster_maintenance.emby_sync,
+        "sync_changes",
+        lambda changes, **kwargs: sync_calls.append((changes, kwargs))
+        or {"id": "sync-disabled", "status": "disabled", "retryable": False},
+    )
+
+    run = _run(
+        lib,
+        monkeypatch,
+        tmp_path,
+        settings=_settings(
+            emby_refresh_enabled=False,
+            emby_url="http://emby:8096",
+            emby_api_key="secret",
+        ),
+    )
+
+    assert run["status"] == "success"
+    assert run["emby_sync"]["status"] == "disabled"
+    assert len(sync_calls) == 1
+
+
 def test_landscape_poster_run_only_updates_existing_posters(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
@@ -231,39 +265,14 @@ def test_landscape_poster_manifest_skips_unchanged_folders_incrementally(monkeyp
     assert second["counters"]["candidates"] == 0
 
 
-def test_emby_refresh_posts_to_library_refresh_endpoint():
-    captured = {}
+def test_poster_refresh_compatibility_alias_updates_global_sync_setting(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
 
-    class FakeResponse:
-        status = 204
+    saved, err = poster_maintenance.update_settings({"emby_refresh_enabled": False})
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_open(request, timeout):
-        captured["url"] = request.full_url
-        captured["data"] = request.data
-        captured["token"] = request.get_header("X-emby-token")
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    result = poster_maintenance.refresh_emby(
-        {
-            "emby_refresh_enabled": True,
-            "emby_url": "http://emby:8096",
-            "emby_api_key": "abc 123",
-        },
-        opener=fake_open,
-    )
-
-    assert result["status"] == "success"
-    assert captured["url"] == "http://emby:8096/emby/Library/Refresh"
-    assert captured["token"] == "abc 123"
-    assert captured["data"] == b""
-    assert captured["timeout"] == 15
+    assert err is None
+    assert saved["emby_refresh_enabled"] is False
+    assert app_settings.load_settings()["emby_sync_after_maintenance"] is False
 
 
 def test_emby_connection_test_reads_system_info_and_persists(monkeypatch, tmp_path):
@@ -438,7 +447,7 @@ def test_landscape_poster_route_rejects_paths_outside_library(monkeypatch, tmp_p
     assert res.get_json()["error"] == "Path not found"
 
 
-def test_landscape_poster_settings_require_emby_config_when_enabled(monkeypatch, tmp_path):
+def test_landscape_poster_sync_can_be_enabled_before_emby_is_configured(monkeypatch, tmp_path):
     _reset_poster_state(monkeypatch, tmp_path)
 
     res = routes.app.test_client().post(
@@ -446,8 +455,9 @@ def test_landscape_poster_settings_require_emby_config_when_enabled(monkeypatch,
         json={"emby_refresh_enabled": True, "emby_url": "http://emby:8096"},
     )
 
-    assert res.status_code == 400
-    assert res.get_json()["error"] == "Emby URL and API key are required when refresh is enabled"
+    assert res.status_code == 200
+    assert res.get_json()["settings"]["emby_refresh_enabled"] is True
+    assert res.get_json()["settings"]["emby_api_key_configured"] is False
 
 
 def test_landscape_poster_settings_save_without_exposing_api_key(monkeypatch, tmp_path):
@@ -614,12 +624,15 @@ def test_landscape_poster_ui_assets_render():
     assert 'id="posterEmbyTestButton"' not in html
     assert 'href="/settings#emby_url"' in html
     assert 'id="posterEmbyLastRefresh"' in html
+    assert 'id="posterEmbyRefreshToggle"' not in html
     assert "fetch('/api/maintenance/landscape-posters/status')" in script
     assert "fetch('/api/maintenance/landscape-posters/scan'" in script
     assert 'id="posterApplyButton"' in html
     assert "fetch('/api/maintenance/landscape-posters/settings'" in script
     assert "fetch('/api/maintenance/landscape-posters/emby/test'" not in script
     assert "server.textContent" in script
+    assert "retryEmbySync" in script
+    assert "/api/emby/sync/${encodeURIComponent(syncId)}/retry" in script
     assert "escapeHtml(item.source)" in script
     assert "escapeHtml(item.poster)" in script
 
@@ -660,3 +673,25 @@ def test_poster_analysis_resolves_same_stem_video_and_propagates_item_id(monkeyp
     )
     assert plan_err is None
     assert plan["emby_item_ids"] == ["movie-1"]
+    sync_calls = []
+
+    def fake_sync(changes, **kwargs):
+        sync_calls.append((changes, kwargs))
+        return {"id": "sync-poster", "status": "success", "retryable": False}
+
+    monkeypatch.setattr(poster_maintenance.emby_sync, "sync_changes", fake_sync)
+    applied, apply_err = poster_maintenance.start_poster_apply(
+        plan["id"], synchronous=True, lib_root=str(lib)
+    )
+
+    assert apply_err is None
+    assert applied["status"] == "success"
+    assert applied["emby_sync"]["id"] == "sync-poster"
+    assert sync_calls[0][0] == [
+        {
+            "local_path": str(movie / "Movie-poster.jpg"),
+            "update_type": "Modified",
+            "emby_item_id": "movie-1",
+            "refresh_scope": "image",
+        }
+    ]

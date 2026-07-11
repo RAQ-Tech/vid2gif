@@ -192,6 +192,8 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     assert calls[1][2] == b"image"
     assert all(call[3] == "secret" for call in calls)
     assert calls[1][4] == "image/jpeg"
+    assert len(calls) == 2
+    assert "emby_sync" not in run
     assert "secret" not in str(actor_image_maintenance.public_apply_run(run))
 
 

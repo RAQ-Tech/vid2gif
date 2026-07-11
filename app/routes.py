@@ -16,6 +16,7 @@ from . import app_settings
 from . import actor_image_maintenance
 from . import dashboard
 from . import estimate_history
+from . import emby_sync
 from . import maintenance
 from . import maintenance_scan_orchestrator
 from . import maintenance_scan_store
@@ -336,6 +337,9 @@ def settings_page():
                 "emby_api_key": request.form.get("emby_api_key"),
                 "emby_api_key_clear": _truthy(request.form.get("emby_api_key_clear")),
                 "emby_path_mappings": request.form.get("emby_path_mappings"),
+                "emby_sync_after_maintenance": _truthy(
+                    request.form.get("emby_sync_after_maintenance")
+                ),
             }
         )
         if update_error:
@@ -382,6 +386,23 @@ def api_emby_test():
             "status": poster_maintenance.emby_status_payload(),
         }
     )
+
+
+@app.route("/api/emby/sync/<sync_id>")
+def api_emby_sync_status(sync_id):
+    job = emby_sync.get_sync(sync_id)
+    if not job:
+        return jsonify({"error": "Synchronization job not found"}), 404
+    return jsonify({"emby_sync": emby_sync.public_sync(job)})
+
+
+@app.route("/api/emby/sync/<sync_id>/retry", methods=["POST"])
+def api_emby_sync_retry(sync_id):
+    result, err = emby_sync.start_retry(sync_id)
+    if err:
+        status = 409 if "already running" in err or "nothing to retry" in err else 404
+        return jsonify({"error": err}), status
+    return jsonify({"emby_sync": result}), 202
 
 
 @app.route("/maintenance")

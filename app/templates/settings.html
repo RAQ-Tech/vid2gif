@@ -62,6 +62,13 @@
               <label class="form-check-label" for="emby_api_key_clear">Clear stored API key</label>
             </div>
           </div>
+          <div class="col-12">
+            <div class="form-check form-switch">
+              <input id="emby_sync_after_maintenance" name="emby_sync_after_maintenance" class="form-check-input" type="checkbox" {% if settings.emby_sync_after_maintenance %}checked{% endif %}>
+              <label class="form-check-label" for="emby_sync_after_maintenance">Sync Emby after successful maintenance changes</label>
+            </div>
+            <div class="form-text">Uses targeted item refreshes and path notifications. It never starts a whole-library scan.</div>
+          </div>
           <div id="embyTestMessage" class="col-12 form-text" role="status" aria-live="polite"></div>
         </div>
       </div>

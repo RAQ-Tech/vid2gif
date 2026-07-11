@@ -13,6 +13,7 @@ import time
 from . import app_settings
 from . import emby_catalog
 from . import emby_client
+from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
 from . import poster_maintenance
@@ -1636,7 +1637,8 @@ def _write_quality_repair_log(plan, result, records):
         "refused_count": result.get("refused_count", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "move_root": plan.get("move_root", ""),
-        "emby": result.get("emby") or {},
+        "emby_sync": result.get("emby_sync") or result.get("emby") or {},
+        "emby": result.get("emby_sync") or result.get("emby") or {},
     }
     written = 0
     truncated = False
@@ -1687,33 +1689,6 @@ def _write_quality_repair_log(plan, result, records):
     public = dict(entry)
     public.pop("path", None)
     return public
-
-
-def _refresh_emby_library(settings=None, opener=None):
-    settings = settings or _settings()
-    result = emby_client.request_no_content(
-        settings,
-        "/Library/Refresh",
-        method="POST",
-        body=b"",
-        opener=opener,
-        accept="*/*",
-    )
-    if result.get("status") == "success":
-        result = {**result, "message": "Emby library refresh started"}
-    return result
-
-
-def _run_quality_emby_sequence(settings=None, opener=None):
-    settings = settings or _settings()
-    refresh = _refresh_emby_library(settings=settings, opener=opener)
-    extraction, _err = run_thumbnail_extraction(settings=settings, opener=opener)
-    return {
-        "refresh": refresh,
-        "extraction": (extraction or {}).get("result") or {},
-        "task": (extraction or {}).get("task"),
-        "log": (extraction or {}).get("log"),
-    }
 
 
 def _public_quality_apply_result(result):
@@ -2004,6 +1979,8 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
             "destination_name": item.get("destination_name") or os.path.basename(dest),
             "size_bytes": item.get("size_bytes", 0),
             "size_label": item.get("size_label", ""),
+            "emby_item_id": item.get("emby_item_id", ""),
+            "emby_item_type": item.get("emby_item_type", ""),
         }
         applied.append(applied_item)
         log_records.append(
@@ -2026,7 +2003,22 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
         total += item.get("size_bytes") or 0
         _finish_item(index, source)
 
-    emby = {}
+    if applied and apply_run:
+        _set_quality_apply_progress(apply_run, progress_label="Synchronizing BIF cleanup with Emby")
+    emby = emby_sync.sync_changes(
+        [
+            {
+                "local_path": item.get("source_path"),
+                "update_type": "Deleted",
+                "emby_item_id": item.get("emby_item_id", ""),
+                "refresh_scope": "thumbnail",
+            }
+            for item in applied
+        ],
+        workflow="video_previews_quality",
+        run_id=(apply_run or {}).get("id") or plan.get("id"),
+        opener=opener,
+    ) if applied else None
     result = {
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
@@ -2039,6 +2031,7 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
         "refused_count": len(refused),
         "total_applied_bytes": total,
         "total_applied_label": format_size(total),
+        "emby_sync": emby,
         "emby": emby,
     }
     log_entry = _write_quality_repair_log(plan, result, log_records)
@@ -2539,16 +2532,32 @@ def _execute_generation(run, plan):
                 "progress_percent": int(100 * index / max(1, plan["file_count"])),
                 "progress_label": f"Processed {index} of {plan['file_count']} videos",
             })
-        emby = _refresh_emby_library() if generated else {}
+        generated_ids = {item.get("item_id") for item in results if item.get("status") == "generated"}
+        if generated:
+            run.update(progress_label="Synchronizing generated BIF files with Emby")
+        emby = emby_sync.sync_changes(
+            [
+                {
+                    "local_path": item.get("output_path"),
+                    "update_type": "Created",
+                    "emby_item_id": item.get("emby_item_id", ""),
+                    "refresh_scope": "thumbnail",
+                }
+                for item in plan.get("files") or []
+                if item.get("item_id") in generated_ids
+            ],
+            workflow="video_previews_generation",
+            run_id=run["id"],
+        ) if generated else None
         run.update({
             "status": "success",
             "finished_at": utc_iso(),
             "progress_percent": 100,
             "progress_label": "BIF generation complete",
-            "result": {"items": results, "generated_count": generated, "refused_count": refused, "emby": emby, "scan_path": plan["scan_path"]},
+            "emby_sync": emby,
+            "result": {"items": results, "generated_count": generated, "refused_count": refused, "emby_sync": emby, "emby": emby, "scan_path": plan["scan_path"]},
         })
         _write_log("bif-generation", {"plan_id": plan["id"], "generated_count": generated, "refused_count": refused, "items": results})
-        generated_ids = {item.get("item_id") for item in results if item.get("status") == "generated"}
         impact_metrics.record_maintenance_action(
             plan.get("id"),
             "video_previews",

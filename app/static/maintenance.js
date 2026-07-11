@@ -201,6 +201,67 @@
     return [detail, embyCoverageDetail(scan)].filter(Boolean).join(' ');
   }
 
+  function embySyncFrom(value) {
+    return value?.emby_sync || value?.result?.emby_sync || value?.result?.emby || null;
+  }
+
+  function embySyncText(sync) {
+    if (!sync) return '';
+    if (sync.status === 'disabled') return 'Automatic Emby synchronization is disabled.';
+    if (sync.status === 'not_configured') return 'Emby is not configured; targeted synchronization was skipped.';
+    if (sync.status === 'success') return `${sync.succeeded_count || 0} targeted Emby change(s) accepted.`;
+    return `${sync.succeeded_count || 0} Emby change(s) accepted; ${(sync.failed_count || 0) + (sync.unresolved_count || 0)} need attention.`;
+  }
+
+  async function retryEmbySync(syncId, notice) {
+    const button = notice.querySelector('button');
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(`/api/emby/sync/${encodeURIComponent(syncId)}/retry`, {method: 'POST'});
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(data.error || 'Retry could not start');
+      notice.firstChild.textContent = 'Retrying targeted Emby synchronization… ';
+      const poll = async () => {
+        const statusResponse = await fetch(`/api/emby/sync/${encodeURIComponent(syncId)}`);
+        const statusData = await readJsonResponse(statusResponse);
+        if (!statusResponse.ok) throw new Error(statusData.error || 'Retry status unavailable');
+        const sync = statusData.emby_sync || {};
+        if (['queued', 'running'].includes(sync.status)) {
+          setTimeout(() => poll().catch(error => { notice.firstChild.textContent = error.message; }), 750);
+          return;
+        }
+        notice.firstChild.textContent = `${embySyncText(sync)} `;
+        if (button) {
+          button.disabled = !sync.retryable;
+          button.classList.toggle('d-none', !sync.retryable);
+        }
+      };
+      setTimeout(() => poll().catch(error => { notice.firstChild.textContent = error.message; }), 500);
+    } catch (error) {
+      notice.firstChild.textContent = `${error.message || 'Retry failed'} `;
+      if (button) button.disabled = false;
+    }
+  }
+
+  function appendEmbySyncNotice(detailId, sync) {
+    const target = byId(detailId);
+    if (!target || !sync) return;
+    const existing = target.querySelector('.emby-sync-notice');
+    if (existing) existing.remove();
+    const notice = document.createElement('div');
+    notice.className = `emby-sync-notice mt-2 ${['partial', 'failed', 'not_configured'].includes(sync.status) ? 'text-warning' : ''}`;
+    notice.append(document.createTextNode(`${embySyncText(sync)} `));
+    if (sync.retryable && sync.id) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-outline-secondary btn-sm ms-1';
+      button.textContent = 'Retry Emby sync';
+      button.addEventListener('click', () => retryEmbySync(sync.id, notice));
+      notice.append(button);
+    }
+    target.append(notice);
+  }
+
   function setOverviewProgress(scan) {
     const pct = clampPercent(scan?.progress_percent || 0);
     const state = byId('overviewScanState');
@@ -1007,6 +1068,7 @@
           ? withEmbyCoverage(`Large result set. Loading ${groupPageLimit} groups at a time.`, scan)
           : withEmbyCoverage(scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '', scan)
       );
+      appendEmbySyncNotice('maintenanceMessageDetail', embySyncFrom(apply));
       if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
         loadGroupsPage(0);
       }
@@ -1685,6 +1747,7 @@
       stopGenerationPolling();
       if (data.run?.status === 'success') {
         setPreviewMessage('BIF generation complete', `${data.run.generated_count || 0} generated, ${data.run.refused_count || 0} refused`);
+        appendEmbySyncNotice('previewMessageDetail', embySyncFrom(data.run));
         previewGenerationPlan = null;
         await startPreviewScan(previewLastPath);
       } else {
@@ -1920,6 +1983,7 @@
         `${scan.bad_count || 0} bad BIF file${(scan.bad_count || 0) === 1 ? '' : 's'}`,
         withEmbyCoverage(`${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed`, scan)
       );
+      appendEmbySyncNotice('qualityMessageDetail', embySyncFrom(apply));
       if (qualityItemsPage?.scan?.id !== scan.id) {
         loadQualityItems(0);
       }
@@ -2504,6 +2568,7 @@
       stopSubtitleApplyPolling();
       if (subtitleApply.status === 'success') {
         setSubtitleMessage('Subtitle cleanup complete', `${subtitleApply.applied_count || 0} applied, ${subtitleApply.refused_count || 0} refused`);
+        appendEmbySyncNotice('subtitleMessageDetail', embySyncFrom(subtitleApply));
         subtitlePlan = null;
         byId('subtitleApplyButton').disabled = true;
         await startSubtitleScan();
@@ -3024,7 +3089,7 @@
 
   function embyResultLabel(result, emptyValue) {
     if (!result || !result.status) return emptyValue || 'never';
-    const date = formatDateLabel(result.checked_at, 'unknown time');
+    const date = formatDateLabel(result.checked_at || result.finished_at || result.attempted_at, 'unknown time');
     return `${result.status}: ${date}`;
   }
 
@@ -3045,7 +3110,7 @@
       lastTest.textContent = `Last test: ${embyResultLabel(lastTestResult, 'never')}`;
     }
     if (lastRefresh) {
-      lastRefresh.textContent = `Last refresh: ${embyResultLabel(lastRefreshResult, 'never')}`;
+      lastRefresh.textContent = `Last targeted sync: ${embyResultLabel(lastRefreshResult, 'never')}`;
     }
     if (server) {
       const serverName = lastTestResult.server_name || '';
@@ -3068,12 +3133,10 @@
     const enabled = byId('posterAutomationEnabled');
     const scan = byId('posterScanInterval');
     const full = byId('posterFullScanInterval');
-    const embyEnabled = byId('posterEmbyRefreshEnabled');
     const canApply = element => element && (force || (!posterSettingsDirty.has(element.id) && document.activeElement !== element));
     if (canApply(enabled)) enabled.checked = Boolean(settings.enabled);
     if (canApply(scan)) scan.value = settings.scan_interval_seconds || 900;
     if (canApply(full)) full.value = settings.full_scan_interval_seconds || 86400;
-    if (canApply(embyEnabled)) embyEnabled.checked = Boolean(settings.emby_refresh_enabled);
   }
 
   function posterStatusBadge(status) {
@@ -3172,6 +3235,7 @@
       setPosterMessage('Landscape poster automation is disabled', 'Run manually or enable automatic scans.');
     }
     renderEmbyStatus(data?.emby_status);
+    appendEmbySyncNotice('posterMessageDetail', last?.emby_sync || null);
   }
 
   async function refreshPosterStatus() {
@@ -3207,7 +3271,6 @@
     if (element.id === 'posterAutomationEnabled') return {enabled: element.checked};
     if (element.id === 'posterScanInterval') return {scan_interval_seconds: Number(element.value)};
     if (element.id === 'posterFullScanInterval') return {full_scan_interval_seconds: Number(element.value)};
-    if (element.id === 'posterEmbyRefreshEnabled') return {emby_refresh_enabled: element.checked};
     return null;
   }
 
@@ -3308,7 +3371,11 @@
         posterApply = statusData.apply;
         setPosterMessage(posterApply.progress_label || 'Applying poster updates', posterApply.error || '');
         if (['queued', 'running'].includes(posterApply.status)) setTimeout(poll, 1000);
-        else refreshPosterStatus();
+        else {
+          await refreshPosterStatus();
+          setPosterMessage(posterApply.progress_label || 'Poster updates complete', posterApply.error || '');
+          appendEmbySyncNotice('posterMessageDetail', embySyncFrom(posterApply));
+        }
       };
       setTimeout(poll, 500);
     } catch (e) {
@@ -3545,7 +3612,7 @@
       actorPageOffset = 0;
       loadActorItems(0);
     });
-    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval', 'posterEmbyRefreshEnabled'].forEach(id => {
+    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval'].forEach(id => {
       const element = byId(id);
       element?.addEventListener('change', event => {
         clearTimeout(posterSettingInputTimers.get(element));
