@@ -8,6 +8,7 @@ import threading
 import time
 
 from . import app_settings
+from . import emby_catalog
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -377,6 +378,9 @@ def public_scan(scan):
         "large_result": review_count >= LARGE_RESULT_COUNT,
         "settings": public_settings(scan.get("settings") or app_settings.load_settings()),
         **counts,
+        "emby_mapping": emby_catalog.public_summary(
+            scan.get("emby_mapping"), app_settings.load_settings()
+        ),
     }
     public.update(maintenance_scan_store.public_cache_metadata("subtitles", scan))
     return public
@@ -440,6 +444,16 @@ def _run_scan(scan, settings, lib_root):
         )
         items = _scan_videos(scan, settings, lib_root)
         counts = _counts(items)
+        emby_mapping = emby_catalog.enrich_records(
+            items,
+            app_settings.load_settings(),
+            lambda item: item.get("path"),
+            before_page=lambda: _check_cancelled(scan),
+        )
+        for item in items:
+            for subtitle in item.get("srt_files") or []:
+                subtitle["emby_parent_item_id"] = item.get("emby_item_id", "")
+                subtitle["emby_parent_item_type"] = item.get("emby_item_type", "")
         finished = time.time()
         _set_scan_progress(
             scan,
@@ -449,6 +463,7 @@ def _run_scan(scan, settings, lib_root):
             items=items,
             counts=counts,
             scanned_video_count=counts["scanned_video_count"],
+            emby_mapping=emby_mapping,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -737,6 +752,8 @@ def build_action_plan(payload, lib_root=LIB_ROOT):
             "size_label": subtitle.get("size_label") or "",
             "language_code": subtitle.get("language_code") or "unknown",
             "identity": dict(subtitle.get("identity") or {}),
+            "emby_item_id": subtitle.get("emby_parent_item_id", ""),
+            "emby_item_type": subtitle.get("emby_parent_item_type", ""),
         })
     plan = {
         "id": _now_id(),

@@ -188,6 +188,19 @@
     return 'Not scanned';
   }
 
+  function embyCoverageDetail(scan) {
+    const mapping = scan?.emby_mapping;
+    if (!mapping) return '';
+    if (['not_configured', 'unavailable', 'stale', 'not_checked'].includes(mapping.status)) {
+      return mapping.message || 'Emby item IDs are unavailable.';
+    }
+    return `Emby IDs: ${mapping.matched_count || 0} mapped, ${mapping.unmatched_count || 0} unmatched, ${mapping.ambiguous_count || 0} ambiguous.`;
+  }
+
+  function withEmbyCoverage(detail, scan) {
+    return [detail, embyCoverageDetail(scan)].filter(Boolean).join(' ');
+  }
+
   function setOverviewProgress(scan) {
     const pct = clampPercent(scan?.progress_percent || 0);
     const state = byId('overviewScanState');
@@ -991,8 +1004,8 @@
       setMessage(
         `${scan.duplicate_group_count || 0} duplicate groups found`,
         scan.large_result
-          ? `Large result set. Loading ${groupPageLimit} groups at a time.`
-          : (scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '')
+          ? withEmbyCoverage(`Large result set. Loading ${groupPageLimit} groups at a time.`, scan)
+          : withEmbyCoverage(scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '', scan)
       );
       if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
         loadGroupsPage(0);
@@ -1481,7 +1494,7 @@
       byId('previewUseRecommendationButton').disabled = !recommendation;
       setPreviewMessage(
         `${scan.missing_count || 0} missing video preview${(scan.missing_count || 0) === 1 ? '' : 's'}`,
-        `${scan.present_count || 0} present`
+        withEmbyCoverage(`${scan.present_count || 0} present`, scan)
       );
       if (previewItemsPage?.scan?.id !== scan.id) {
         loadPreviewItems(0);
@@ -1719,7 +1732,7 @@
     if (last) last.textContent = `Last action: ${result.status || 'never'}`;
     if (message) {
       message.className = `scan-estimate-detail mt-1 ${result.status === 'failed' ? 'text-danger' : ''}`;
-      message.textContent = result.message || 'Uses the Emby settings from the Landscape Posters panel.';
+      message.textContent = result.message || 'Uses the global Emby settings.';
     }
   }
 
@@ -1905,7 +1918,7 @@
     } else if (scan.status === 'success') {
       setQualityMessage(
         `${scan.bad_count || 0} bad BIF file${(scan.bad_count || 0) === 1 ? '' : 's'}`,
-        `${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed`
+        withEmbyCoverage(`${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed`, scan)
       );
       if (qualityItemsPage?.scan?.id !== scan.id) {
         loadQualityItems(0);
@@ -2324,7 +2337,7 @@
       const settings = scan.settings || {};
       setSubtitleMessage(
         `${scan.review_count || 0} subtitle review item${(scan.review_count || 0) === 1 ? '' : 's'}`,
-        `${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`
+        withEmbyCoverage(`${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`, scan)
       );
       if (subtitleItemsPage?.scan?.id !== scan.id) {
         loadSubtitleItems(0);
@@ -2698,7 +2711,7 @@
     } else if (scan.status === 'success') {
       setActorMessage(
         `${scan.missing_actor_count || 0} missing actor image${(scan.missing_actor_count || 0) === 1 ? '' : 's'}`,
-        `${scan.ready_count || 0} ready, ${scan.ambiguous_count || 0} ambiguous, ${scan.no_candidate_count || 0} without local images`
+        withEmbyCoverage(`${scan.ready_count || 0} ready, ${scan.ambiguous_count || 0} ambiguous, ${scan.no_candidate_count || 0} without local images`, scan)
       );
       if (actorItemsPage?.scan?.id !== scan.id) {
         loadActorItems(0);
@@ -3056,18 +3069,11 @@
     const scan = byId('posterScanInterval');
     const full = byId('posterFullScanInterval');
     const embyEnabled = byId('posterEmbyRefreshEnabled');
-    const embyUrl = byId('posterEmbyUrl');
-    const apiKey = byId('posterEmbyApiKey');
     const canApply = element => element && (force || (!posterSettingsDirty.has(element.id) && document.activeElement !== element));
     if (canApply(enabled)) enabled.checked = Boolean(settings.enabled);
     if (canApply(scan)) scan.value = settings.scan_interval_seconds || 900;
     if (canApply(full)) full.value = settings.full_scan_interval_seconds || 86400;
     if (canApply(embyEnabled)) embyEnabled.checked = Boolean(settings.emby_refresh_enabled);
-    if (canApply(embyUrl)) embyUrl.value = settings.emby_url || '';
-    if (canApply(apiKey)) {
-      apiKey.value = '';
-      apiKey.placeholder = settings.emby_api_key_configured ? 'Configured; leave blank to keep current' : 'API key';
-    }
   }
 
   function posterStatusBadge(status) {
@@ -3153,7 +3159,7 @@
       setPosterMessage(analysis.progress_label || 'Analyzing poster artwork', analysis.path || '');
     } else if (analysis?.status === 'success') {
       const stale = analysis.freshness?.status === 'changed';
-      setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, stale ? 'Library artwork changed after this scan. Rescan before applying updates.' : `${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous`);
+      setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, stale ? 'Library artwork changed after this scan. Rescan before applying updates.' : withEmbyCoverage(`${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous`, analysis));
       if (posterItemsPage?.scan?.id !== analysis.id) loadPosterItems(0);
     } else if (!current && settings.enabled) {
       setPosterMessage('Landscape poster automation is enabled', `Incremental interval: ${settings.scan_interval_label || ''}`);
@@ -3202,8 +3208,6 @@
     if (element.id === 'posterScanInterval') return {scan_interval_seconds: Number(element.value)};
     if (element.id === 'posterFullScanInterval') return {full_scan_interval_seconds: Number(element.value)};
     if (element.id === 'posterEmbyRefreshEnabled') return {emby_refresh_enabled: element.checked};
-    if (element.id === 'posterEmbyUrl') return {emby_url: element.value.trim()};
-    if (element.id === 'posterEmbyApiKey') return element.value ? {emby_api_key: element.value} : {};
     return null;
   }
 
@@ -3243,42 +3247,6 @@
         if (!posterSettingsPending && !posterSettingsFailures.size) setPosterSettingsSaveState('saved', 'All changes saved');
       }
     });
-  }
-
-  async function testEmbyConnection() {
-    const button = byId('posterEmbyTestButton');
-    const message = byId('posterEmbyStatusMessage');
-    if (button) button.disabled = true;
-    if (message) {
-      message.className = 'scan-estimate-detail mt-1';
-      message.textContent = 'Testing Emby connection...';
-    }
-    setPosterMessage('Testing Emby connection', '');
-    try {
-      const res = await fetch('/api/maintenance/landscape-posters/emby/test', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          emby_url: byId('posterEmbyUrl')?.value.trim() || '',
-          ...(byId('posterEmbyApiKey')?.value ? {emby_api_key: byId('posterEmbyApiKey').value} : {})
-        })
-      });
-      const data = await readJsonResponse(res);
-      if (!res.ok) {
-        setPosterMessage(data.error || 'Emby connection test failed', '');
-        return;
-      }
-      renderPosterStatus(data.status);
-      setPosterMessage('Emby connection test complete', data.result?.message || '');
-    } catch (e) {
-      setPosterMessage('Emby connection test failed', e.message || '');
-      if (message) {
-        message.className = 'scan-estimate-detail mt-1 text-danger';
-        message.textContent = e.message || '';
-      }
-    } finally {
-      if (button) button.disabled = false;
-    }
   }
 
   async function runLandscapePosters() {
@@ -3577,20 +3545,19 @@
       actorPageOffset = 0;
       loadActorItems(0);
     });
-    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval', 'posterEmbyRefreshEnabled', 'posterEmbyUrl', 'posterEmbyApiKey'].forEach(id => {
+    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval', 'posterEmbyRefreshEnabled'].forEach(id => {
       const element = byId(id);
       element?.addEventListener('change', event => {
         clearTimeout(posterSettingInputTimers.get(element));
         savePosterSettings(event.target);
       });
-      if (element && ['posterScanInterval', 'posterFullScanInterval', 'posterEmbyUrl'].includes(id)) {
+      if (element && ['posterScanInterval', 'posterFullScanInterval'].includes(id)) {
         element.addEventListener('input', event => {
           clearTimeout(posterSettingInputTimers.get(element));
           posterSettingInputTimers.set(element, setTimeout(() => savePosterSettings(event.target), 500));
         });
       }
     });
-    byId('posterEmbyTestButton')?.addEventListener('click', testEmbyConnection);
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
     byId('posterPlanButton')?.addEventListener('click', reviewPosterPlan);
     byId('posterApplyButton')?.addEventListener('click', applyPosterPlan);

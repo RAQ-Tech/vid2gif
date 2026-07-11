@@ -10,6 +10,7 @@ import threading
 import time
 
 from . import app_settings
+from . import emby_catalog
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -718,6 +719,12 @@ def _public_file(item):
         "default_destination_path": item.get("default_destination_path", ""),
         "default_reason": item.get("default_reason", ""),
         "default_selected": bool(item.get("default_selected")),
+        "emby_item_id": item.get("emby_item_id", ""),
+        "emby_item_type": item.get("emby_item_type", ""),
+        "emby_item_name": item.get("emby_item_name", ""),
+        "emby_match_status": item.get("emby_match_status", ""),
+        "emby_parent_item_id": item.get("emby_parent_item_id", ""),
+        "emby_parent_item_type": item.get("emby_parent_item_type", ""),
     }
     if item.get("metadata") is not None:
         public["metadata"] = item.get("metadata") or {}
@@ -780,6 +787,9 @@ def public_scan(scan, include_groups=False):
         "settings": public_duplicate_settings(scan.get("settings")),
         "results_page_size": DUPLICATE_GROUP_PAGE_DEFAULT,
         "large_result": len(scan.get("groups") or []) >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
+        "emby_mapping": emby_catalog.public_summary(
+            scan.get("emby_mapping"), app_settings.load_settings()
+        ),
     }
     if include_groups:
         public["groups"] = [_public_group(group) for group in scan.get("groups") or []]
@@ -896,6 +906,17 @@ def _run_scan(scan, lib_root):
 
         _check_scan_cancelled(scan)
         reclaimable = sum(group.get("reclaimable_bytes") or 0 for group in groups)
+        group_videos = [video for group in groups for video in group.get("videos") or []]
+        emby_mapping = emby_catalog.enrich_records(
+            group_videos,
+            app_settings.load_settings(),
+            lambda video: video.get("path"),
+            before_page=lambda: _check_scan_cancelled(scan),
+        )
+        for video in group_videos:
+            for accessory in video.get("accessories") or []:
+                accessory["emby_parent_item_id"] = video.get("emby_item_id", "")
+                accessory["emby_parent_item_type"] = video.get("emby_item_type", "")
         finished = time.time()
         _set_scan_progress(
             scan,
@@ -904,6 +925,7 @@ def _run_scan(scan, lib_root):
             status="success",
             groups=groups,
             reclaimable_bytes=reclaimable,
+            emby_mapping=emby_mapping,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -1192,6 +1214,8 @@ def _build_plan_item(
         "size_bytes": item.get("size_bytes", 0),
         "size_label": item.get("size_label", ""),
         "identity": dict(item.get("identity") or {}),
+        "emby_item_id": item.get("emby_item_id") or item.get("emby_parent_item_id") or "",
+        "emby_item_type": item.get("emby_item_type") or item.get("emby_parent_item_type") or "",
     }
 
 
@@ -1447,6 +1471,8 @@ def public_plan(plan):
                 "destination_name": item.get("destination_name", ""),
                 "size_bytes": item.get("size_bytes", 0),
                 "size_label": item.get("size_label", ""),
+                "emby_item_id": item.get("emby_item_id", ""),
+                "emby_item_type": item.get("emby_item_type", ""),
             }
             for item in plan.get("files") or []
         ],

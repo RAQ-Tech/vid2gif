@@ -224,3 +224,130 @@ def test_settings_api_gets_and_partially_updates(monkeypatch, tmp_path):
     assert fetched.status_code == 200
     assert fetched.get_json()["settings"]["subtitle_flag_missing"] is False
     assert fetched.get_json()["settings"]["test_lab_preview_height"] == 720
+
+
+def test_emby_settings_are_redacted_write_only_and_explicitly_clearable(monkeypatch, tmp_path):
+    path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(path))
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
+    client = routes.app.test_client()
+
+    saved = client.patch(
+        "/api/settings",
+        json={"emby_url": "http://emby:8096", "emby_api_key": "top-secret"},
+    )
+    blank = client.patch("/api/settings", json={"emby_api_key": ""})
+    fetched = client.get("/api/settings")
+
+    assert saved.status_code == 200
+    assert blank.status_code == 200
+    assert fetched.get_json()["settings"]["emby_api_key_configured"] is True
+    assert "emby_api_key" not in fetched.get_json()["settings"]
+    assert "top-secret" not in fetched.get_data(as_text=True)
+    assert app_settings.load_settings(str(path))["emby_api_key"] == "top-secret"
+
+    cleared = client.patch("/api/settings", json={"emby_api_key_clear": True})
+    assert cleared.get_json()["settings"]["emby_api_key_configured"] is False
+
+
+def test_emby_path_mapping_text_validation_is_atomic(monkeypatch, tmp_path):
+    root = tmp_path / "library"
+    movies = root / "movies"
+    movies.mkdir(parents=True)
+    path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(app_settings, "LIB_ROOT", str(root))
+
+    settings, err = app_settings.update_settings(
+        {"emby_path_mappings": f"/media/movies => {movies}"}, str(path)
+    )
+    assert err is None
+    assert settings["emby_path_mappings"] == [
+        {"emby_prefix": "/media/movies", "local_prefix": str(movies.resolve())}
+    ]
+
+    previous = path.read_text(encoding="utf-8")
+    settings, err = app_settings.update_settings(
+        {"emby_path_mappings": "/media => ../outside"}, str(path)
+    )
+    assert settings is None
+    assert "absolute" in err.lower()
+    assert path.read_text(encoding="utf-8") == previous
+
+
+def test_global_settings_import_legacy_emby_connection_once(monkeypatch, tmp_path):
+    app_path = tmp_path / "state" / "app_settings.json"
+    legacy_path = tmp_path / "state" / "landscape-posters" / "settings.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps({"emby_url": "http://legacy:8096", "emby_api_key": "legacy-key"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(app_path))
+    monkeypatch.setattr(app_settings, "LEGACY_EMBY_SETTINGS_PATH", str(legacy_path))
+
+    imported = app_settings.load_settings()
+    legacy_path.write_text(
+        json.dumps({"emby_url": "http://changed:8096", "emby_api_key": "changed"}),
+        encoding="utf-8",
+    )
+    reloaded = app_settings.load_settings()
+
+    assert imported["emby_url"] == "http://legacy:8096"
+    assert imported["emby_api_key"] == "legacy-key"
+    assert reloaded["emby_url"] == "http://legacy:8096"
+    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == 6
+
+
+def test_settings_page_contains_global_emby_controls_without_echoing_secret(monkeypatch, tmp_path):
+    path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(path))
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
+    app_settings.update_settings(
+        {"emby_url": "http://emby:8096", "emby_api_key": "html-secret"}, str(path)
+    )
+
+    response = routes.app.test_client().get("/settings")
+    html = response.get_data(as_text=True)
+
+    assert 'id="emby_url"' in html
+    assert 'id="emby_api_key"' in html
+    assert 'id="emby_path_mappings"' in html
+    assert 'id="embyTestButton"' in html
+    assert "html-secret" not in html
+
+
+def test_global_emby_test_route_uses_saved_key_without_exposing_it(monkeypatch, tmp_path):
+    path = tmp_path / "app_settings.json"
+    status_path = tmp_path / "emby-status.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(path))
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
+    monkeypatch.setattr(routes.poster_maintenance, "EMBY_STATUS_PATH", str(status_path))
+    app_settings.update_settings(
+        {"emby_url": "http://emby:8096", "emby_api_key": "route-secret"}, str(path)
+    )
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"Id":"server","ServerName":"Emby","Version":"4.9"}'
+
+    def opener(request, timeout):
+        captured["url"] = request.full_url
+        captured["token"] = request.get_header("X-emby-token")
+        return Response()
+
+    monkeypatch.setattr(routes.poster_maintenance.emby_client.urllib.request, "urlopen", opener)
+    response = routes.app.test_client().post("/api/emby/test", json={})
+
+    assert response.status_code == 200
+    assert response.get_json()["result"]["server_name"] == "Emby"
+    assert captured == {"url": "http://emby:8096/emby/System/Info", "token": "route-secret"}
+    assert "route-secret" not in response.get_data(as_text=True)

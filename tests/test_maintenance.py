@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from app import app_settings, maintenance, routes
+from app import app_settings, emby_catalog, maintenance, routes
 
 
 def _reset_maintenance(monkeypatch, metadata_by_name=None, settings_overrides=None):
@@ -848,3 +848,43 @@ def test_maintenance_page_and_static_assets_render():
     assert "data-maint-page" in script
     assert "escapeHtml(change.source || '')" in script
     assert "textContent" in script
+
+
+def test_duplicate_scan_enriches_video_ids_and_carries_them_into_plan(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    keep, remove = _write_duplicate_pair(lib, "Movie")
+    catalog = emby_catalog._build_catalog(
+        [
+            {"Id": "keep-emby", "Name": "Movie HD", "Type": "Movie", "Path": str(keep)},
+            {"Id": "remove-emby", "Name": "Movie SD", "Type": "Movie", "Path": str(remove)},
+        ],
+        {"Id": "server"},
+        emby_catalog.configuration_fingerprint({}),
+    )
+    monkeypatch.setattr(
+        maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 0, catalog_item_count=2)),
+    )
+
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    assert scan["emby_mapping"]["matched_count"] == 2
+    assert {video["emby_item_id"] for video in group["videos"]} == {"keep-emby", "remove-emby"}
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {"scan_id": scan["id"], "action": "delete", "visible_group_ids": [group["id"]]},
+        lib_root=str(lib),
+    )
+    assert err is None
+    assert {item["emby_item_id"] for item in plan["files"]} <= {"keep-emby", "remove-emby"}
+
+
+def test_legacy_duplicate_scan_projects_emby_identity_as_not_checked(monkeypatch):
+    _reset_maintenance(monkeypatch)
+    public = maintenance.public_scan(
+        {"id": "legacy", "status": "success", "groups": [], "settings": {}}
+    )
+
+    assert public["emby_mapping"]["status"] == "not_checked"
+    assert "rescan" in public["emby_mapping"]["message"].lower()

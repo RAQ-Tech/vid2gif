@@ -3,13 +3,16 @@ import os
 import re
 import threading
 
-from .config import LIB_ROOT, STATE_ROOT
+from .config import LANDSCAPE_POSTER_ROOT, LIB_ROOT, STATE_ROOT
+from .utils import path_is_under
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
+LEGACY_EMBY_SETTINGS_PATH = os.path.join(LANDSCAPE_POSTER_ROOT, "settings.json")
+MAX_EMBY_PATH_MAPPINGS = 20
 DEFAULT_DUPLICATE_MOVE_ROOT = os.path.join(LIB_ROOT, ".vid2gif-duplicates")
 DUPLICATE_GROUPING_MODES = {
     "balanced": "Balanced",
@@ -47,6 +50,10 @@ _SETTING_KEYS = {
     "subtitle_subgen_detection",
     "video_preview_bif_width",
     "video_preview_bif_interval_seconds",
+    "emby_url",
+    "emby_api_key",
+    "emby_api_key_clear",
+    "emby_path_mappings",
     "table_preferences",
 }
 
@@ -87,8 +94,94 @@ def default_settings():
         "subtitle_subgen_detection": True,
         "video_preview_bif_width": DEFAULT_VIDEO_PREVIEW_BIF_WIDTH,
         "video_preview_bif_interval_seconds": DEFAULT_VIDEO_PREVIEW_BIF_INTERVAL_SECONDS,
+        "emby_url": str(os.getenv("EMBY_URL", "") or "").strip(),
+        "emby_api_key": str(os.getenv("EMBY_API_KEY", "") or "").strip(),
+        "emby_path_mappings": [],
         "table_preferences": {},
     }
+
+
+def parse_emby_path_mappings(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        mappings = []
+        for line in value.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "=>" not in line:
+                raise ValueError("Each Emby path mapping must use 'Emby prefix => vid2gif prefix'.")
+            emby_prefix, local_prefix = line.split("=>", 1)
+            mappings.append({"emby_prefix": emby_prefix.strip(), "local_prefix": local_prefix.strip()})
+        return mappings
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("Emby path mappings are invalid.")
+    mappings = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("Emby path mappings are invalid.")
+        mappings.append(
+            {
+                "emby_prefix": str(item.get("emby_prefix") or "").strip(),
+                "local_prefix": str(item.get("local_prefix") or "").strip(),
+            }
+        )
+    return mappings
+
+
+def emby_path_mappings_text(value):
+    return "\n".join(
+        f"{item.get('emby_prefix', '')} => {item.get('local_prefix', '')}"
+        for item in (value or [])
+    )
+
+
+def _coerce_emby_path_mappings(value):
+    try:
+        return parse_emby_path_mappings(value)
+    except ValueError:
+        return []
+
+
+def _looks_absolute_path(value):
+    value = str(value or "").strip()
+    return bool(
+        value.startswith(("/", "\\\\", "//"))
+        or re.match(r"^[A-Za-z]:[\\/]", value)
+    )
+
+
+def validate_emby_path_mappings(value, lib_root=None):
+    try:
+        mappings = parse_emby_path_mappings(value)
+    except ValueError as exc:
+        return None, str(exc)
+    if len(mappings) > MAX_EMBY_PATH_MAPPINGS:
+        return None, f"At most {MAX_EMBY_PATH_MAPPINGS} Emby path mappings are allowed."
+    root = os.path.realpath(lib_root or LIB_ROOT)
+    normalized = []
+    seen = set()
+    for mapping in mappings:
+        emby_prefix = mapping["emby_prefix"]
+        local_prefix = mapping["local_prefix"]
+        if ".." in emby_prefix.replace("\\", "/").split("/"):
+            return None, "Emby prefixes cannot contain parent-directory segments."
+        if not _looks_absolute_path(emby_prefix):
+            return None, "Each Emby prefix must be an absolute POSIX, Windows, or UNC path."
+        if not os.path.isabs(local_prefix):
+            return None, "Each vid2gif prefix must be an absolute path."
+        local_real = os.path.realpath(local_prefix)
+        if not path_is_under(local_real, root):
+            return None, "Each vid2gif prefix must stay inside the library root."
+        if not os.path.isdir(local_real):
+            return None, "Each vid2gif prefix must be an existing directory."
+        key = emby_prefix.replace("\\", "/").rstrip("/").casefold()
+        if key in seen:
+            return None, "Emby prefixes must be unique."
+        seen.add(key)
+        normalized.append({"emby_prefix": emby_prefix, "local_prefix": local_real})
+    return normalized, ""
 
 
 def _choice(value, choices, default):
@@ -239,6 +332,9 @@ def _coerce_settings(data):
             1,
             3600,
         ),
+        "emby_url": str(data.get("emby_url", defaults["emby_url"]) or "").strip(),
+        "emby_api_key": str(data.get("emby_api_key", defaults["emby_api_key"]) or "").strip(),
+        "emby_path_mappings": _coerce_emby_path_mappings(data.get("emby_path_mappings", [])),
         "table_preferences": _coerce_table_preferences(
             data.get("table_preferences", defaults["table_preferences"])
         ),
@@ -258,6 +354,16 @@ def _load_settings_unlocked(path):
     data = _read_settings_file(path)
     if data is None:
         data = _read_settings_file(f"{path}.bak")
+    should_migrate = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(SETTINGS_PATH))
+    if should_migrate and (data is None or "emby_url" not in data or "emby_api_key" not in data):
+        legacy = _read_settings_file(LEGACY_EMBY_SETTINGS_PATH) or {}
+        if legacy.get("emby_url") or legacy.get("emby_api_key"):
+            data = dict(data or {})
+            data.setdefault("emby_url", legacy.get("emby_url") or "")
+            data.setdefault("emby_api_key", legacy.get("emby_api_key") or "")
+            settings = _coerce_settings(data)
+            _write_settings_unlocked(path, settings)
+            return settings
     return _coerce_settings(data) if data is not None else default_settings()
 
 
@@ -324,6 +430,10 @@ def _validation_error(updates):
             return f"{label} must be between {minimum} and {maximum}"
     if "table_preferences" in updates and not isinstance(updates.get("table_preferences"), dict):
         return "Table preferences are invalid"
+    if "emby_path_mappings" in updates:
+        _mappings, error = validate_emby_path_mappings(updates.get("emby_path_mappings"))
+        if error:
+            return error
     return ""
 
 
@@ -338,6 +448,18 @@ def update_settings(updates, path=None):
         current = _load_settings_unlocked(path)
         merged = dict(current)
         for key, value in updates.items():
+            if key == "emby_api_key_clear":
+                if _bool(value):
+                    merged["emby_api_key"] = ""
+                continue
+            if key == "emby_api_key":
+                if str(value or "").strip():
+                    merged[key] = str(value).strip()
+                continue
+            if key == "emby_path_mappings":
+                mappings, _error = validate_emby_path_mappings(value)
+                merged[key] = mappings
+                continue
             if key != "table_preferences":
                 merged[key] = value
                 continue
@@ -352,7 +474,22 @@ def update_settings(updates, path=None):
         settings = _coerce_settings(merged)
         if not _write_settings_unlocked(path, settings):
             return None, "Settings could not be saved"
+    if any(key in updates for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings")):
+        try:
+            from . import emby_catalog
+
+            emby_catalog.clear_cache()
+        except ImportError:
+            pass
     return settings, None
+
+
+def public_settings(settings=None):
+    public = dict(load_settings() if settings is None else settings)
+    configured = bool(public.get("emby_api_key"))
+    public.pop("emby_api_key", None)
+    public["emby_api_key_configured"] = configured
+    return public
 
 
 def warning_for_preview_height(height):

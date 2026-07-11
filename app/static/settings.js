@@ -75,7 +75,7 @@
   form.addEventListener('submit', event => event.preventDefault());
   form.addEventListener('change', event => {
     const element = event.target;
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement)) return;
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)) return;
     clearTimeout(inputTimers.get(element));
     if (element === preset) {
       syncCustom(true);
@@ -85,7 +85,7 @@
   });
   form.addEventListener('input', event => {
     const element = event.target;
-    if (!(element instanceof HTMLInputElement) || element.type === 'checkbox') return;
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) || element.type === 'checkbox') return;
     clearTimeout(inputTimers.get(element));
     inputTimers.set(element, setTimeout(() => save(settingPayload(element)), 500));
   });
@@ -95,4 +95,30 @@
     event.returnValue = '';
   });
   syncCustom();
+
+  document.getElementById('embyTestButton')?.addEventListener('click', async () => {
+    const button = document.getElementById('embyTestButton');
+    const message = document.getElementById('embyTestMessage');
+    const url = document.getElementById('emby_url');
+    const key = document.getElementById('emby_api_key');
+    button.disabled = true;
+    message.textContent = 'Testing Emby connection…';
+    try {
+      const response = await fetch('/api/emby/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          emby_url: url?.value.trim() || '',
+          ...(key?.value ? {emby_api_key: key.value} : {})
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Connection test failed');
+      message.textContent = data.result?.message || 'Connection test completed.';
+    } catch (error) {
+      message.textContent = error.message || 'Connection test failed.';
+    } finally {
+      button.disabled = false;
+    }
+  });
 })();

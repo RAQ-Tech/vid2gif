@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from app import app_settings, routes, subtitle_maintenance
+from app import app_settings, emby_catalog, routes, subtitle_maintenance
 
 
 def _write(path, data=b"x"):
@@ -343,3 +343,36 @@ def test_subtitle_ui_assets_render():
     assert "fetch('/api/maintenance/subtitles/apply'" in script
     assert "/api/maintenance/subtitles/apply/status?apply_id=" in script
     assert "escapeHtml(item.detail || '')" in script
+
+
+def test_subtitle_scan_and_plan_carry_parent_emby_id(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    _write(lib / "Movie" / "Movie.nno.srt")
+    catalog = emby_catalog._build_catalog(
+        [{"Id": "movie-1", "Name": "Movie", "Type": "Movie", "Path": str(video)}],
+        {"Id": "server"},
+        emby_catalog.configuration_fingerprint({}),
+    )
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 0, catalog_item_count=1)),
+    )
+    scan = _scan(lib, monkeypatch)
+    item = scan["items"][0]
+    child = item["srt_files"][0]
+    assert item["emby_item_id"] == "movie-1"
+    assert child["emby_parent_item_id"] == "movie-1"
+
+    plan, err = subtitle_maintenance.build_action_plan(
+        {
+            "scan_id": scan["id"],
+            "operation": "delete",
+            "visible_file_ids": [child["id"]],
+            "selected_file_ids": [child["id"]],
+        },
+        lib_root=str(lib),
+    )
+    assert err is None
+    assert plan["files"][0]["emby_item_id"] == "movie-1"

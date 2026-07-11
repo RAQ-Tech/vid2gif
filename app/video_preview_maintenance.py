@@ -11,6 +11,7 @@ import threading
 import time
 
 from . import app_settings
+from . import emby_catalog
 from . import emby_client
 from . import impact_metrics
 from . import maintenance_scan_store
@@ -327,6 +328,9 @@ def public_scan(scan):
                 or recommendation.get("interval_seconds") != configured_profile["interval_seconds"]
             )
         ),
+        "emby_mapping": emby_catalog.public_summary(
+            scan.get("emby_mapping"), app_settings.load_settings()
+        ),
     }
     public.update(maintenance_scan_store.public_cache_metadata("video_previews_missing", scan))
     return public
@@ -390,6 +394,16 @@ def _run_scan(scan, lib_root):
         )
         items = _scan_videos(scan, lib_root)
         counts = _counts(items)
+        emby_mapping = emby_catalog.enrich_records(
+            items,
+            app_settings.load_settings(),
+            lambda item: item.get("path"),
+            before_page=lambda: _check_cancelled(scan),
+        )
+        for item in items:
+            for bif in item.get("bifs") or []:
+                bif["emby_parent_item_id"] = item.get("emby_item_id", "")
+                bif["emby_parent_item_type"] = item.get("emby_item_type", "")
         recommendation = _recommended_bif_profile(items)
         finished = time.time()
         label = f"{counts['missing_count']} missing, {counts['present_count']} present"
@@ -402,6 +416,7 @@ def _run_scan(scan, lib_root):
             counts=counts,
             scanned_video_count=counts["scanned_video_count"],
             recommended_profile=recommendation,
+            emby_mapping=emby_mapping,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -1100,6 +1115,9 @@ def public_quality_scan(scan):
         "large_result": (counts.get("bad_count", 0) + counts.get("warning_count", 0)) >= LARGE_RESULT_COUNT,
         "default_repair_root": DEFAULT_REPAIR_ROOT,
         "recent_logs": list_recent_logs(),
+        "emby_mapping": emby_catalog.public_summary(
+            scan.get("emby_mapping"), app_settings.load_settings()
+        ),
     }
     public.update(maintenance_scan_store.public_cache_metadata("video_previews_quality", scan))
     return public
@@ -1163,6 +1181,12 @@ def _run_quality_scan(scan, lib_root):
         )
         items = _scan_quality_items(scan, lib_root)
         counts = _quality_counts(items)
+        emby_mapping = emby_catalog.enrich_records(
+            items,
+            app_settings.load_settings(),
+            lambda item: item.get("video_path"),
+            before_page=lambda: _check_quality_cancelled(scan),
+        )
         finished = time.time()
         _set_quality_progress(
             scan,
@@ -1172,6 +1196,7 @@ def _run_quality_scan(scan, lib_root):
             items=items,
             counts=counts,
             checked_bif_count=counts["checked_bif_count"],
+            emby_mapping=emby_mapping,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -1409,6 +1434,10 @@ def _public_quality_item(item):
             "size_bytes",
             "size_label",
             "modified_at",
+            "emby_item_id",
+            "emby_item_type",
+            "emby_item_name",
+            "emby_match_status",
         )
     }
     return public
@@ -1528,6 +1557,8 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
                 "reason": item.get("reason", ""),
                 "confidence": item.get("confidence", 0),
                 "identity": dict(item.get("identity") or {}),
+                "emby_item_id": item.get("emby_item_id", ""),
+                "emby_item_type": item.get("emby_item_type", ""),
             }
         )
     plan_id = _now_id()
@@ -1578,6 +1609,8 @@ def public_quality_plan(plan):
                 "size_label": item.get("size_label", ""),
                 "reason": item.get("reason", ""),
                 "confidence": item.get("confidence", 0),
+                "emby_item_id": item.get("emby_item_id", ""),
+                "emby_item_type": item.get("emby_item_type", ""),
             }
             for item in plan.get("files") or []
         ],
@@ -2344,6 +2377,8 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
             "video_identity": _stat_identity(video_path) or {},
             "output_path": os.path.realpath(output_path),
             "output_relative_path": _relative_path(output_path, root),
+            "emby_item_id": item.get("emby_item_id", ""),
+            "emby_item_type": item.get("emby_item_type", ""),
         })
     plan = {
         "id": _now_id(),
@@ -2591,7 +2626,9 @@ def cancel_generation(run_id):
 
 
 def _settings():
-    return poster_maintenance.load_settings()
+    settings = dict(app_settings.load_settings())
+    settings.update(poster_maintenance.load_settings())
+    return settings
 
 
 def _public_task(task):

@@ -122,6 +122,9 @@ def test_actor_scan_finds_ready_and_unresolved_missing_images(monkeypatch, tmp_p
     assert page_err is None
     assert {item["status"] for item in page["items"]} == {"ready", "no_candidate"}
     assert "secret" not in str(actor_image_maintenance.public_scan(scan))
+    ready = next(item for item in page["items"] if item["status"] == "ready")
+    assert ready["related_videos"][0]["emby_item_id"] == "m1"
+    assert scan["emby_mapping"]["matched_count"] == 1
 
 
 def test_actor_exceptions_persist_and_update_scan_items(monkeypatch, tmp_path):

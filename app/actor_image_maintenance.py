@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.parse
 
+from . import emby_catalog
 from . import emby_client
 from . import impact_metrics
 from . import maintenance_scan_store
@@ -141,7 +142,7 @@ def _coerce_page(offset, limit):
 
 
 def _settings():
-    return poster_maintenance.load_settings()
+    return poster_maintenance._emby_settings(poster_maintenance.load_settings())
 
 
 def _fetch_paged(settings, api_path, params, *, opener=None, scan=None):
@@ -183,19 +184,29 @@ def _person_matches(person_ref, missing_by_id, missing_by_name):
     return None
 
 
-def _local_item_path(item, scan_path, lib_root):
-    raw = str(item.get("Path") or item.get("path") or "").strip()
-    if not raw:
-        return ""
-    real = resolve_case_insensitive(raw)
-    if not real:
-        return ""
-    real = os.path.realpath(real)
-    if not path_is_under(real, lib_root) or not path_is_under(real, scan_path):
-        return ""
-    if os.path.islink(real):
-        return ""
-    return real
+def _local_item_path(item, scan_path, lib_root, settings=None):
+    settings = settings or _settings()
+    paths = [item.get("Path") or item.get("path")]
+    paths.extend(
+        source.get("Path")
+        for source in (item.get("MediaSources") or [])
+        if isinstance(source, dict)
+    )
+    candidates = []
+    for raw in paths:
+        raw = str(raw or "").strip()
+        if not raw:
+            continue
+        candidates.append(raw)
+        candidates.extend(emby_catalog.mapped_local_paths(raw, settings.get("emby_path_mappings")))
+    for candidate in candidates:
+        real = resolve_case_insensitive(candidate)
+        if not real:
+            continue
+        real = os.path.realpath(real)
+        if path_is_under(real, lib_root) and path_is_under(real, scan_path) and not os.path.islink(real):
+            return real
+    return ""
 
 
 def _image_stat_payload(path, lib_root):
@@ -426,6 +437,7 @@ def _public_scan(scan):
         "results_page_size": ITEM_PAGE_DEFAULT,
         "large_result": total >= LARGE_RESULT_COUNT,
         "recent_logs": list_recent_logs(),
+        "emby_mapping": emby_catalog.public_summary(scan.get("emby_mapping"), _settings()),
         **counts,
     }
 
@@ -498,7 +510,7 @@ def _build_items(settings, scan, lib_root, opener=None):
         {
             "Recursive": "true",
             "IncludeItemTypes": "Movie,Episode,Video",
-            "Fields": "People,Path,ProviderIds",
+            "Fields": "People,Path,MediaSources,ProviderIds",
         },
         opener=opener,
         scan=scan,
@@ -510,7 +522,7 @@ def _build_items(settings, scan, lib_root, opener=None):
     scan_path = scan["path"]
     for index, media in enumerate(media_items, start=1):
         _check_cancelled(scan)
-        local_path = _local_item_path(media, scan_path, lib_root)
+        local_path = _local_item_path(media, scan_path, lib_root, settings)
         if not local_path:
             continue
         for person_ref in media.get("People") or []:
@@ -524,6 +536,10 @@ def _build_items(settings, scan, lib_root, opener=None):
             related[key]["videos"].append(
                 {
                     "item_id": str(media.get("Id") or ""),
+                    "emby_item_id": str(media.get("Id") or ""),
+                    "emby_item_type": str(media.get("Type") or ""),
+                    "emby_item_name": str(media.get("Name") or ""),
+                    "emby_match_status": "matched",
                     "name": str(media.get("Name") or os.path.basename(local_path)),
                     "path": local_path,
                     "relative_path": _relative_path(local_path, lib_root),
@@ -577,6 +593,17 @@ def _run_scan(scan, lib_root, opener=None):
             raise RuntimeError("Emby URL and API key are required")
         items, checked_people, checked_media = _build_items(settings, scan, lib_root, opener=opener)
         counts = _counts(items)
+        related_videos = {
+            video.get("emby_item_id")
+            for item in items
+            for video in item.get("related_videos") or []
+            if video.get("emby_item_id")
+        }
+        emby_mapping = emby_catalog.known_matches_summary(
+            settings,
+            len(related_videos),
+            catalog_item_count=checked_media,
+        )
         finished = time.time()
         _set_scan_progress(
             scan,
@@ -587,6 +614,7 @@ def _run_scan(scan, lib_root, opener=None):
             counts=counts,
             checked_person_count=checked_people,
             checked_item_count=checked_media,
+            emby_mapping=emby_mapping,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -888,6 +916,7 @@ def build_import_plan(payload, lib_root=LIB_ROOT):
                 "candidate_path": candidate.get("path", ""),
                 "candidate_name": candidate.get("name", ""),
                 "candidate_relative_path": candidate.get("relative_path", ""),
+                "emby_item_ids": sorted({video.get("emby_item_id") for video in item.get("related_videos") or [] if video.get("emby_item_id")}),
                 "size_bytes": candidate.get("size_bytes", 0),
                 "size_label": candidate.get("size_label", ""),
                 "identity": candidate.get("identity") or {},
@@ -928,6 +957,7 @@ def public_plan(plan):
                 "candidate_path": item.get("candidate_path", ""),
                 "candidate_name": item.get("candidate_name", ""),
                 "candidate_relative_path": item.get("candidate_relative_path", ""),
+                "emby_item_ids": list(item.get("emby_item_ids") or []),
                 "size_bytes": item.get("size_bytes", 0),
                 "size_label": item.get("size_label", ""),
             }

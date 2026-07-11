@@ -1,7 +1,7 @@
 import os
 import urllib.error
 
-from app import poster_maintenance, routes
+from app import app_settings, emby_catalog, poster_maintenance, routes
 
 
 def _write(path, data=b"x"):
@@ -29,6 +29,10 @@ def _reset_poster_state(monkeypatch, tmp_path):
         "EMBY_STATUS_PATH",
         str(state_root / "emby-status.json"),
     )
+    app_path = tmp_path / "state" / "app_settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(app_path))
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(app_path))
+    monkeypatch.setattr(app_settings, "LEGACY_EMBY_SETTINGS_PATH", str(state_root / "settings.json"))
     poster_maintenance.poster_runs.clear()
     monkeypatch.setattr(poster_maintenance, "_current_run_id", "")
     poster_maintenance._scheduler_state.clear()
@@ -607,14 +611,52 @@ def test_landscape_poster_ui_assets_render():
     assert res.status_code == 200
     assert "Landscape Posters" in html
     assert 'id="posterRunButton"' in html
-    assert 'id="posterEmbyTestButton"' in html
-    assert 'id="posterEmbyLastTest"' in html
+    assert 'id="posterEmbyTestButton"' not in html
+    assert 'href="/settings#emby_url"' in html
     assert 'id="posterEmbyLastRefresh"' in html
     assert "fetch('/api/maintenance/landscape-posters/status')" in script
     assert "fetch('/api/maintenance/landscape-posters/scan'" in script
     assert 'id="posterApplyButton"' in html
     assert "fetch('/api/maintenance/landscape-posters/settings'" in script
-    assert "fetch('/api/maintenance/landscape-posters/emby/test'" in script
+    assert "fetch('/api/maintenance/landscape-posters/emby/test'" not in script
     assert "server.textContent" in script
     assert "escapeHtml(item.source)" in script
     assert "escapeHtml(item.poster)" in script
+
+
+def test_poster_analysis_resolves_same_stem_video_and_propagates_item_id(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    video = _write(movie / "Movie.mkv")
+    _write(movie / "Movie-background.jpg", b"landscape")
+    _write(movie / "Movie-poster.jpg", b"portrait")
+    _reset_poster_state(monkeypatch, tmp_path)
+    catalog = emby_catalog._build_catalog(
+        [{"Id": "movie-1", "Name": "Movie", "Type": "Movie", "Path": str(video)}],
+        {"Id": "server"},
+        emby_catalog.configuration_fingerprint({}),
+    )
+    monkeypatch.setattr(
+        poster_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 0, catalog_item_count=1)),
+    )
+
+    scan, err = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+    page, page_err = poster_maintenance.poster_items_payload(scan["id"])
+
+    assert err is None
+    assert page_err is None
+    assert scan["emby_mapping"]["matched_count"] == 1
+    assert page["items"][0]["emby_item_id"] == "movie-1"
+
+    plan, plan_err = poster_maintenance.build_poster_plan(
+        {
+            "scan_id": scan["id"],
+            "item_ids": [page["items"][0]["id"]],
+            "visible_item_ids": [page["items"][0]["id"]],
+        },
+        lib_root=str(lib),
+    )
+    assert plan_err is None
+    assert plan["emby_item_ids"] == ["movie-1"]

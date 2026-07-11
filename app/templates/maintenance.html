@@ -242,28 +242,13 @@
               <input id="posterEmbyRefreshEnabled" class="form-check-input" type="checkbox">
               <label class="form-check-label" for="posterEmbyRefreshEnabled">Refresh Emby after changes</label>
             </div>
-            <div class="row g-3">
-              <div class="col-md-7">
-                <label class="form-label" for="posterEmbyUrl">Emby URL</label>
-                <input id="posterEmbyUrl" class="form-control" placeholder="http://emby:8096">
-              </div>
-              <div class="col-md-5">
-                <label class="form-label" for="posterEmbyApiKey">API key</label>
-                <input id="posterEmbyApiKey" class="form-control" type="password" autocomplete="off" placeholder="Leave blank to keep current">
-              </div>
-            </div>
-            <div class="toolbar-row mt-3 mb-2">
-              <button id="posterEmbyTestButton" class="btn btn-outline-secondary btn-sm" type="button">
-                <i class="bi bi-plug" aria-hidden="true"></i>
-                <span>Test Emby</span>
-              </button>
-              <span id="posterEmbyConfigured" class="badge text-bg-secondary">Not configured</span>
-            </div>
+            <a class="btn btn-outline-secondary btn-sm mb-2" href="/settings#emby_url">
+              <i class="bi bi-gear" aria-hidden="true"></i>
+              <span>Open Emby settings</span>
+            </a>
             <div class="metric-row mt-0">
-              <span id="posterEmbyLastTest">Last test: never</span>
               <span id="posterEmbyLastRefresh">Last refresh: never</span>
             </div>
-            <div id="posterEmbyServer" class="scan-estimate-detail mt-1">Server: unknown</div>
             <div id="posterEmbyStatusMessage" class="scan-estimate-detail mt-1"></div>
           </div>
         </div>
@@ -715,7 +700,7 @@
             <span id="actorEmbyConfigured">Emby: unknown</span>
             <span id="actorEmbyLastTest">Last test: unknown</span>
           </div>
-          <div class="scan-estimate-detail mt-1">Uses the Emby settings from the Landscape Posters panel.</div>
+          <div class="scan-estimate-detail mt-1">Uses the global connection and path mappings from Settings.</div>
         </div>
 
         <div class="settings-panel mt-3">

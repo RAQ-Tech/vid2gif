@@ -236,7 +236,8 @@ def gifs_page():
 
 
 def _settings_context(error="", saved=False, form_values=None):
-    settings = app_settings.load_settings()
+    stored_settings = app_settings.load_settings()
+    settings = app_settings.public_settings(stored_settings)
     preview_height = settings["test_lab_preview_height"]
     selected = "original" if preview_height is None else str(preview_height)
     custom = ""
@@ -256,6 +257,7 @@ def _settings_context(error="", saved=False, form_values=None):
             "subtitle_expected_languages",
             "video_preview_bif_width",
             "video_preview_bif_interval_seconds",
+            "emby_url",
         ):
             if key in form_values:
                 settings[key] = form_values.get(key)
@@ -287,6 +289,11 @@ def _settings_context(error="", saved=False, form_values=None):
         ),
         "subtitle_expected_languages_text": ", ".join(
             settings.get("subtitle_expected_languages") or []
+        ),
+        "emby_path_mappings_text": (
+            form_values.get("emby_path_mappings")
+            if form_values and "emby_path_mappings" in form_values
+            else app_settings.emby_path_mappings_text(settings.get("emby_path_mappings"))
         ),
         "error": error,
         "saved": saved,
@@ -325,6 +332,10 @@ def settings_page():
                 "subtitle_subgen_detection": _truthy(request.form.get("subtitle_subgen_detection")),
                 "video_preview_bif_width": request.form.get("video_preview_bif_width"),
                 "video_preview_bif_interval_seconds": request.form.get("video_preview_bif_interval_seconds"),
+                "emby_url": request.form.get("emby_url"),
+                "emby_api_key": request.form.get("emby_api_key"),
+                "emby_api_key_clear": _truthy(request.form.get("emby_api_key_clear")),
+                "emby_path_mappings": request.form.get("emby_path_mappings"),
             }
         )
         if update_error:
@@ -349,11 +360,28 @@ def settings_page():
 @app.route("/api/settings", methods=["GET", "PATCH"])
 def api_settings():
     if request.method == "GET":
-        return jsonify({"settings": app_settings.load_settings()})
+        return jsonify({"settings": app_settings.public_settings()})
     settings, err = app_settings.update_settings(request.get_json(silent=True))
     if err:
         return jsonify({"error": err}), 400 if err != "Settings could not be saved" else 500
-    return jsonify({"settings": settings})
+    return jsonify({"settings": app_settings.public_settings(settings)})
+
+
+@app.route("/api/emby/test", methods=["POST"])
+def api_emby_test():
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    result, err = poster_maintenance.test_emby_connection(data, persist=True)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify(
+        {
+            "result": result,
+            "settings": app_settings.public_settings(),
+            "status": poster_maintenance.emby_status_payload(),
+        }
+    )
 
 
 @app.route("/maintenance")
@@ -914,12 +942,7 @@ def api_maintenance_landscape_posters_emby_test():
     result, err = poster_maintenance.test_emby_connection(data)
     if err:
         return jsonify({"error": err}), 400
-    return jsonify(
-        {
-            "result": result,
-            "status": poster_maintenance.status_payload(),
-        }
-    )
+    return jsonify({"result": result, "status": poster_maintenance.status_payload()})
 
 
 @app.route("/api/maintenance/video-previews/scan", methods=["POST"])

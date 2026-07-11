@@ -4,7 +4,7 @@ import struct
 import urllib.error
 from pathlib import Path
 
-from app import impact_metrics, routes, video_preview_maintenance
+from app import emby_catalog, impact_metrics, routes, video_preview_maintenance
 
 
 def _write(path, data=b"x"):
@@ -901,3 +901,27 @@ def test_video_preview_ui_assets_render():
     assert "frame_count_detail" in script
     assert "Frames Actual / Expected" in script
     assert "interval mismatch" not in script
+
+
+def test_both_preview_scans_publish_emby_identity(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"same")] * 8))
+    catalog = emby_catalog._build_catalog(
+        [{"Id": "movie-1", "Name": "Movie", "Type": "Movie", "Path": str(video)}],
+        {"Id": "server"},
+        emby_catalog.configuration_fingerprint({}),
+    )
+    monkeypatch.setattr(
+        video_preview_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, emby_catalog.known_matches_summary({}, 0, catalog_item_count=1)),
+    )
+
+    missing_scan = _scan(lib, monkeypatch, tmp_path)
+    assert missing_scan["items"][0]["emby_item_id"] == "movie-1"
+    assert missing_scan["items"][0]["bifs"][0]["emby_parent_item_id"] == "movie-1"
+
+    quality_scan = _quality_scan(lib, monkeypatch, tmp_path)
+    assert quality_scan["items"][0]["emby_item_id"] == "movie-1"
+    assert video_preview_maintenance.public_quality_scan(quality_scan)["emby_mapping"]["matched_count"] == 1
