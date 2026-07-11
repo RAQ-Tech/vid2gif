@@ -242,6 +242,7 @@ def test_emby_refresh_posts_to_library_refresh_endpoint():
     def fake_open(request, timeout):
         captured["url"] = request.full_url
         captured["data"] = request.data
+        captured["token"] = request.get_header("X-emby-token")
         captured["timeout"] = timeout
         return FakeResponse()
 
@@ -255,7 +256,8 @@ def test_emby_refresh_posts_to_library_refresh_endpoint():
     )
 
     assert result["status"] == "success"
-    assert captured["url"] == "http://emby:8096/emby/Library/Refresh?api_key=abc+123"
+    assert captured["url"] == "http://emby:8096/emby/Library/Refresh"
+    assert captured["token"] == "abc 123"
     assert captured["data"] == b""
     assert captured["timeout"] == 15
 
@@ -278,6 +280,7 @@ def test_emby_connection_test_reads_system_info_and_persists(monkeypatch, tmp_pa
 
     def fake_open(request, timeout):
         captured["url"] = request.full_url
+        captured["token"] = request.get_header("X-emby-token")
         captured["timeout"] = timeout
         return FakeResponse()
 
@@ -291,7 +294,8 @@ def test_emby_connection_test_reads_system_info_and_persists(monkeypatch, tmp_pa
     assert result["status"] == "success"
     assert result["server_name"] == "Media Server"
     assert result["version"] == "4.8.10"
-    assert captured["url"] == "http://emby:8096/emby/System/Info?api_key=abc+123"
+    assert captured["url"] == "http://emby:8096/emby/System/Info"
+    assert captured["token"] == "abc 123"
     assert captured["timeout"] == 15
     assert status["last_test"]["status"] == "success"
     assert "abc 123" not in str(result)
@@ -315,6 +319,7 @@ def test_emby_connection_test_handles_base_url_ending_in_emby(monkeypatch, tmp_p
 
     def fake_open(request, timeout):
         captured["url"] = request.full_url
+        captured["token"] = request.get_header("X-emby-token")
         return FakeResponse()
 
     result, err = poster_maintenance.test_emby_connection(
@@ -324,7 +329,8 @@ def test_emby_connection_test_handles_base_url_ending_in_emby(monkeypatch, tmp_p
 
     assert err is None
     assert result["status"] == "success"
-    assert captured["url"] == "http://emby:8096/emby/System/Info?api_key=secret"
+    assert captured["url"] == "http://emby:8096/emby/System/Info"
+    assert captured["token"] == "secret"
 
 
 def test_emby_connection_test_skips_missing_config(monkeypatch, tmp_path):
@@ -340,6 +346,31 @@ def test_emby_connection_test_skips_missing_config(monkeypatch, tmp_path):
     assert err is None
     assert result["status"] == "skipped"
     assert called is False
+
+
+def test_emby_connection_test_rejects_wrong_json_shape(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    result, err = poster_maintenance.test_emby_connection(
+        {"emby_url": "http://emby:8096", "emby_api_key": "secret"},
+        opener=lambda request, timeout: FakeResponse(),
+    )
+
+    assert err is None
+    assert result["status"] == "failed"
+    assert result["error_code"] == "invalid_response"
 
 
 def test_emby_connection_test_redacts_failed_http_response(monkeypatch, tmp_path):
@@ -492,9 +523,10 @@ def test_landscape_poster_emby_test_route_uses_saved_key_fallback(monkeypatch, t
 
     def fake_open(request, timeout):
         captured["url"] = request.full_url
+        captured["token"] = request.get_header("X-emby-token")
         return FakeResponse()
 
-    monkeypatch.setattr(poster_maintenance.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(poster_maintenance.emby_client.urllib.request, "urlopen", fake_open)
 
     res = routes.app.test_client().post(
         "/api/maintenance/landscape-posters/emby/test",
@@ -504,7 +536,8 @@ def test_landscape_poster_emby_test_route_uses_saved_key_fallback(monkeypatch, t
 
     assert res.status_code == 200
     assert payload["result"]["status"] == "success"
-    assert captured["url"] == "http://saved:8096/emby/System/Info?api_key=saved-secret"
+    assert captured["url"] == "http://saved:8096/emby/System/Info"
+    assert captured["token"] == "saved-secret"
     assert payload["status"]["emby_status"]["last_test"]["server_name"] == "Saved Emby"
     assert "saved-secret" not in str(payload)
 
@@ -527,9 +560,10 @@ def test_landscape_poster_emby_test_route_allows_unsaved_values(monkeypatch, tmp
 
     def fake_open(request, timeout):
         captured["url"] = request.full_url
+        captured["token"] = request.get_header("X-emby-token")
         return FakeResponse()
 
-    monkeypatch.setattr(poster_maintenance.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(poster_maintenance.emby_client.urllib.request, "urlopen", fake_open)
 
     res = routes.app.test_client().post(
         "/api/maintenance/landscape-posters/emby/test",
@@ -538,7 +572,8 @@ def test_landscape_poster_emby_test_route_allows_unsaved_values(monkeypatch, tmp
     status_res = routes.app.test_client().get("/api/maintenance/landscape-posters/status")
 
     assert res.status_code == 200
-    assert captured["url"] == "http://unsaved:8096/emby/System/Info?api_key=unsaved-secret"
+    assert captured["url"] == "http://unsaved:8096/emby/System/Info"
+    assert captured["token"] == "unsaved-secret"
     assert poster_maintenance.load_settings()["emby_api_key"] == ""
     assert status_res.get_json()["emby_status"]["last_test"]["server_name"] == "Unsaved Emby"
     assert "unsaved-secret" not in str(res.get_json())

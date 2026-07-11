@@ -6,9 +6,7 @@ import os
 import re
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from . import emby_client
 from . import impact_metrics
@@ -146,80 +144,16 @@ def _settings():
     return poster_maintenance.load_settings()
 
 
-def _append_query(url, params):
-    params = {key: value for key, value in (params or {}).items() if value is not None}
-    if not params:
-        return url
-    separator = "&" if "?" in url else "?"
-    return f"{url}{separator}{urllib.parse.urlencode(params)}"
-
-
-def _emby_request_json(settings, api_path, params=None, *, opener=None, timeout=30):
-    api_key = str((settings or {}).get("emby_api_key") or "")
-    url = emby_client.endpoint(settings, api_path)
-    if not url:
-        return None, emby_client.result(
-            "skipped",
-            "Emby URL and API key are required",
-            api_key=api_key,
-        )
-    opener = opener or urllib.request.urlopen
-    request = urllib.request.Request(
-        _append_query(url, params),
-        method="GET",
-        headers={"accept": "application/json"},
-    )
-    try:
-        with opener(request, timeout=timeout) as response:
-            code = getattr(response, "status", None) or getattr(response, "code", 0)
-            data = emby_client.read_response_json(response)
-    except urllib.error.HTTPError as exc:
-        return None, emby_client.result(
-            "failed",
-            f"Emby rejected the request ({getattr(exc, 'code', 'unknown')})",
-            api_key=api_key,
-            http_status=getattr(exc, "code", None),
-        )
-    except Exception as exc:
-        return None, emby_client.result(
-            "failed",
-            f"Emby connection failed: {emby_client.sanitize_secret_text(exc, api_key)}",
-            api_key=api_key,
-        )
-    return data, emby_client.result("success", f"Emby request completed ({code})", api_key=api_key, http_status=code)
-
-
-def _items_from_response(data):
-    if isinstance(data, list):
-        return data, len(data)
-    if not isinstance(data, dict):
-        return [], 0
-    items = data.get("Items")
-    if not isinstance(items, list):
-        items = []
-    total = data.get("TotalRecordCount")
-    try:
-        total = int(total)
-    except (TypeError, ValueError):
-        total = len(items)
-    return items, total
-
-
 def _fetch_paged(settings, api_path, params, *, opener=None, scan=None):
-    collected = []
-    start = 0
-    while True:
-        _check_cancelled(scan)
-        page_params = dict(params or {})
-        page_params.update({"StartIndex": start, "Limit": EMBY_PAGE_SIZE})
-        data, result = _emby_request_json(settings, api_path, page_params, opener=opener)
-        if result.get("status") != "success":
-            return None, result
-        items, total = _items_from_response(data)
-        collected.extend(items)
-        if not items or start + len(items) >= total:
-            return collected, result
-        start += len(items)
+    return emby_client.request_paged_json(
+        settings,
+        api_path,
+        params=params,
+        page_size=EMBY_PAGE_SIZE,
+        opener=opener,
+        timeout=30,
+        before_page=lambda: _check_cancelled(scan),
+    )
 
 
 def _has_primary_image(person):
@@ -1093,47 +1027,62 @@ def start_import_apply(plan_id, opener=None):
 
 
 def _fetch_person_item(settings, person_id, opener=None):
-    data, result = _emby_request_json(
+    data, result = emby_client.request_json(
         settings,
         f"/Items/{urllib.parse.quote(str(person_id or ''))}",
-        {"Fields": "ImageTags,ProviderIds"},
+        params={"Fields": "ImageTags,ProviderIds"},
         opener=opener,
+        timeout=30,
     )
     return data, result
 
 
 def _upload_person_image(settings, person_id, image_path, opener=None):
     api_key = str((settings or {}).get("emby_api_key") or "")
-    url = emby_client.endpoint(settings, f"/Items/{urllib.parse.quote(str(person_id or ''))}/Images/Primary")
-    if not url:
-        return emby_client.result("skipped", "Emby URL and API key are required", api_key=api_key)
-    opener = opener or urllib.request.urlopen
     mime = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
     try:
         with open(image_path, "rb") as f:
             body = f.read()
-        request = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={"accept": "application/json", "content-type": mime},
-        )
-        with opener(request, timeout=30) as response:
-            code = getattr(response, "status", None) or getattr(response, "code", 0)
-    except urllib.error.HTTPError as exc:
-        return emby_client.result(
-            "failed",
-            f"Emby rejected the image upload ({getattr(exc, 'code', 'unknown')})",
-            api_key=api_key,
-            http_status=getattr(exc, "code", None),
-        )
-    except Exception as exc:
+    except OSError as exc:
         return emby_client.result(
             "failed",
             f"Emby image upload failed: {emby_client.sanitize_secret_text(exc, api_key)}",
             api_key=api_key,
+            error_code="connection_error",
         )
-    return emby_client.result("success", f"Actor image uploaded ({code})", api_key=api_key, http_status=code)
+    request_result = emby_client.request_no_content(
+        settings,
+        f"/Items/{urllib.parse.quote(str(person_id or ''))}/Images/Primary",
+        method="POST",
+        body=body,
+        content_type=mime,
+        opener=opener,
+        timeout=30,
+        accept="application/json",
+    )
+    if request_result.get("error_code") == "missing_config":
+        return emby_client.result(
+            "skipped",
+            "Emby URL and API key are required",
+            api_key=api_key,
+            error_code="missing_config",
+        )
+    if request_result.get("error_code") == "http_error":
+        return emby_client.result(
+            "failed",
+            f"Emby rejected the image upload ({request_result.get('http_status') or 'unknown'})",
+            api_key=api_key,
+            http_status=request_result.get("http_status"),
+            error_code="http_error",
+        )
+    if request_result.get("status") != "success":
+        return request_result
+    return emby_client.result(
+        "success",
+        f"Actor image uploaded ({request_result.get('http_status')})",
+        api_key=api_key,
+        http_status=request_result.get("http_status"),
+    )
 
 
 def _identity_matches(path, identity):

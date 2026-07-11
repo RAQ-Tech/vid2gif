@@ -6,9 +6,6 @@ import shutil
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 from . import emby_client
 from . import impact_metrics
@@ -1109,44 +1106,8 @@ def _scan_and_apply(run, lib_root, settings):
     return counters
 
 
-def _sanitize_secret_text(value, api_key=""):
-    return emby_client.sanitize_secret_text(value, api_key)
-
-
 def _public_emby_result(result):
     return emby_client.public_result(result)
-
-
-def _emby_result(
-    status,
-    message,
-    *,
-    api_key="",
-    http_status=None,
-    server_name="",
-    version="",
-):
-    return emby_client.result(
-        status,
-        message,
-        api_key=api_key,
-        http_status=http_status,
-        server_name=server_name,
-        version=version,
-    )
-
-
-def _emby_endpoint(settings, api_path):
-    return emby_client.endpoint(settings, api_path)
-
-
-def _emby_refresh_endpoint(settings):
-    return _emby_endpoint(settings, "/Library/Refresh")
-
-
-def _read_response_json(response):
-    data = emby_client.read_response_json(response)
-    return data if isinstance(data, dict) else {}
 
 
 def _settings_for_emby_test(updates):
@@ -1165,52 +1126,46 @@ def test_emby_connection(updates=None, opener=None, persist=True):
     if err:
         return None, err
     api_key = str(settings.get("emby_api_key") or "")
-    endpoint = _emby_endpoint(settings, "/System/Info")
-    if not endpoint:
-        result = _emby_result(
+    data, request_result = emby_client.request_json(
+        settings,
+        "/System/Info",
+        opener=opener,
+        timeout=15,
+    )
+    if request_result.get("error_code") == "missing_config":
+        result = emby_client.result(
             "skipped",
             "Emby URL and API key are required to test the connection",
             api_key=api_key,
+            error_code="missing_config",
         )
-        if persist:
-            _save_emby_status_value("last_test", result)
-        return result, None
-
-    opener = opener or urllib.request.urlopen
-    request = urllib.request.Request(endpoint, method="GET", headers={"accept": "application/json"})
-    try:
-        with opener(request, timeout=15) as response:
-            code = getattr(response, "status", None) or getattr(response, "code", 0)
-            data = _read_response_json(response)
-    except urllib.error.HTTPError as exc:
-        result = _emby_result(
-            "failed",
-            f"Emby rejected the request ({getattr(exc, 'code', 'unknown')})",
-            api_key=api_key,
-            http_status=getattr(exc, "code", None),
-        )
-    except Exception as exc:
-        result = _emby_result(
-            "failed",
-            f"Emby connection failed: {_sanitize_secret_text(exc, api_key)}",
-            api_key=api_key,
-        )
+    elif request_result.get("status") == "success":
+        if isinstance(data, dict):
+            server_name = data.get("ServerName") or data.get("Name") or ""
+            version = data.get("Version") or ""
+            message = (
+                f"Connected to {server_name}"
+                if server_name
+                else "Connected to Emby"
+            )
+            result = emby_client.result(
+                "success",
+                message,
+                api_key=api_key,
+                http_status=request_result.get("http_status"),
+                server_name=server_name,
+                version=version,
+            )
+        else:
+            result = emby_client.result(
+                "failed",
+                "Emby returned an invalid system information response",
+                api_key=api_key,
+                http_status=request_result.get("http_status"),
+                error_code="invalid_response",
+            )
     else:
-        server_name = data.get("ServerName") or data.get("Name") or ""
-        version = data.get("Version") or ""
-        message = (
-            f"Connected to {server_name}"
-            if server_name
-            else "Connected to Emby"
-        )
-        result = _emby_result(
-            "success",
-            message,
-            api_key=api_key,
-            http_status=code,
-            server_name=server_name,
-            version=version,
-        )
+        result = request_result
 
     if persist:
         _save_emby_status_value("last_test", result)
@@ -1219,51 +1174,50 @@ def test_emby_connection(updates=None, opener=None, persist=True):
 
 def refresh_emby(settings, opener=None, persist=False):
     if not settings.get("emby_refresh_enabled"):
-        result = _emby_result("disabled", "Emby refresh is disabled")
+        result = emby_client.result("disabled", "Emby refresh is disabled")
         if persist:
             _save_emby_status_value("last_refresh", result)
         return result
-    endpoint = _emby_refresh_endpoint(settings)
     api_key = str(settings.get("emby_api_key") or "")
-    if not endpoint:
-        result = _emby_result(
+    request_result = emby_client.request_no_content(
+        settings,
+        "/Library/Refresh",
+        method="POST",
+        body=b"",
+        opener=opener,
+        timeout=15,
+    )
+    if request_result.get("error_code") == "missing_config":
+        result = emby_client.result(
             "skipped",
             "Emby refresh is not configured",
             api_key=api_key,
+            error_code="missing_config",
         )
-        if persist:
-            _save_emby_status_value("last_refresh", result)
-        return result
-    opener = opener or urllib.request.urlopen
-    request = urllib.request.Request(
-        endpoint,
-        data=b"",
-        method="POST",
-        headers={"accept": "*/*"},
-    )
-    try:
-        with opener(request, timeout=15) as response:
-            code = getattr(response, "status", None) or getattr(response, "code", 0)
-    except urllib.error.HTTPError as exc:
-        result = _emby_result(
+    elif request_result.get("error_code") == "http_error":
+        result = emby_client.result(
             "failed",
-            f"Emby refresh rejected ({getattr(exc, 'code', 'unknown')})",
+            f"Emby refresh rejected ({request_result.get('http_status') or 'unknown'})",
             api_key=api_key,
-            http_status=getattr(exc, "code", None),
+            http_status=request_result.get("http_status"),
+            error_code="http_error",
         )
-    except Exception as exc:
-        result = _emby_result(
+    elif request_result.get("error_code") == "timeout":
+        result = emby_client.result(
             "failed",
-            f"Emby refresh failed: {_sanitize_secret_text(exc, api_key)}",
+            "Emby refresh timed out",
             api_key=api_key,
+            error_code="timeout",
+        )
+    elif request_result.get("status") == "success":
+        result = emby_client.result(
+            "success",
+            f"Emby refresh requested ({request_result.get('http_status')})",
+            api_key=api_key,
+            http_status=request_result.get("http_status"),
         )
     else:
-        result = _emby_result(
-            "success",
-            f"Emby refresh requested ({code})",
-            api_key=api_key,
-            http_status=code,
-        )
+        result = request_result
     if persist:
         _save_emby_status_value("last_refresh", result)
     return result

@@ -1658,7 +1658,7 @@ def _write_quality_repair_log(plan, result, records):
 
 def _refresh_emby_library(settings=None, opener=None):
     settings = settings or _settings()
-    _data, result = emby_client.request_json(
+    result = emby_client.request_no_content(
         settings,
         "/Library/Refresh",
         method="POST",
@@ -2664,7 +2664,7 @@ def run_thumbnail_extraction(settings=None, opener=None):
         )
         log = _write_log("emby-task", {"result": result, "task": None})
         return {"result": result, "task": None, "log": log, "tasks": tasks}, None
-    _data, result = emby_client.request_json(
+    result = emby_client.request_no_content(
         settings,
         f"/ScheduledTasks/Running/{task_id}",
         method="POST",

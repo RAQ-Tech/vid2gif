@@ -164,7 +164,15 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     calls = []
 
     def opener(request, timeout=30):
-        calls.append((request.method, request.full_url, request.data))
+        calls.append(
+            (
+                request.method,
+                request.full_url,
+                request.data,
+                request.get_header("X-emby-token"),
+                request.get_header("Content-type"),
+            )
+        )
         if request.method == "GET":
             return FakeResponse({"Id": "p1", "Name": "Jane Doe", "ImageTags": {}})
         return FakeResponse(None, status=204)
@@ -177,7 +185,10 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     assert run["imported_count"] == 1
     assert calls[0][0] == "GET"
     assert calls[1][0] == "POST"
-    assert calls[1][1] == "http://emby:8096/emby/Items/p1/Images/Primary?api_key=secret"
+    assert calls[1][1] == "http://emby:8096/emby/Items/p1/Images/Primary"
+    assert calls[1][2] == b"image"
+    assert all(call[3] == "secret" for call in calls)
+    assert calls[1][4] == "image/jpeg"
     assert "secret" not in str(actor_image_maintenance.public_apply_run(run))
 
 
@@ -214,25 +225,21 @@ def test_actor_routes_and_ui_assets(monkeypatch, tmp_path):
 
     def fake_emby(settings, api_path, params=None, **_kwargs):
         if api_path == "/Persons":
-            return {
-                "Items": [{"Id": "p1", "Name": "Jane Doe", "ImageTags": {}}],
-                "TotalRecordCount": 1,
-            }, emby_client.result("success", "ok")
+            return [
+                {"Id": "p1", "Name": "Jane Doe", "ImageTags": {}}
+            ], emby_client.result("success", "ok")
         if api_path == "/Items":
-            return {
-                "Items": [
-                    {
-                        "Id": "m1",
-                        "Name": "Movie",
-                        "Path": str(movie),
-                        "People": [{"Id": "p1", "Name": "Jane Doe", "Type": "Actor"}],
-                    }
-                ],
-                "TotalRecordCount": 1,
-            }, emby_client.result("success", "ok")
-        return {}, emby_client.result("success", "ok")
+            return [
+                {
+                    "Id": "m1",
+                    "Name": "Movie",
+                    "Path": str(movie),
+                    "People": [{"Id": "p1", "Name": "Jane Doe", "Type": "Actor"}],
+                }
+            ], emby_client.result("success", "ok")
+        return [], emby_client.result("success", "ok")
 
-    monkeypatch.setattr(actor_image_maintenance, "_emby_request_json", fake_emby)
+    monkeypatch.setattr(actor_image_maintenance.emby_client, "request_paged_json", fake_emby)
     client = routes.app.test_client()
 
     html_res = client.get("/maintenance")

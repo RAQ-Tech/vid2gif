@@ -764,7 +764,15 @@ def test_video_preview_emby_discovers_and_runs_thumbnail_task(monkeypatch, tmp_p
     captured = []
 
     def fake_open(request, timeout):
-        captured.append((request.method, request.full_url, request.data, timeout))
+        captured.append(
+            (
+                request.method,
+                request.full_url,
+                request.data,
+                timeout,
+                request.get_header("X-emby-token"),
+            )
+        )
         if request.method == "GET":
             return FakeResponse(
                 [
@@ -790,9 +798,10 @@ def test_video_preview_emby_discovers_and_runs_thumbnail_task(monkeypatch, tmp_p
     assert err is None
     assert tasks["thumbnail_task"]["id"] == "task1"
     assert payload["result"]["status"] == "success"
-    assert captured[0][1] == "http://emby:8096/emby/ScheduledTasks?api_key=abc+123"
-    assert captured[-1][1] == "http://emby:8096/emby/ScheduledTasks/Running/task1?api_key=abc+123"
+    assert captured[0][1] == "http://emby:8096/emby/ScheduledTasks"
+    assert captured[-1][1] == "http://emby:8096/emby/ScheduledTasks/Running/task1"
     assert captured[-1][2] == b""
+    assert all(call[4] == "abc 123" for call in captured)
     assert "abc 123" not in str(payload)
 
 
@@ -802,6 +811,7 @@ def test_video_preview_emby_handles_base_url_ending_in_emby(monkeypatch, tmp_pat
 
     def fake_open(request, timeout):
         captured["url"] = request.full_url
+        captured["token"] = request.get_header("X-emby-token")
         return FakeResponse([])
 
     video_preview_maintenance.discover_thumbnail_tasks(
@@ -809,7 +819,8 @@ def test_video_preview_emby_handles_base_url_ending_in_emby(monkeypatch, tmp_pat
         opener=fake_open,
     )
 
-    assert captured["url"] == "http://emby:8096/emby/ScheduledTasks?api_key=secret"
+    assert captured["url"] == "http://emby:8096/emby/ScheduledTasks"
+    assert captured["token"] == "secret"
 
 
 def test_video_preview_emby_no_task_found_returns_failed(monkeypatch, tmp_path):
