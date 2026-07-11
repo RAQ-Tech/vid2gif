@@ -139,4 +139,22 @@
       button.disabled = false;
     }
   });
+
+  document.getElementById('embyNotificationTestButton')?.addEventListener('click', async () => {
+    const button = document.getElementById('embyNotificationTestButton');
+    const message = document.getElementById('embyTestMessage');
+    button.disabled = true;
+    message.textContent = 'Sending an Emby administrator notification…';
+    try {
+      const response = await fetch('/api/emby/notifications/test', {method: 'POST'});
+      const data = await response.json().catch(() => ({}));
+      const notification = data.emby_notification || {};
+      if (!response.ok) throw new Error(notification.message || data.error || 'Notification test failed');
+      message.textContent = notification.message || 'Emby accepted the test notification.';
+    } catch (error) {
+      message.textContent = error.message || 'Notification test failed.';
+    } finally {
+      button.disabled = false;
+    }
+  });
 })();

@@ -1,6 +1,6 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
-  const maintenanceTabHashes = ['overview', 'posters', 'duplicates', 'video-previews', 'subtitles', 'actor-images'];
+  const maintenanceTabHashes = ['overview', 'emby-operations', 'posters', 'duplicates', 'video-previews', 'subtitles', 'actor-images'];
   const overviewExpandedFolders = new Set();
   let overviewFolderPage = null;
   let overviewPageOffset = 0;
@@ -77,6 +77,8 @@
   const posterSelected = new Set();
   const groupDetailGenerations = new Map();
   let maintenanceFreshnessTimer = null;
+  let embyOperationsTimer = null;
+  let embyOperationsRunning = 0;
 
   function byId(id) {
     return document.getElementById(id);
@@ -259,6 +261,20 @@
       button.addEventListener('click', () => retryEmbySync(sync.id, notice));
       notice.append(button);
     }
+    target.append(notice);
+  }
+
+  function notificationFrom(run) {
+    return run?.emby_notification || run?.result?.emby_notification || null;
+  }
+
+  function appendEmbyNotificationNotice(detailId, notification) {
+    const target = byId(detailId);
+    if (!target || !notification || ['skipped', 'disabled'].includes(notification.status)) return;
+    target.querySelector('.emby-notification-notice')?.remove();
+    const notice = document.createElement('div');
+    notice.className = `emby-notification-notice mt-2 ${['failed', 'not_configured'].includes(notification.status) ? 'text-warning' : ''}`;
+    notice.textContent = notification.message || 'Emby administrator notification status is unavailable.';
     target.append(notice);
   }
 
@@ -1078,6 +1094,7 @@
           : withEmbyCoverage(scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '', scan)
       );
       appendEmbySyncNotice('maintenanceMessageDetail', embySyncFrom(apply));
+      appendEmbyNotificationNotice('maintenanceMessageDetail', notificationFrom(apply));
       if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
         loadGroupsPage(0);
       }
@@ -1758,10 +1775,12 @@
       if (data.run?.status === 'success') {
         setPreviewMessage('BIF generation complete', `${data.run.generated_count || 0} generated, ${data.run.refused_count || 0} refused`);
         appendEmbySyncNotice('previewMessageDetail', embySyncFrom(data.run));
+        appendEmbyNotificationNotice('previewMessageDetail', notificationFrom(data.run));
         previewGenerationPlan = null;
         await startPreviewScan(previewLastPath);
       } else {
         setPreviewMessage(data.run?.status === 'cancelled' ? 'BIF generation cancelled' : 'BIF generation failed', data.run?.error || '');
+        appendEmbyNotificationNotice('previewMessageDetail', notificationFrom(data.run));
       }
     } catch (e) {
       stopGenerationPolling();
@@ -1842,6 +1861,101 @@
       setPreviewMessage('Emby thumbnail extraction could not start', e.message || '');
     } finally {
       if (button) button.disabled = false;
+    }
+  }
+
+  function embyOpsVisible() {
+    return !document.hidden && byId('tab-emby-operations')?.classList.contains('active');
+  }
+
+  function triggerLabel(trigger) {
+    if (!trigger || typeof trigger !== 'object') return '';
+    if (trigger.Type === 'DailyTrigger' && trigger.TimeOfDayTicks != null) return 'Daily';
+    if (trigger.Type === 'IntervalTrigger' && trigger.IntervalTicks != null) return 'Interval';
+    return trigger.DayOfWeek || trigger.SystemEvent || trigger.Type || 'Configured';
+  }
+
+  function renderEmbyOperations(data) {
+    const tasks = data?.tasks || [];
+    if (byId('embyOpsConnection')) byId('embyOpsConnection').textContent = data?.status || 'unavailable';
+    if (byId('embyOpsRunning')) byId('embyOpsRunning').textContent = String(data?.running_count || 0);
+    if (byId('embyOpsFailed')) byId('embyOpsFailed').textContent = String(data?.failed_count || 0);
+    if (byId('embyOpsChecked')) byId('embyOpsChecked').textContent = formatDateLabel(data?.checked_at, 'Never');
+    if (byId('embyOpsMessage')) {
+      byId('embyOpsMessage').innerHTML = `<i class="bi bi-info-circle" aria-hidden="true"></i><div>${escapeHtml(data?.message || 'Task status unavailable.')}</div>`;
+    }
+    const rows = byId('embyOpsTaskRows');
+    if (!rows) return;
+    if (!tasks.length) {
+      rows.innerHTML = '<tr><td colspan="7" class="text-muted text-center py-4">No scheduled tasks available.</td></tr>';
+      return;
+    }
+    rows.innerHTML = tasks.map(task => {
+      const last = task.last_result || {};
+      const lastText = last.status ? `${last.status}${last.end_time ? ` · ${formatDateLabel(last.end_time, '')}` : ''}` : 'Never';
+      const error = last.error_message ? `<div class="text-danger small">${escapeHtml(last.error_message)}</div>` : '';
+      const triggers = (task.triggers || []).map(triggerLabel).filter(Boolean).join(', ') || 'Manual';
+      let action = '<span class="text-muted small">Read only</span>';
+      if (task.can_start) action = `<button class="btn btn-outline-primary btn-sm" type="button" data-emby-task-start="${escapeHtml(task.id)}">Start</button>`;
+      else if (task.can_cancel) action = `<button class="btn btn-outline-danger btn-sm" type="button" data-emby-task-cancel="${escapeHtml(task.id)}">Cancel</button>`;
+      return `<tr>
+        <td><div class="fw-semibold">${escapeHtml(task.name || task.id)}</div><div class="text-muted small">${escapeHtml(task.description || task.key || '')}</div></td>
+        <td>${escapeHtml(task.category || '—')}</td>
+        <td>${escapeHtml(task.state || 'Unknown')}</td>
+        <td>${escapeHtml(Math.round(Number(task.progress_percent || 0)))}%</td>
+        <td>${escapeHtml(triggers)}</td>
+        <td>${escapeHtml(lastText)}${error}</td>
+        <td>${action}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function scheduleEmbyOperationsPoll(runningCount) {
+    clearTimeout(embyOperationsTimer);
+    if (!embyOpsVisible()) return;
+    embyOperationsTimer = setTimeout(() => refreshEmbyOperations(), runningCount ? 2000 : 30000);
+  }
+
+  async function refreshEmbyOperations(force = false) {
+    if (!embyOpsVisible() && !force) return;
+    try {
+      const response = await fetch(`/api/emby/tasks${force ? '?force=1' : ''}`);
+      const data = await readJsonResponse(response);
+      renderEmbyOperations(data);
+      const running = Number(data.running_count || 0);
+      if (embyOperationsRunning > 0 && running === 0) refreshEmbyActivity();
+      embyOperationsRunning = running;
+      scheduleEmbyOperationsPoll(running);
+    } catch (error) {
+      renderEmbyOperations({status: 'unavailable', message: error.message || 'Task status unavailable', tasks: []});
+      scheduleEmbyOperationsPoll(0);
+    }
+  }
+
+  async function refreshEmbyActivity() {
+    try {
+      const response = await fetch('/api/emby/activity?limit=20');
+      const data = await readJsonResponse(response);
+      if (byId('embyOpsActivityMessage')) byId('embyOpsActivityMessage').textContent = data.message || '';
+      const rows = byId('embyOpsActivityRows');
+      if (!rows) return;
+      const entries = data.entries || [];
+      rows.innerHTML = entries.length ? entries.map(entry => `<tr><td>${escapeHtml(formatDateLabel(entry.date, 'Unknown'))}</td><td>${escapeHtml(entry.severity || 'Info')}</td><td>${escapeHtml(entry.name || '')}</td><td>${escapeHtml(entry.type || '')}</td></tr>`).join('') : '<tr><td colspan="4" class="text-muted text-center py-4">No task-related activity found.</td></tr>';
+    } catch (error) {
+      if (byId('embyOpsActivityMessage')) byId('embyOpsActivityMessage').textContent = error.message || 'Task activity unavailable.';
+    }
+  }
+
+  async function controlEmbyTask(taskId, action) {
+    if (action === 'cancel' && !window.confirm('Ask Emby to cancel thumbnail extraction?')) return;
+    try {
+      const response = await fetch(`/api/emby/tasks/${encodeURIComponent(taskId)}/${action}`, {method: 'POST'});
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(data.message || data.error || `Task ${action} failed`);
+      if (byId('embyOpsMessage')) byId('embyOpsMessage').innerHTML = `<i class="bi bi-info-circle" aria-hidden="true"></i><div>${escapeHtml(data.message || 'Emby accepted the request.')}</div>`;
+      setTimeout(() => refreshEmbyOperations(true), 500);
+    } catch (error) {
+      if (byId('embyOpsMessage')) byId('embyOpsMessage').innerHTML = `<i class="bi bi-exclamation-triangle" aria-hidden="true"></i><div>${escapeHtml(error.message || 'Task request failed.')}</div>`;
     }
   }
 
@@ -1994,6 +2108,7 @@
         withEmbyCoverage(`${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed`, scan)
       );
       appendEmbySyncNotice('qualityMessageDetail', embySyncFrom(apply));
+      appendEmbyNotificationNotice('qualityMessageDetail', notificationFrom(apply));
       if (qualityItemsPage?.scan?.id !== scan.id) {
         loadQualityItems(0);
       }
@@ -2605,11 +2720,13 @@
       if (subtitleApply.status === 'success') {
         setSubtitleMessage('Subtitle cleanup complete', `${subtitleApply.applied_count || 0} applied, ${subtitleApply.refused_count || 0} refused, ${subtitleApply.deferred_count || 0} deferred`);
         appendEmbySyncNotice('subtitleMessageDetail', embySyncFrom(subtitleApply));
+        appendEmbyNotificationNotice('subtitleMessageDetail', notificationFrom(subtitleApply));
         subtitlePlan = null;
         byId('subtitleApplyButton').disabled = true;
         await startSubtitleScan();
       } else {
         setSubtitleMessage('Subtitle cleanup failed', subtitleApply.error || '');
+        appendEmbyNotificationNotice('subtitleMessageDetail', notificationFrom(subtitleApply));
       }
     } catch (e) {
       stopSubtitleApplyPolling();
@@ -2988,6 +3105,7 @@
         apply.status === 'success' ? 'Actor image import complete' : 'Actor image import finished with errors',
         `${result.imported_count || apply.imported_count || 0} imported, ${result.refused_count || apply.refused_count || 0} refused, ${result.failed_count || apply.failed_count || 0} failed`
       );
+      appendEmbyNotificationNotice('actorMessageDetail', notificationFrom(apply));
       actorPlan = null;
       if (button) button.disabled = true;
       if (actorScan?.id) pollActorScan(actorScan.id);
@@ -3272,6 +3390,7 @@
     }
     renderEmbyStatus(data?.emby_status);
     appendEmbySyncNotice('posterMessageDetail', last?.emby_sync || null);
+    appendEmbyNotificationNotice('posterMessageDetail', notificationFrom(last));
   }
 
   async function refreshPosterStatus() {
@@ -3411,6 +3530,7 @@
           await refreshPosterStatus();
           setPosterMessage(posterApply.progress_label || 'Poster updates complete', posterApply.error || '');
           appendEmbySyncNotice('posterMessageDetail', embySyncFrom(posterApply));
+          appendEmbyNotificationNotice('posterMessageDetail', notificationFrom(posterApply));
         }
       };
       setTimeout(poll, 500);
@@ -3439,6 +3559,12 @@
         const hash = event.target.getAttribute('data-maint-tab-hash') || 'overview';
         localStorage.setItem('maintenance_active_tab_v2', hash);
         history.replaceState(null, '', `#${hash}`);
+        if (hash === 'emby-operations') {
+          refreshEmbyOperations(true);
+          refreshEmbyActivity();
+        } else {
+          clearTimeout(embyOperationsTimer);
+        }
       });
     });
     document.querySelectorAll('[data-maint-tab-shortcut]').forEach(link => {
@@ -3544,6 +3670,14 @@
     byId('previewVerifyButton')?.addEventListener('click', () => startPreviewScan(previewLastPath || byId('previewPath')?.value || config.libRoot || '/library'));
     byId('previewRefreshTasksButton')?.addEventListener('click', refreshPreviewTasks);
     byId('previewRunExtractionButton')?.addEventListener('click', runPreviewExtraction);
+    byId('embyOpsRefreshButton')?.addEventListener('click', () => refreshEmbyOperations(true));
+    byId('embyOpsActivityButton')?.addEventListener('click', refreshEmbyActivity);
+    byId('embyOpsTaskRows')?.addEventListener('click', event => {
+      const start = event.target.closest('[data-emby-task-start]');
+      const cancel = event.target.closest('[data-emby-task-cancel]');
+      if (start) controlEmbyTask(start.getAttribute('data-emby-task-start'), 'start');
+      if (cancel) controlEmbyTask(cancel.getAttribute('data-emby-task-cancel'), 'cancel');
+    });
     byId('previewSaveBifSettingsButton')?.addEventListener('click', saveCurrentBifProfile);
     byId('previewUseRecommendationButton')?.addEventListener('click', useBifRecommendation);
     byId('previewGenerationPlanButton')?.addEventListener('click', () => reviewGenerationPlan(false));
@@ -4020,13 +4154,22 @@
     refreshPreviewStatus();
     refreshQualityStatus();
     refreshPreviewTasks();
+    if (embyOpsVisible()) {
+      refreshEmbyOperations(true);
+      refreshEmbyActivity();
+    }
     refreshSubtitleStatus();
     refreshActorStatus();
     refreshPosterStatus();
     checkMaintenanceFreshness();
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) clearTimeout(maintenanceFreshnessTimer);
-      else checkMaintenanceFreshness();
+      if (document.hidden) {
+        clearTimeout(maintenanceFreshnessTimer);
+        clearTimeout(embyOperationsTimer);
+      } else {
+        checkMaintenanceFreshness();
+        if (embyOpsVisible()) refreshEmbyOperations(true);
+      }
     });
     window.addEventListener('beforeunload', event => {
       clearTimeout(overviewPollTimer);
@@ -4037,6 +4180,7 @@
       stopGenerationPolling();
       clearTimeout(posterPollTimer);
       clearTimeout(maintenanceFreshnessTimer);
+      clearTimeout(embyOperationsTimer);
       if (posterSettingsPending || posterSettingsFailures.size) {
         event.preventDefault();
         event.returnValue = '';

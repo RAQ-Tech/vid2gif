@@ -165,6 +165,13 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     )
     plan, plan_err = actor_image_maintenance.build_import_plan({"scan_id": scan["id"]}, lib_root=str(lib))
     calls = []
+    notification_calls = []
+    monkeypatch.setattr(
+        actor_image_maintenance.emby_notifications,
+        "notify_maintenance",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs))
+        or {"id": "notice", "status": "success", "message": "accepted"},
+    )
 
     def opener(request, timeout=30):
         calls.append(
@@ -194,6 +201,8 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     assert calls[1][4] == "image/jpeg"
     assert len(calls) == 2
     assert "emby_sync" not in run
+    assert notification_calls[0][1]["succeeded_count"] == 1
+    assert run["emby_notification"]["id"] == "notice"
     assert "secret" not in str(actor_image_maintenance.public_apply_run(run))
 
 

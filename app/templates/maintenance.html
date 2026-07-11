@@ -19,6 +19,12 @@
       </button>
     </li>
     <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-emby-operations" data-bs-toggle="tab" data-bs-target="#pane-emby-operations" type="button" role="tab" aria-controls="pane-emby-operations" aria-selected="false" data-maint-tab-hash="emby-operations">
+        <i class="bi bi-hdd-network" aria-hidden="true"></i>
+        <span>Emby Operations</span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
       <button class="nav-link" id="tab-posters" data-bs-toggle="tab" data-bs-target="#pane-posters" type="button" role="tab" aria-controls="pane-posters" aria-selected="false" data-maint-tab-hash="posters">
         <i class="bi bi-image" aria-hidden="true"></i>
         <span>Landscape Posters</span>
@@ -166,6 +172,46 @@
               <div class="text-muted text-center py-4">Open this section to load subfolder stats.</div>
             </div>
           </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="tab-pane fade" id="pane-emby-operations" role="tabpanel" aria-labelledby="tab-emby-operations" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Emby scheduled task status">
+        <div class="status-tile"><div class="metric-label">Connection</div><div id="embyOpsConnection" class="metric-value">Not checked</div></div>
+        <div class="status-tile"><div class="metric-label">Running</div><div id="embyOpsRunning" class="metric-value">0</div></div>
+        <div class="status-tile"><div class="metric-label">Failed last run</div><div id="embyOpsFailed" class="metric-value">0</div></div>
+        <div class="status-tile status-tile-wide"><div class="metric-label">Last checked</div><div id="embyOpsChecked" class="metric-value">Never</div></div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Emby Scheduled Tasks</h2>
+            <div class="text-muted small">Monitor every visible task. vid2gif controls only thumbnail extraction.</div>
+          </div>
+          <button id="embyOpsRefreshButton" class="btn btn-outline-secondary btn-sm" type="button"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Refresh</button>
+        </div>
+        <div id="embyOpsMessage" class="scan-estimate mb-3" role="status" aria-live="polite"><i class="bi bi-info-circle" aria-hidden="true"></i><div>Open this tab to load Emby tasks.</div></div>
+        <div class="table-responsive workspace-table-wrap">
+          <table class="table table-hover align-middle workspace-table">
+            <thead><tr><th>Task</th><th>Category</th><th>State</th><th>Progress</th><th>Schedule</th><th>Last result</th><th>Action</th></tr></thead>
+            <tbody id="embyOpsTaskRows"><tr><td colspan="7" class="text-muted text-center py-4">No task inventory loaded.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel mt-3">
+        <div class="panel-heading">
+          <div><h2 class="h5 mb-1">Task Activity</h2><div class="text-muted small">Sanitized task-related entries only; user and item details are omitted.</div></div>
+          <button id="embyOpsActivityButton" class="btn btn-outline-secondary btn-sm" type="button"><i class="bi bi-clock-history" aria-hidden="true"></i> Refresh activity</button>
+        </div>
+        <div id="embyOpsActivityMessage" class="text-muted small mb-2"></div>
+        <div class="table-responsive workspace-table-wrap">
+          <table class="table table-hover align-middle workspace-table">
+            <thead><tr><th>Date</th><th>Severity</th><th>Activity</th><th>Type</th></tr></thead>
+            <tbody id="embyOpsActivityRows"><tr><td colspan="4" class="text-muted text-center py-4">No task activity loaded.</td></tr></tbody>
+          </table>
         </div>
       </section>
     </section>
@@ -368,6 +414,7 @@
             <span id="previewEmbyLastResult">Last action: never</span>
           </div>
           <div id="previewEmbyMessage" class="scan-estimate-detail mt-1"></div>
+          <a class="btn btn-link btn-sm px-0 mt-2" href="#emby-operations">Open full Emby task monitoring</a>
         </div>
 
         <div class="settings-panel mt-3">

@@ -691,6 +691,13 @@ def test_bif_quality_cleanup_defers_when_playback_is_unverified(monkeypatch, tmp
         "sync_changes",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync should not run")),
     )
+    notification_calls = []
+    monkeypatch.setattr(
+        video_preview_maintenance.emby_notifications,
+        "notify_maintenance",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs))
+        or {"id": "notice", "status": "success", "message": "accepted"},
+    )
     plan, err = video_preview_maintenance.build_quality_repair_plan(
         {"scan_id": scan["id"], "move_root": str(lib / "_repair")},
         lib_root=str(lib),
@@ -703,6 +710,8 @@ def test_bif_quality_cleanup_defers_when_playback_is_unverified(monkeypatch, tmp
     assert result["applied_count"] == 0
     assert result["deferred_count"] == 1
     assert result["refused_count"] == 0
+    assert notification_calls[0][1]["deferred_count"] == 1
+    assert result["emby_notification"]["id"] == "notice"
     assert bif.exists()
 
 
@@ -751,6 +760,13 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
         return {"id": "sync-generation", "status": "success", "retryable": False}
 
     monkeypatch.setattr(video_preview_maintenance.emby_sync, "sync_changes", fake_sync)
+    notification_calls = []
+    monkeypatch.setattr(
+        video_preview_maintenance.emby_notifications,
+        "notify_maintenance",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs))
+        or {"id": "notice-generation", "status": "success", "message": "accepted"},
+    )
 
     run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
 
@@ -766,6 +782,8 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
     assert sync_calls[0][0][0]["local_path"] == str(output)
     assert sync_calls[0][0][0]["update_type"] == "Created"
     assert sync_calls[0][0][0]["refresh_scope"] == "thumbnail"
+    assert notification_calls[0][1]["succeeded_count"] == 1
+    assert run["emby_notification"]["id"] == "notice-generation"
 
 
 def test_bif_generation_refuses_late_matching_bif(monkeypatch, tmp_path):
@@ -837,11 +855,12 @@ def test_video_preview_emby_discovers_and_runs_thumbnail_task(monkeypatch, tmp_p
             return FakeResponse(
                 [
                     {"Id": "other", "Name": "Refresh Guide"},
-                    {
-                        "Id": "task1",
-                        "Name": "Thumbnail Image Extraction",
-                        "Key": "ExtractChapterImages",
-                    },
+                        {
+                            "Id": "task1",
+                            "Name": "Thumbnail Image Extraction",
+                            "Key": "ExtractChapterImages",
+                            "State": "Idle",
+                        },
                 ]
             )
         return FakeResponse(None, status=204)
@@ -858,7 +877,7 @@ def test_video_preview_emby_discovers_and_runs_thumbnail_task(monkeypatch, tmp_p
     assert err is None
     assert tasks["thumbnail_task"]["id"] == "task1"
     assert payload["result"]["status"] == "success"
-    assert captured[0][1] == "http://emby:8096/emby/ScheduledTasks"
+    assert captured[0][1] == "http://emby:8096/emby/ScheduledTasks?IsHidden=false"
     assert captured[-1][1] == "http://emby:8096/emby/ScheduledTasks/Running/task1"
     assert captured[-1][2] == b""
     assert all(call[4] == "abc 123" for call in captured)
@@ -879,7 +898,7 @@ def test_video_preview_emby_handles_base_url_ending_in_emby(monkeypatch, tmp_pat
         opener=fake_open,
     )
 
-    assert captured["url"] == "http://emby:8096/emby/ScheduledTasks"
+    assert captured["url"] == "http://emby:8096/emby/ScheduledTasks?IsHidden=false"
     assert captured["token"] == "secret"
 
 

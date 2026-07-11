@@ -14,6 +14,8 @@ from . import app_settings
 from . import emby_catalog
 from . import emby_playback
 from . import emby_client
+from . import emby_operations
+from . import emby_notifications
 from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
@@ -1755,6 +1757,7 @@ def public_quality_apply_run(run):
         "error": run.get("error", ""),
         "large_operation": bool(run.get("large_operation")),
         "emby_playback": emby_playback.public_result(result.get("emby_playback")) if result else None,
+        "emby_notification": emby_notifications.public_result(run.get("emby_notification") or result.get("emby_notification")) if (run.get("emby_notification") or result) else None,
         "result": _public_quality_apply_result(result) if result else None,
     }
 
@@ -1857,6 +1860,16 @@ def _execute_quality_repair_apply(apply_id):
     result, err = apply_quality_repair_plan(run.get("plan_id"), apply_run=run)
     if err:
         finished = time.time()
+        notification = emby_notifications.notify_maintenance(
+            "BIF cleanup",
+            run["id"],
+            status="failed",
+            attempted_count=run.get("file_count", 0),
+            succeeded_count=run.get("applied_count", 0),
+            failed_count=1,
+            refused_count=run.get("refused_count", 0),
+            deferred_count=run.get("deferred_count", 0),
+        )
         _set_quality_apply_progress(
             run,
             status="failed",
@@ -1864,6 +1877,7 @@ def _execute_quality_repair_apply(apply_id):
             progress_label="BIF repair failed",
             _finished_ts=finished,
             finished_at=utc_iso(finished),
+            emby_notification=notification,
         )
 
 
@@ -2154,6 +2168,19 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
         },
         timestamp=utc_iso(),
         label="Video preview cleanup",
+    )
+    result["emby_notification"] = emby_notifications.notify_maintenance(
+        "BIF cleanup",
+        (apply_run or {}).get("id") or plan.get("id"),
+        status="success",
+        attempted_count=file_count,
+        succeeded_count=len(applied),
+        refused_count=len(refused),
+        deferred_count=len(deferred),
+        unresolved_count=len(missing),
+        reclaimed_bytes=total,
+        emby_sync=emby,
+        opener=opener,
     )
     with preview_lock:
         plan["status"] = "applied"
@@ -2621,6 +2648,17 @@ def _execute_generation(run, plan):
             "emby_sync": emby,
             "result": {"items": results, "generated_count": generated, "refused_count": refused, "emby_sync": emby, "emby": emby, "scan_path": plan["scan_path"]},
         })
+        notification = emby_notifications.notify_maintenance(
+            "BIF generation",
+            run["id"],
+            status="success",
+            attempted_count=plan.get("file_count", 0),
+            succeeded_count=generated,
+            refused_count=refused,
+            emby_sync=emby,
+        )
+        run["emby_notification"] = notification
+        run["result"]["emby_notification"] = notification
         _write_log("bif-generation", {"plan_id": plan["id"], "generated_count": generated, "refused_count": refused, "items": results})
         impact_metrics.record_maintenance_action(
             plan.get("id"),
@@ -2648,6 +2686,17 @@ def _execute_generation(run, plan):
         run.update({"status": "cancelled", "finished_at": utc_iso(), "progress_label": "BIF generation cancelled", "result": {"items": results}})
     except Exception as exc:
         run.update({"status": "failed", "finished_at": utc_iso(), "progress_label": "BIF generation failed", "error": str(exc), "result": {"items": results}})
+        notification = emby_notifications.notify_maintenance(
+            "BIF generation",
+            run["id"],
+            status="failed",
+            attempted_count=plan.get("file_count", 0),
+            succeeded_count=generated,
+            failed_count=1,
+            refused_count=refused,
+        )
+        run["emby_notification"] = notification
+        run["result"]["emby_notification"] = notification
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
 
@@ -2704,60 +2753,23 @@ def _settings():
     return settings
 
 
-def _public_task(task):
-    task = task or {}
-    return {
-        "id": str(task.get("Id") or task.get("id") or ""),
-        "name": str(task.get("Name") or task.get("name") or ""),
-        "key": str(task.get("Key") or task.get("key") or ""),
-        "state": str(task.get("State") or task.get("state") or ""),
-        "description": str(task.get("Description") or task.get("description") or ""),
-    }
-
-
-def _task_search_text(task):
-    public = _public_task(task)
-    return " ".join(public.values()).lower()
-
-
-def _is_thumbnail_task(task):
-    text = _task_search_text(task)
-    return (
-        "thumbnail image extraction" in text
-        or "thumbnail images extraction" in text
-        or "video preview thumbnail" in text
-        or ("thumbnail" in text and "extract" in text)
-        or ("chapter" in text and "image" in text and "extract" in text)
-    )
-
-
 def discover_thumbnail_tasks(settings=None, opener=None):
     settings = settings or _settings()
-    data, result = emby_client.request_json(
-        settings,
-        "/ScheduledTasks",
-        opener=opener,
-        accept="application/json",
-    )
-    configured = bool(settings.get("emby_url") and settings.get("emby_api_key"))
-    if result.get("status") != "success":
-        return {
-            "configured": configured,
-            "result": result,
-            "tasks": [],
-            "thumbnail_task": None,
-        }
-    tasks = data if isinstance(data, list) else []
-    public_tasks = [_public_task(task) for task in tasks]
-    matches = [task for task in tasks if _is_thumbnail_task(task)]
+    inventory = emby_operations.load_tasks(settings, opener=opener, force=True)
+    tasks = inventory.get("tasks") or []
+    task_id = inventory.get("thumbnail_task_id") or ""
+    task = next((item for item in tasks if item.get("id") == task_id), None)
+    if inventory.get("status") == "ready":
+        result = emby_client.result("success", inventory.get("message") or "Emby scheduled tasks loaded")
+    else:
+        status = "skipped" if inventory.get("status") == "not_configured" else "failed"
+        result = emby_client.result(status, inventory.get("message") or "Emby scheduled tasks are unavailable")
     return {
-        "configured": configured,
-        "result": {
-            **result,
-            "message": f"Found {len(matches)} thumbnail extraction task{'s' if len(matches) != 1 else ''}",
-        },
-        "tasks": public_tasks,
-        "thumbnail_task": _public_task(matches[0]) if matches else None,
+        "configured": bool(inventory.get("configured")),
+        "result": result,
+        "tasks": tasks,
+        "thumbnail_task": task,
+        "operations": inventory,
     }
 
 
@@ -2774,18 +2786,10 @@ def run_thumbnail_extraction(settings=None, opener=None):
         )
         log = _write_log("emby-task", {"result": result, "task": None})
         return {"result": result, "task": None, "log": log, "tasks": tasks}, None
-    result = emby_client.request_no_content(
-        settings,
-        f"/ScheduledTasks/Running/{task_id}",
-        method="POST",
-        body=b"",
-        opener=opener,
-        accept="*/*",
+    operation, operation_error = emby_operations.start_task(task_id, settings, opener=opener)
+    result = emby_client.result(
+        "success" if not operation_error else "failed",
+        operation.get("message") or "Thumbnail extraction request failed",
     )
-    if result.get("status") == "success":
-        result = {
-            **result,
-            "message": f"Thumbnail extraction task started: {task.get('name') or task_id}",
-        }
     log = _write_log("emby-task", {"result": result, "task": task})
     return {"result": result, "task": task, "log": log, "tasks": tasks}, None

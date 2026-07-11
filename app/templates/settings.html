@@ -79,6 +79,20 @@
             </div>
             <div class="form-text">Active or unverifiable targets are deferred; unrelated reviewed files can still proceed.</div>
           </div>
+          <div class="col-md-7">
+            <label class="form-label" for="emby_admin_notifications">Administrator notifications</label>
+            <select id="emby_admin_notifications" name="emby_admin_notifications" class="form-select">
+              <option value="off" {% if settings.emby_admin_notifications == 'off' %}selected{% endif %}>Off</option>
+              <option value="warnings" {% if settings.emby_admin_notifications == 'warnings' %}selected{% endif %}>Warnings and failures</option>
+              <option value="all" {% if settings.emby_admin_notifications == 'all' %}selected{% endif %}>All completed maintenance</option>
+            </select>
+            <div class="form-text">Notifications contain workflow names and aggregate counts only.</div>
+          </div>
+          <div class="col-md-5 d-flex align-items-end">
+            <button id="embyNotificationTestButton" class="btn btn-outline-secondary btn-sm" type="button">
+              <i class="bi bi-bell" aria-hidden="true"></i> Send test notification
+            </button>
+          </div>
           <div id="embyTestMessage" class="col-12 form-text" role="status" aria-live="polite"></div>
         </div>
       </div>

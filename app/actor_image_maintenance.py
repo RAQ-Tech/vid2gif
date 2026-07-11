@@ -10,6 +10,7 @@ import urllib.parse
 
 from . import emby_catalog
 from . import emby_client
+from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
 from . import poster_maintenance
@@ -1239,6 +1240,17 @@ def _execute_import_apply(apply_id, opener=None):
     )
     finished = time.time()
     status = "success" if not failed else "failed"
+    notification = emby_notifications.notify_maintenance(
+        "Actor image import",
+        run["id"],
+        status=status,
+        attempted_count=len(files),
+        succeeded_count=len(imported),
+        failed_count=len(failed),
+        refused_count=len(refused),
+        opener=opener,
+    )
+    result["emby_notification"] = notification
     with actor_lock:
         plan["status"] = "applied" if status == "success" else "failed"
         scan = actor_scans.get(plan.get("scan_id"))
@@ -1263,6 +1275,7 @@ def _execute_import_apply(apply_id, opener=None):
         finished_at=utc_iso(finished),
         current_name="",
         current_path="",
+        emby_notification=notification,
     )
 
 
@@ -1289,6 +1302,7 @@ def public_apply_run(run):
         "current_path": run.get("current_path", ""),
         "error": run.get("error", ""),
         "large_operation": bool(run.get("large_operation")),
+        "emby_notification": emby_notifications.public_result(run.get("emby_notification")),
         "result": {
             **{key: value for key, value in result.items() if key != "log"},
             "log": {key: value for key, value in (result.get("log") or {}).items() if key != "path"},

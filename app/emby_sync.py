@@ -176,9 +176,10 @@ def _prune_jobs(now=None):
 
 
 def _save_job(job):
-    job["updated_at"] = utc_iso()
-    _write_json_atomic(_job_path(job["id"]), job)
-    _prune_jobs()
+    with _lock:
+        job["updated_at"] = utc_iso()
+        _write_json_atomic(_job_path(job["id"]), job)
+        _prune_jobs()
 
 
 def public_sync(job) -> EmbySyncResult | None:

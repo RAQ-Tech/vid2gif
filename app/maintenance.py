@@ -13,6 +13,7 @@ from . import app_settings
 from . import emby_catalog
 from . import emby_playback
 from . import emby_sync
+from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -1675,6 +1676,7 @@ def _public_apply_result(result):
         "total_applied_label": result.get("total_applied_label", "0 B"),
         "emby_sync": result.get("emby_sync"),
         "emby_playback": emby_playback.public_result(result.get("emby_playback")),
+        "emby_notification": emby_notifications.public_result(result.get("emby_notification")),
         "log": {key: value for key, value in log.items() if key != "path"},
     }
 
@@ -1706,6 +1708,7 @@ def public_apply_run(run):
         "large_operation": bool(run.get("large_operation")),
         "emby_sync": result.get("emby_sync") if result else None,
         "emby_playback": emby_playback.public_result(result.get("emby_playback")) if result else None,
+        "emby_notification": emby_notifications.public_result(run.get("emby_notification") or result.get("emby_notification")) if (run.get("emby_notification") or result) else None,
         "result": _public_apply_result(result) if result else None,
         "log": (result.get("log") or None) if result else None,
     }
@@ -1780,6 +1783,16 @@ def _execute_duplicate_apply(apply_id):
     result, err = apply_duplicate_cleanup_plan(run.get("plan_id"), apply_run=run)
     if err:
         finished = time.time()
+        notification = emby_notifications.notify_maintenance(
+            "Duplicate cleanup",
+            run["id"],
+            status="failed",
+            attempted_count=run.get("file_count", 0),
+            succeeded_count=run.get("applied_count", 0),
+            failed_count=1,
+            refused_count=run.get("refused_count", 0),
+            deferred_count=run.get("deferred_count", 0),
+        )
         _set_apply_progress(
             run,
             status="failed",
@@ -1787,6 +1800,7 @@ def _execute_duplicate_apply(apply_id):
             progress_label="Cleanup failed",
             _finished_ts=finished,
             finished_at=utc_iso(finished),
+            emby_notification=notification,
         )
 
 
@@ -2094,6 +2108,18 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         operations=operation_counts,
         timestamp=utc_iso(),
         label="Duplicate cleanup",
+    )
+    result["emby_notification"] = emby_notifications.notify_maintenance(
+        "Duplicate cleanup",
+        (apply_run or {}).get("id") or plan.get("id"),
+        status="success",
+        attempted_count=file_count,
+        succeeded_count=len(applied),
+        refused_count=len(refused),
+        deferred_count=len(deferred),
+        unresolved_count=len(missing),
+        reclaimed_bytes=total,
+        emby_sync=emby_sync_result,
     )
     with maintenance_lock:
         plan["status"] = "applied"

@@ -11,6 +11,7 @@ from . import app_settings
 from . import emby_catalog
 from . import emby_client
 from . import emby_sync
+from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import (
@@ -970,7 +971,7 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
 def public_poster_apply(run):
     if not run:
         return None
-    return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results", "emby_sync")}
+    return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results", "emby_sync", "emby_notification")}
 
 
 def _run_poster_apply(run, plan, lib_root):
@@ -1014,9 +1015,27 @@ def _run_poster_apply(run, plan, lib_root):
                 run_id=run["id"],
             )
             impact_metrics.record_maintenance_action(run["id"], "posters", resolutions=[{"issue_id": f"poster:{item['id']}", "stream": "posters", "resolve_all": True, "ensure_issue": True, "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in plan["items"] if any(result["id"] == item["id"] and result["status"] == "updated" for result in results)], operations={"other_files": updated}, timestamp=utc_iso(), label="Landscape poster updates")
-        run.update(status="success" if not failed else "complete_with_issues", finished_at=utc_iso(), progress_percent=100, progress_label=f"{updated} posters updated", updated_count=updated, failed_count=failed, results=results, emby_sync=sync_result)
+        terminal_status = "success" if not failed else "complete_with_issues"
+        notification = emby_notifications.notify_maintenance(
+            "Poster updates",
+            run["id"],
+            status=terminal_status,
+            attempted_count=len(plan.get("items") or []),
+            succeeded_count=updated,
+            failed_count=failed,
+            emby_sync=sync_result,
+        )
+        run.update(status=terminal_status, finished_at=utc_iso(), progress_percent=100, progress_label=f"{updated} posters updated", updated_count=updated, failed_count=failed, results=results, emby_sync=sync_result, emby_notification=notification)
     except Exception as exc:
-        run.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed", results=results)
+        notification = emby_notifications.notify_maintenance(
+            "Poster updates",
+            run["id"],
+            status="failed",
+            attempted_count=len(plan.get("items") or []),
+            succeeded_count=sum(1 for item in results if item.get("status") == "updated"),
+            failed_count=1,
+        )
+        run.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed", results=results, emby_notification=notification)
     finally:
         _poster_apply_execution_lock.release()
         try:
@@ -1065,6 +1084,7 @@ def _run_summary(run):
         "items": list(run.get("items") or [])[-50:],
         "emby_sync": dict(run.get("emby_sync") or {}),
         "emby_refresh": dict(run.get("emby_sync") or run.get("emby_refresh") or {}),
+        "emby_notification": emby_notifications.public_result(run.get("emby_notification")),
     }
 
 
@@ -1380,6 +1400,16 @@ def _execute_run(run, lib_root, settings):
                 run_id=run["id"],
                 settings=emby_settings,
             )
+        notification = emby_notifications.notify_maintenance(
+            "Automatic poster maintenance",
+            run["id"],
+            status="success" if not counters.get("errors") else "complete_with_issues",
+            attempted_count=counters.get("updated", 0) + counters.get("errors", 0),
+            succeeded_count=counters.get("updated", 0),
+            failed_count=counters.get("errors", 0),
+            emby_sync=sync_result,
+            settings=emby_settings if counters.get("updated") else None,
+        )
         _set_run_state(
             run,
             status="success",
@@ -1390,6 +1420,7 @@ def _execute_run(run, lib_root, settings):
             ),
             emby_sync=sync_result,
             emby_refresh=sync_result or {},
+            emby_notification=notification,
         )
         manifest = load_manifest()
         manifest["last_run"] = _run_summary(run)
@@ -1398,12 +1429,20 @@ def _execute_run(run, lib_root, settings):
         save_manifest(manifest)
         return run
     except Exception as exc:
+        notification = emby_notifications.notify_maintenance(
+            "Automatic poster maintenance",
+            run["id"],
+            status="failed",
+            attempted_count=max(1, int((run.get("counters") or {}).get("candidates") or 0)),
+            failed_count=1,
+        )
         _set_run_state(
             run,
             status="failed",
             error=str(exc),
             finished_at=utc_iso(),
             progress_label="Failed",
+            emby_notification=notification,
         )
         return run
     finally:

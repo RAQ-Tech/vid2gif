@@ -18,6 +18,8 @@ from . import dashboard
 from . import estimate_history
 from . import emby_sync
 from . import emby_playback
+from . import emby_operations
+from . import emby_notifications
 from . import maintenance
 from . import maintenance_scan_orchestrator
 from . import maintenance_scan_store
@@ -344,6 +346,8 @@ def settings_page():
                 "emby_playback_protection": _truthy(
                     request.form.get("emby_playback_protection")
                 ),
+                "emby_admin_notifications": request.form.get("emby_admin_notifications")
+                or app_settings.load_settings().get("emby_admin_notifications", "warnings"),
             }
         )
         if update_error:
@@ -396,6 +400,51 @@ def api_emby_test():
 def api_emby_playback():
     snapshot = emby_playback.load_snapshot(force=True)
     return jsonify({"playback": emby_playback.public_snapshot(snapshot)})
+
+
+@app.route("/api/emby/tasks")
+def api_emby_tasks():
+    return jsonify(emby_operations.load_tasks(force=_truthy(request.args.get("force"))))
+
+
+@app.route("/api/emby/tasks/<task_id>")
+def api_emby_task(task_id):
+    payload = emby_operations.get_task(task_id, force=_truthy(request.args.get("force")))
+    if not payload.get("task") and payload.get("status") == "ready":
+        return jsonify({"error": "Scheduled task was not found"}), 404
+    return jsonify(payload)
+
+
+def _emby_task_control_response(payload, error):
+    status = {
+        "not_found": 404,
+        "forbidden": 403,
+        "conflict": 409,
+        "upstream": 502,
+    }.get(error, 200)
+    return jsonify(payload), status
+
+
+@app.route("/api/emby/tasks/<task_id>/start", methods=["POST"])
+def api_emby_task_start(task_id):
+    return _emby_task_control_response(*emby_operations.start_task(task_id))
+
+
+@app.route("/api/emby/tasks/<task_id>/cancel", methods=["POST"])
+def api_emby_task_cancel(task_id):
+    return _emby_task_control_response(*emby_operations.cancel_task(task_id))
+
+
+@app.route("/api/emby/activity")
+def api_emby_activity():
+    return jsonify(emby_operations.load_activity(limit=request.args.get("limit", 20)))
+
+
+@app.route("/api/emby/notifications/test", methods=["POST"])
+def api_emby_notification_test():
+    result = emby_notifications.send_test()
+    status = 200 if result.get("status") == "success" else (400 if result.get("status") == "not_configured" else 502)
+    return jsonify({"emby_notification": result}), status
 
 
 @app.route("/api/emby/sync/<sync_id>")

@@ -90,12 +90,21 @@ def test_landscape_poster_run_replaces_existing_poster_and_preserves_backup(monk
     poster = _write(movie / "Movie-poster.jpg", b"portrait")
     marker = _write(movie / ".posters_done", b"old marker")
 
+    notification_calls = []
+    monkeypatch.setattr(
+        poster_maintenance.emby_notifications,
+        "notify_maintenance",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs))
+        or {"id": "notice", "status": "success", "message": "accepted"},
+    )
     run = _run(lib, monkeypatch, tmp_path)
 
     assert run["counters"]["updated"] == 1
     assert poster.read_bytes() == background.read_bytes()
     assert (movie / "Movie-poster-backup.jpg").read_bytes() == b"portrait"
     assert marker.read_bytes() == b"old marker"
+    assert notification_calls[0][1]["succeeded_count"] == 1
+    assert run["emby_notification"]["id"] == "notice"
 
 
 def test_disabled_automatic_poster_sync_does_not_load_emby_catalog(monkeypatch, tmp_path):

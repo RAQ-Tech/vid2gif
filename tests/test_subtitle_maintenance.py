@@ -608,6 +608,13 @@ def test_subtitle_cleanup_defers_active_parent_without_sync(monkeypatch, tmp_pat
         "sync_changes",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync should not run")),
     )
+    notification_calls = []
+    monkeypatch.setattr(
+        subtitle_maintenance.emby_notifications,
+        "notify_maintenance",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs))
+        or {"id": "notice", "status": "success", "message": "accepted"},
+    )
     plan, err = subtitle_maintenance.build_action_plan(
         {
             "scan_id": scan["id"],
@@ -627,4 +634,6 @@ def test_subtitle_cleanup_defers_active_parent_without_sync(monkeypatch, tmp_pat
     assert run["refused_count"] == 0
     assert run["deferred_count"] == 1
     assert run["result"]["records"][0]["status"] == "deferred"
+    assert notification_calls[0][1]["deferred_count"] == 1
+    assert run["emby_notification"]["id"] == "notice"
     assert flagged.exists()

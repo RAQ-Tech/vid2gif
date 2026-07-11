@@ -7,7 +7,7 @@ from .config import LANDSCAPE_POSTER_ROOT, LIB_ROOT, STATE_ROOT
 from .utils import path_is_under
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
@@ -56,6 +56,7 @@ _SETTING_KEYS = {
     "emby_path_mappings",
     "emby_sync_after_maintenance",
     "emby_playback_protection",
+    "emby_admin_notifications",
     "table_preferences",
 }
 
@@ -101,6 +102,11 @@ def default_settings():
         "emby_path_mappings": [],
         "emby_sync_after_maintenance": _bool(os.getenv("EMBY_SYNC_AFTER_MAINTENANCE"), True),
         "emby_playback_protection": _bool(os.getenv("EMBY_PLAYBACK_PROTECTION"), True),
+        "emby_admin_notifications": _choice(
+            os.getenv("EMBY_ADMIN_NOTIFICATIONS", "warnings"),
+            {"off": "Off", "warnings": "Warnings", "all": "All"},
+            "warnings",
+        ),
         "table_preferences": {},
     }
 
@@ -347,6 +353,11 @@ def _coerce_settings(data):
             data.get("emby_playback_protection", defaults["emby_playback_protection"]),
             defaults["emby_playback_protection"],
         ),
+        "emby_admin_notifications": _choice(
+            data.get("emby_admin_notifications", defaults["emby_admin_notifications"]),
+            {"off": "Off", "warnings": "Warnings", "all": "All"},
+            defaults["emby_admin_notifications"],
+        ),
         "table_preferences": _coerce_table_preferences(
             data.get("table_preferences", defaults["table_preferences"])
         ),
@@ -373,6 +384,7 @@ def _load_settings_unlocked(path):
         or "emby_api_key" not in data
         or "emby_sync_after_maintenance" not in data
         or "emby_playback_protection" not in data
+        or "emby_admin_notifications" not in data
     ):
         legacy = _read_settings_file(LEGACY_EMBY_SETTINGS_PATH) or {}
         data = dict(data or {})
@@ -388,6 +400,9 @@ def _load_settings_unlocked(path):
             migrated = True
         if "emby_playback_protection" not in data:
             data["emby_playback_protection"] = default_settings()["emby_playback_protection"]
+            migrated = True
+        if "emby_admin_notifications" not in data:
+            data["emby_admin_notifications"] = default_settings()["emby_admin_notifications"]
             migrated = True
         if migrated:
             settings = _coerce_settings(data)
@@ -442,6 +457,7 @@ def _validation_error(updates):
         ("duplicate_grouping_mode", DUPLICATE_GROUPING_MODES),
         ("duplicate_keeper_rule", DUPLICATE_KEEPER_RULES),
         ("duplicate_accessory_policy", DUPLICATE_ACCESSORY_POLICIES),
+        ("emby_admin_notifications", {"off": "Off", "warnings": "Warnings", "all": "All"}),
     ):
         if key in updates and str(updates.get(key) or "").strip().lower() not in choices:
             return f"Invalid {key.replace('_', ' ')}"
@@ -508,6 +524,12 @@ def update_settings(updates, path=None):
             from . import emby_catalog
 
             emby_catalog.clear_cache()
+        except ImportError:
+            pass
+        try:
+            from . import emby_operations
+
+            emby_operations.clear_cache()
         except ImportError:
             pass
         try:

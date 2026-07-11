@@ -409,12 +409,19 @@ def test_duplicate_cleanup_defers_active_group_and_applies_clear_group(monkeypat
         }
 
     sync_calls = []
+    notification_calls = []
     monkeypatch.setattr(maintenance.emby_playback, "check_targets", playback)
     monkeypatch.setattr(
         maintenance.emby_sync,
         "sync_changes",
         lambda changes, **kwargs: sync_calls.append(changes)
         or {"id": "sync", "status": "success", "retryable": False},
+    )
+    monkeypatch.setattr(
+        maintenance.emby_notifications,
+        "notify_maintenance",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs))
+        or {"id": "notice", "status": "failed", "message": "notification unavailable"},
     )
     plan, err = maintenance.build_duplicate_cleanup_plan(
         {
@@ -438,6 +445,10 @@ def test_duplicate_cleanup_defers_active_group_and_applies_clear_group(monkeypat
     assert (lib / ".vid2gif-duplicates" / "Second" / second_remove.name).exists()
     assert len(sync_calls) == 1
     assert {change["local_path"] for change in sync_calls[0]} == {str(second_remove)}
+    assert notification_calls[0][1]["succeeded_count"] == 1
+    assert notification_calls[0][1]["deferred_count"] == 1
+    assert result["emby_notification"]["id"] == "notice"
+    assert result["emby_notification"]["status"] == "failed"
 
 
 def test_cleanup_plan_rejects_move_root_outside_library(monkeypatch, tmp_path):

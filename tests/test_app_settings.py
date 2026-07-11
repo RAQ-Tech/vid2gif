@@ -304,7 +304,8 @@ def test_global_settings_import_legacy_emby_connection_once(monkeypatch, tmp_pat
     assert reloaded["emby_url"] == "http://legacy:8096"
     assert imported["emby_sync_after_maintenance"] is True
     assert imported["emby_playback_protection"] is True
-    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == 8
+    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == 9
+    assert imported["emby_admin_notifications"] == "warnings"
 
 
 def test_settings_page_contains_global_emby_controls_without_echoing_secret(monkeypatch, tmp_path):
@@ -323,6 +324,8 @@ def test_settings_page_contains_global_emby_controls_without_echoing_secret(monk
     assert 'id="emby_path_mappings"' in html
     assert 'id="emby_sync_after_maintenance"' in html
     assert 'id="emby_playback_protection"' in html
+    assert 'id="emby_admin_notifications"' in html
+    assert 'id="embyNotificationTestButton"' in html
     assert 'id="embyPlaybackButton"' in html
     assert 'id="embyTestButton"' in html
     assert "html-secret" not in html
@@ -340,6 +343,18 @@ def test_playback_protection_environment_default_and_patch(monkeypatch, tmp_path
     assert err is None
     assert saved["emby_playback_protection"] is True
     assert app_settings.public_settings(saved)["emby_playback_protection"] is True
+
+
+def test_admin_notification_environment_default_validation_and_patch(monkeypatch, tmp_path):
+    path = tmp_path / "app_settings.json"
+    monkeypatch.setenv("EMBY_ADMIN_NOTIFICATIONS", "all")
+    assert app_settings.default_settings()["emby_admin_notifications"] == "all"
+    saved, err = app_settings.update_settings({"emby_admin_notifications": "off"}, str(path))
+    assert err is None
+    assert saved["emby_admin_notifications"] == "off"
+    invalid, error = app_settings.update_settings({"emby_admin_notifications": "sometimes"}, str(path))
+    assert invalid is None
+    assert "Invalid emby admin notifications" in error
 
 
 def test_global_emby_test_route_uses_saved_key_without_exposing_it(monkeypatch, tmp_path):

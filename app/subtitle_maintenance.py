@@ -11,6 +11,7 @@ from . import app_settings
 from . import emby_catalog
 from . import emby_playback
 from . import emby_sync
+from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -1172,6 +1173,19 @@ def _run_action(plan, run):
         emby_sync=sync_result,
         emby_playback=playback,
     )
+    notification = emby_notifications.notify_maintenance(
+        "Subtitle cleanup",
+        run["id"],
+        status="success",
+        attempted_count=len(plan.get("files") or []),
+        succeeded_count=run.get("applied_count", 0),
+        refused_count=run.get("refused_count", 0),
+        deferred_count=run.get("deferred_count", 0),
+        reclaimed_bytes=applied_bytes,
+        emby_sync=sync_result,
+    )
+    run["emby_notification"] = notification
+    run["result"]["emby_notification"] = notification
 
 
 def start_action_apply(plan_id, synchronous=False):
@@ -1199,6 +1213,16 @@ def start_action_apply(plan_id, synchronous=False):
             _run_action(plan, run)
         except Exception as exc:
             run.update({"status": "failed", "error": str(exc), "finished_at": utc_iso(), "progress_label": "Subtitle cleanup failed"})
+            run["emby_notification"] = emby_notifications.notify_maintenance(
+                "Subtitle cleanup",
+                run["id"],
+                status="failed",
+                attempted_count=run.get("file_count", 0),
+                succeeded_count=run.get("applied_count", 0),
+                failed_count=1,
+                refused_count=run.get("refused_count", 0),
+                deferred_count=run.get("deferred_count", 0),
+            )
     if synchronous:
         execute()
     else:
