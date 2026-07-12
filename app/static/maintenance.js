@@ -298,11 +298,8 @@
     const refresh = byId('overviewRefreshButton');
     if (state) state.textContent = overviewStateLabel(scan);
     if (label) label.textContent = scan?.progress_label || 'Run a library stat refresh';
-    if (percent) percent.textContent = `${pct}%`;
-    if (bar) {
-      bar.style.width = `${pct}%`;
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-    }
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
     if (videos) videos.textContent = String(scan?.video_count || 0);
     if (folders) folders.textContent = String(scan?.folder_count || 0);
     if (refresh) refresh.disabled = Boolean(scan?.active);
@@ -536,11 +533,8 @@
     const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
     if (state) state.textContent = scan?.status ? scan.status : 'Idle';
     if (label) label.textContent = scan?.progress_label || 'Choose a folder';
-    if (percent) percent.textContent = `${pct}%`;
-    if (bar) {
-      bar.style.width = `${pct}%`;
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-    }
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
     if (groups) groups.textContent = String(scan?.duplicate_group_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
     const scanButton = byId('maintenanceScanButton');
@@ -1453,11 +1447,8 @@
     const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
     if (state) state.textContent = scan?.status || 'Idle';
     if (label) label.textContent = scan?.progress_label || 'Choose a folder';
-    if (percent) percent.textContent = `${pct}%`;
-    if (bar) {
-      bar.style.width = `${pct}%`;
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-    }
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
     if (missing) missing.textContent = String(scan?.missing_count || 0);
     if (present) present.textContent = String(scan?.present_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
@@ -1976,11 +1967,8 @@
     const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
     if (state) state.textContent = scan?.status || 'Idle';
     if (label) label.textContent = scan?.progress_label || 'Choose a folder';
-    if (percent) percent.textContent = `${pct}%`;
-    if (bar) {
-      bar.style.width = `${pct}%`;
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-    }
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
     if (bad) bad.textContent = String(scan?.bad_count || 0);
     if (warnings) warnings.textContent = String(scan?.warning_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
@@ -2380,11 +2368,8 @@
     const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
     if (state) state.textContent = scan?.status || 'Idle';
     if (label) label.textContent = scan?.progress_label || 'Choose a folder';
-    if (percent) percent.textContent = `${pct}%`;
-    if (bar) {
-      bar.style.width = `${pct}%`;
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-    }
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
     if (missing) missing.textContent = String(scan?.missing_count || 0);
     if (review) review.textContent = String(scan?.review_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
@@ -2776,11 +2761,8 @@
     const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
     if (state) state.textContent = scan?.status || 'Idle';
     if (label) label.textContent = scan?.progress_label || 'Choose a folder';
-    if (percent) percent.textContent = `${pct}%`;
-    if (bar) {
-      bar.style.width = `${pct}%`;
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-    }
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
     if (missing) missing.textContent = String(scan?.missing_actor_count || 0);
     if (ready) ready.textContent = String(scan?.ready_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));

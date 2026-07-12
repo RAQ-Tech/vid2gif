@@ -22,7 +22,7 @@ from .config import (
     VIDEO_EXTS,
 )
 from .conversion_gate import conversion_lock
-from .estimate_history import record_successful_job, sample_count
+from .estimate_history import job_duration_estimate, record_successful_job, sample_count
 from .impact_metrics import record_creative_output
 from .ffmpeg_utils import (
     build_segments,
@@ -43,6 +43,7 @@ from .progress import (
     mark_job_started,
     rounded_seconds,
     update_job_label,
+    update_job_stage,
     utc_iso,
 )
 from .utils import find_background_image, path_is_under
@@ -418,6 +419,10 @@ def _public_variant(variant):
         "progress_percent": variant.get("progress_percent", 0),
         "elapsed_seconds": variant.get("elapsed_seconds"),
         "eta_seconds": variant.get("eta_seconds"),
+        "eta_confidence": variant.get("eta_confidence", "none"),
+        "expected_duration_seconds": variant.get("expected_duration_seconds"),
+        "progress_stage": variant.get("progress_stage", ""),
+        "progress_indeterminate": False,
         "output_size_bytes": variant.get("output_size_bytes"),
         "started_at": variant.get("started_at"),
         "finished_at": variant.get("finished_at"),
@@ -668,18 +673,33 @@ def _run_progress(run, now=None):
         elapsed = rounded_seconds((finished or now) - started)
 
     eta = None
-    if started and 0 < percent < 100:
-        eta = rounded_seconds((now - started) * (100 - percent) / percent)
+    eta_confidence = "none"
+    if run.get("status") == "running":
+        remaining = []
+        confidence_values = []
+        for variant in variants:
+            if variant.get("status") == "running":
+                remaining.append(variant.get("eta_seconds"))
+                confidence_values.append(variant.get("eta_confidence"))
+            elif variant.get("status") == "queued":
+                remaining.append(variant.get("expected_duration_seconds"))
+                confidence_values.append(variant.get("eta_confidence"))
+        if remaining and all(value is not None for value in remaining):
+            eta = rounded_seconds(sum(float(value) for value in remaining))
+            eta_confidence = "history" if all(value == "history" for value in confidence_values) else "learning"
+        elif remaining:
+            eta_confidence = "calibrating"
     elif run.get("status") in LAB_TERMINAL_STATUSES:
         eta = 0
+        eta_confidence = "complete"
 
     if run.get("status") == "queued":
         label = "Waiting"
     elif run.get("status") == "running":
         if eta is None:
-            label = f"{percent}% complete"
+            label = f"{percent}% complete · learning timing" if eta_confidence == "calibrating" else f"{percent}% complete"
         else:
-            label = f"{percent}% complete · {format_duration(eta)} remaining"
+            label = f"{percent}% complete · about {format_duration(eta)} remaining"
     elif run.get("status") == "partial":
         noun = "variant" if len(variants) == 1 else "variants"
         label = f"Complete with issues · {len(completed)} of {len(variants)} {noun}"
@@ -695,6 +715,7 @@ def _run_progress(run, now=None):
     run["progress_label"] = label
     run["elapsed_seconds"] = elapsed
     run["eta_seconds"] = eta
+    run["eta_confidence"] = eta_confidence
     return run
 
 
@@ -709,6 +730,8 @@ def _public_run(run):
         "progress_percent": run.get("progress_percent", 0),
         "elapsed_seconds": run.get("elapsed_seconds"),
         "eta_seconds": run.get("eta_seconds"),
+        "eta_confidence": run.get("eta_confidence", "none"),
+        "progress_indeterminate": False,
         "created_at": run.get("created_at"),
         "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
@@ -770,6 +793,7 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
         else:
             first_variant_for_fingerprint[fingerprint] = variant_id
 
+        duration_estimate = job_duration_estimate(cfg)
         variant = {
             "id": variant_id,
             "run_id": run_id,
@@ -788,6 +812,8 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
             "progress_text": "",
             "settings_label": settings_label(cfg),
             "logger": None,
+            "expected_duration_seconds": duration_estimate.get("seconds"),
+            "eta_confidence": duration_estimate.get("confidence"),
         }
         initialize_job_progress(variant, now=created_ts)
         run["variants"].append(variant)
@@ -943,8 +969,14 @@ def _process_variant(run, variant):
                 logger.error(err_msg)
             return
 
+        update_job_stage(
+            variant,
+            92 if variant["cfg"].get("optimize", True) else 97,
+            "Optimizing" if variant["cfg"].get("optimize", True) else "Finalizing",
+        )
         optimize_gif(tmp_gif, variant, logger)
         try:
+            update_job_stage(variant, 98, "Installing")
             logger.info("Moving test GIF into place")
             shutil.move(tmp_gif, variant["out_gif"])
         except Exception as e:

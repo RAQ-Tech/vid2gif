@@ -160,6 +160,19 @@ def test_video_preview_scan_skips_quarantine_and_symlinked_files(monkeypatch, tm
         assert "Linked.mkv" not in names
 
 
+def test_video_preview_scans_skip_local_trailer_folders(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    _write(lib / "Movie" / "trailers" / "Movie Trailer.mp4")
+    _write(lib / "Other" / "TRAILER" / "Other Trailer.mkv")
+
+    missing_scan = _scan(lib, monkeypatch, tmp_path)
+    quality_scan = _quality_scan(lib, monkeypatch, tmp_path)
+
+    assert {item["name"] for item in missing_scan["items"]} == {"Movie.mkv"}
+    assert not any("trailer" in item.get("video_relative_path", "").lower() for item in quality_scan["items"])
+
+
 def test_video_preview_items_paging_caps_large_results(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     for index in range(120):

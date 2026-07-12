@@ -46,10 +46,13 @@
   function setProgress(id, value) {
     const el = byId(id);
     if (!el) return;
-    const pct = clampPercent(value);
-    el.style.width = `${pct}%`;
-    const parent = el.closest('.progress');
-    if (parent) parent.setAttribute('aria-valuenow', String(pct));
+    const model = typeof value === 'object' ? value : {progress_percent: value};
+    if (window.vid2gifProgress) window.vid2gifProgress.apply(el, model);
+    else {
+      const pct = clampPercent(model?.progress_percent);
+      el.style.width = `${pct}%`;
+      el.closest('.progress')?.setAttribute('aria-valuenow', String(pct));
+    }
   }
 
   function setMessage(title, detail, tone) {
@@ -463,8 +466,8 @@
   function renderMaintenanceScan(run, workstreams) {
     const active = Boolean(run && run.active);
     setText('dashboardScanLabel', run?.progress_label || 'Ready');
-    setText('dashboardScanPercent', `${clampPercent(run?.progress_percent || 0)}%`);
-    setProgress('dashboardScanProgressBar', run?.progress_percent || 0);
+    setText('dashboardScanPercent', window.vid2gifProgress?.valueLabel(run) || `${clampPercent(run?.progress_percent)}%`);
+    setProgress('dashboardScanProgressBar', run || {progress_percent: 0});
     byId('dashboardCancelScanButton')?.classList.toggle('d-none', !active);
     if (byId('dashboardScanAllButton')) byId('dashboardScanAllButton').disabled = active;
     document.querySelectorAll('[data-dashboard-scan-area]').forEach((button) => { button.disabled = active; });

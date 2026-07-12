@@ -13,6 +13,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import task_progress
 from .config import (
     LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
     LANDSCAPE_POSTER_INTERVAL_SECONDS,
@@ -650,7 +651,14 @@ def _enrich_poster_items(items, scan):
     counts = {"matched": 0, "unmatched": 0, "ambiguous": 0}
     for item in items:
         if scan.get("cancel_requested"):
-            scan.update(status="cancelled", finished_at=utc_iso(), progress_percent=100, progress_label="Poster analysis cancelled")
+            task_progress.update_scan(
+                scan,
+                "poster_scan",
+                100,
+                "Poster analysis cancelled",
+                status="cancelled",
+                finished_at=utc_iso(),
+            )
             return None
         video_paths = _poster_video_paths(item)
         match = emby_catalog.match_paths(catalog, video_paths, mappings)
@@ -742,8 +750,7 @@ def public_poster_scan(scan):
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
-        "progress_percent": scan.get("progress_percent", 0),
-        "progress_label": scan.get("progress_label", ""),
+        **task_progress.public_fields(scan),
         "error": scan.get("error", ""),
         "created_at": scan.get("created_at"),
         "started_at": scan.get("started_at"),
@@ -795,13 +802,29 @@ def _prune_poster_analysis_locked():
 
 def _run_poster_scan(scan, lib_root):
     try:
-        scan.update(status="running", started_at=utc_iso(), progress_percent=1, progress_label="Analyzing poster artwork")
+        started = time.time()
+        task_progress.update_scan(
+            scan,
+            "poster_scan",
+            1,
+            "Analyzing poster artwork",
+            status="running",
+            _started_ts=started,
+            started_at=utc_iso(started),
+        )
         root = os.path.realpath(lib_root)
         items = []
         folders = 0
         for base, dirs, files in os.walk(scan["path"], followlinks=False):
             if scan.get("cancel_requested"):
-                scan.update(status="cancelled", finished_at=utc_iso(), progress_percent=100, progress_label="Poster analysis cancelled")
+                task_progress.update_scan(
+                    scan,
+                    "poster_scan",
+                    100,
+                    "Poster analysis cancelled",
+                    status="cancelled",
+                    finished_at=utc_iso(),
+                )
                 return
             dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
             folders += 1
@@ -814,16 +837,23 @@ def _run_poster_scan(scan, lib_root):
                     status, message = _analyze_candidate(candidate, root)
                     items.append(_analysis_item(candidate, root, status, message))
             if folders % 50 == 0:
-                scan.update(progress_percent=25, progress_label=f"Analyzed {folders} folders")
+                task_progress.update_scan(
+                    scan,
+                    "poster_scan",
+                    25,
+                    f"Analyzed {folders} folders",
+                )
         counts = _poster_counts(items)
         emby_mapping = _enrich_poster_items(items, scan)
         if emby_mapping is None:
             return
-        scan.update(
+        task_progress.update_scan(
+            scan,
+            "poster_scan",
+            100,
+            f"{counts['eligible_count']} poster updates ready",
             status="success",
             finished_at=utc_iso(),
-            progress_percent=100,
-            progress_label=f"{counts['eligible_count']} poster updates ready",
             items=items,
             counts=counts,
             emby_mapping=emby_mapping,
@@ -839,9 +869,9 @@ def _run_poster_scan(scan, lib_root):
             timestamp=scan["finished_at"],
         )
     except PosterScanCancelled:
-        scan.update(status="cancelled", error="", finished_at=utc_iso(), progress_percent=100, progress_label="Poster analysis cancelled")
+        task_progress.update_scan(scan, "poster_scan", 100, "Poster analysis cancelled", status="cancelled", error="", finished_at=utc_iso())
     except Exception as exc:
-        scan.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster analysis failed")
+        task_progress.update_scan(scan, "poster_scan", 100, "Poster analysis failed", status="failed", error=str(exc), finished_at=utc_iso())
 
 
 def start_poster_scan(path=None, *, synchronous=False, lib_root=LIB_ROOT):

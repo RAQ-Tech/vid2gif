@@ -155,3 +155,18 @@ def test_sample_from_job_contains_only_aggregate_metrics():
         "optimize": True,
         "created_at": 99.0,
     }
+
+
+def test_job_duration_estimate_uses_median_normalized_history(monkeypatch):
+    monkeypatch.setattr(estimate_history, "load_history", lambda path=None: [])
+
+    estimate = estimate_history.job_duration_estimate(
+        _cfg(),
+        in_memory_samples=[
+            {"settings_unit": 1, "elapsed_seconds": 10, "output_size_bytes": 100, "optimize": True},
+            {"settings_unit": 2, "elapsed_seconds": 40, "output_size_bytes": 100, "optimize": True},
+            {"settings_unit": 1, "elapsed_seconds": 1000, "output_size_bytes": 100, "optimize": False},
+        ],
+    )
+
+    assert estimate == {"seconds": 15, "sample_count": 2, "confidence": "learning"}

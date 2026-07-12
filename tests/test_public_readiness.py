@@ -82,7 +82,8 @@ def test_queue_status_returns_public_payloads():
     assert payload["total_active_items"] == 1
     assert payload["completed_active_items"] == 0
     assert payload["queue_progress_percent"] == 0
-    assert payload["queue_progress_label"] == "0% complete"
+    assert payload["queue_progress_label"] == "0% complete · learning timing"
+    assert payload["queue_eta_confidence"] == "calibrating"
     assert payload["summary"]["total_active_items"] == 1
     assert "logger" not in payload["queued"][0]
     assert jobs.emit_queue_status() == payload
@@ -107,11 +108,18 @@ def test_queue_status_reports_overall_batch_progress():
             "batch_id": "batch1",
             "progress_percent": 50,
             "elapsed_seconds": 5,
+            "eta_seconds": 5,
+            "eta_confidence": "history",
             "_started_ts": 110,
         }
     )
     jobs.jobs["queued"] = _make_job(job_id="queued", status="queued")
-    jobs.jobs["queued"].update({"batch_id": "batch1", "_created_ts": 111})
+    jobs.jobs["queued"].update({
+        "batch_id": "batch1",
+        "_created_ts": 111,
+        "expected_duration_seconds": 10,
+        "eta_confidence": "history",
+    })
     jobs.job_queue.put("queued")
 
     client = routes.app.test_client()
@@ -122,6 +130,7 @@ def test_queue_status_reports_overall_batch_progress():
     assert payload["completed_active_items"] == 1
     assert payload["queue_progress_percent"] == 50
     assert payload["queue_eta_seconds"] == 15
+    assert payload["queue_eta_confidence"] == "history"
     assert payload["summary"]["queue_progress_percent"] == 50
     _clear_jobs()
 
@@ -293,6 +302,9 @@ def test_gifs_workspace_uses_polling_instead_of_socketio():
     assert "fetch('/api/test-lab/run'" in test_lab_script
     assert "fetch('/api/test-lab/delete'" in test_lab_script
     assert "fetch('/api/test-lab/preview'" in test_lab_script
+    assert "if (state.playerActivated) requestSelectedPreviews(files)" in test_lab_script
+    assert "Press Play to load preview" in test_lab_script
+    assert "Load and play previews" in test_lab_script
     assert "fetch(`/api/media-browser?path=${encodeURIComponent" in test_lab_script
     assert "setInterval(refreshTestLab, 1000)" not in workspace_script
 

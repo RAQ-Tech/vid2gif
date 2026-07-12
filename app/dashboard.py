@@ -8,6 +8,7 @@ from . import actor_image_maintenance
 from . import impact_metrics
 from . import maintenance
 from . import maintenance_scan_store
+from . import task_progress
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import test_lab
@@ -515,17 +516,17 @@ def _scan_library_inventory(scan):
             scanned_files += 1
         if scanned_dirs % 50 == 0:
             with dashboard_lock:
-                scan.update(
-                    {
-                        "progress_percent": 25,
-                        "progress_label": f"Scanned {scanned_dirs} folders and {scanned_files} files",
-                        "library_count": len(folders) + 1,
-                        "folder_count": len(folders),
-                        "root": _format_library_stats(dict(root_stats)),
-                        "video_count": root_stats["video_count"],
-                        "video_size_bytes": root_stats["video_size_bytes"],
-                        "video_size_label": format_size(root_stats["video_size_bytes"]),
-                    }
+                task_progress.update_scan(
+                    scan,
+                    "library_overview_scan",
+                    25,
+                    f"Scanned {scanned_dirs} folders and {scanned_files} files",
+                    library_count=len(folders) + 1,
+                    folder_count=len(folders),
+                    root=_format_library_stats(dict(root_stats)),
+                    video_count=root_stats["video_count"],
+                    video_size_bytes=root_stats["video_size_bytes"],
+                    video_size_label=format_size(root_stats["video_size_bytes"]),
                 )
 
     root_stats = _format_library_stats(root_stats)
@@ -549,14 +550,26 @@ def _run_library_scan(scan_id):
         scan = library_scan if library_scan and library_scan.get("id") == scan_id else None
         if not scan:
             return
-        scan.update({"status": "running", "progress_percent": 1, "progress_label": "Scanning libraries", "started_at": utc_iso()})
+        started = time.time()
+        task_progress.update_scan(
+            scan,
+            "library_overview_scan",
+            1,
+            "Scanning libraries",
+            status="running",
+            _started_ts=started,
+            started_at=utc_iso(started),
+        )
     try:
         result = _scan_library_inventory(scan)
         with dashboard_lock:
-            scan.update(result)
-            scan["progress_percent"] = 100
-            scan["progress_label"] = "Library inventory complete" if result["status"] == "success" else "Library inventory cancelled"
-            scan["status"] = result["status"]
+            task_progress.update_scan(
+                scan,
+                "library_overview_scan",
+                100,
+                "Library inventory complete" if result["status"] == "success" else "Library inventory cancelled",
+                **result,
+            )
         if result["status"] == "success":
             _write_json(LIBRARY_INVENTORY_PATH, {"schema_version": 2, **result})
             maintenance_scan_store.persist_success(
@@ -564,14 +577,14 @@ def _run_library_scan(scan_id):
             )
     except Exception as exc:
         with dashboard_lock:
-            scan.update(
-                {
-                    "status": "failed",
-                    "error": str(exc),
-                    "progress_percent": 100,
-                    "progress_label": "Library inventory failed",
-                    "finished_at": utc_iso(),
-                }
+            task_progress.update_scan(
+                scan,
+                "library_overview_scan",
+                100,
+                "Library inventory failed",
+                status="failed",
+                error=str(exc),
+                finished_at=utc_iso(),
             )
 
 
@@ -632,8 +645,7 @@ def _public_library_scan(scan):
         "id": scan.get("id", ""),
         "status": scan.get("status", ""),
         "active": scan.get("status") in {"queued", "running", "cancelling"},
-        "progress_percent": scan.get("progress_percent", 0),
-        "progress_label": scan.get("progress_label", ""),
+        **task_progress.public_fields(scan),
         "started_at": scan.get("started_at"),
         "finished_at": scan.get("finished_at"),
         "error": scan.get("error", ""),

@@ -13,6 +13,7 @@ from . import emby_client
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import task_progress
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import regular_file_identity
@@ -364,9 +365,7 @@ def _check_cancelled(scan):
 
 def _set_scan_progress(scan, percent, label, **values):
     with actor_lock:
-        scan["progress_percent"] = max(0, min(100, int(percent)))
-        scan["progress_label"] = label
-        scan.update(values)
+        task_progress.update_scan(scan, "actor_image_scan", percent, label, **values)
 
 
 def _set_item_candidate_status(item):
@@ -419,8 +418,7 @@ def _public_scan(scan):
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
-        "progress_percent": scan.get("progress_percent", 0),
-        "progress_label": scan.get("progress_label", ""),
+        **task_progress.public_fields(scan),
         "error": scan.get("error", ""),
         "created_at": scan.get("created_at"),
         "started_at": scan.get("started_at"),

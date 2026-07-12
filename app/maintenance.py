@@ -15,6 +15,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import atomic_quarantine_file
 from .file_safety import identity_matches as safe_identity_matches
@@ -534,9 +535,7 @@ def _candidate_groups(videos, settings=None):
 
 def _set_scan_progress(scan, percent, label, **values):
     with maintenance_lock:
-        scan["progress_percent"] = max(0, min(100, int(percent)))
-        scan["progress_label"] = label
-        scan.update(values)
+        task_progress.update_scan(scan, "duplicate_scan", percent, label, **values)
 
 
 def _accessory_destination(accessory, keep_video):
@@ -760,8 +759,7 @@ def public_scan(scan, include_groups=False):
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
-        "progress_percent": scan.get("progress_percent", 0),
-        "progress_label": scan.get("progress_label", ""),
+        **task_progress.public_fields(scan),
         "error": scan.get("error", ""),
         "created_at": scan.get("created_at"),
         "started_at": scan.get("started_at"),

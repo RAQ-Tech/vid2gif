@@ -153,6 +153,27 @@ def record_successful_job(job):
     return save_sample(sample)
 
 
+def job_duration_estimate(cfg, in_memory_samples=None):
+    samples = []
+    samples.extend(load_history())
+    samples.extend(in_memory_samples or [])
+    target_optimize = optimize_enabled(cfg or {})
+    rates = []
+    for raw in samples:
+        sample = _coerce_sample(raw)
+        if not sample or sample["optimize"] != target_optimize:
+            continue
+        rates.append(sample["elapsed_seconds"] / sample["settings_unit"])
+    if not rates:
+        return {"seconds": None, "sample_count": 0, "confidence": "calibrating"}
+    seconds = statistics.median(rates) * settings_unit(cfg or {})
+    return {
+        "seconds": max(1, int(round(seconds))),
+        "sample_count": len(rates),
+        "confidence": "history" if len(rates) >= 3 else "learning",
+    }
+
+
 def _plain_count_label(count):
     return f"{count} compatible file" if count == 1 else f"{count} compatible files"
 

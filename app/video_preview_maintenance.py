@@ -20,6 +20,7 @@ from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
 from . import poster_maintenance
+from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import (
     FileSafetyError,
@@ -175,9 +176,9 @@ def _check_cancelled(scan):
 
 def _set_scan_progress(scan, percent, label, **values):
     with preview_lock:
-        scan["progress_percent"] = max(0, min(100, int(percent)))
-        scan["progress_label"] = label
-        scan.update(values)
+        task_progress.update_scan(
+            scan, "video_preview_missing_scan", percent, label, **values
+        )
 
 
 def _coerce_page(offset, limit):
@@ -249,6 +250,8 @@ def _skip_dir(base, dirname, lib_root):
     path = os.path.join(base, dirname)
     if os.path.islink(path):
         return True
+    if dirname.lower() in {"trailer", "trailers"}:
+        return True
     if dirname == QUARANTINE_DIRNAME:
         return True
     if dirname in {"_previews", "__pycache__"}:
@@ -317,8 +320,7 @@ def public_scan(scan):
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
-        "progress_percent": scan.get("progress_percent", 0),
-        "progress_label": scan.get("progress_label", ""),
+        **task_progress.public_fields(scan),
         "error": scan.get("error", ""),
         "created_at": scan.get("created_at"),
         "started_at": scan.get("started_at"),
@@ -1081,9 +1083,9 @@ def _check_quality_cancelled(scan):
 
 def _set_quality_progress(scan, percent, label, **values):
     with preview_lock:
-        scan["progress_percent"] = max(0, min(100, int(percent)))
-        scan["progress_label"] = label
-        scan.update(values)
+        task_progress.update_scan(
+            scan, "video_preview_quality_scan", percent, label, **values
+        )
 
 
 def public_quality_scan(scan):
@@ -1094,8 +1096,7 @@ def public_quality_scan(scan):
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
-        "progress_percent": scan.get("progress_percent", 0),
-        "progress_label": scan.get("progress_label", ""),
+        **task_progress.public_fields(scan),
         "error": scan.get("error", ""),
         "created_at": scan.get("created_at"),
         "started_at": scan.get("started_at"),

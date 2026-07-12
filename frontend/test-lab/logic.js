@@ -148,6 +148,10 @@ export function comparisonPlayerSignature(files) {
   return JSON.stringify((files || []).map(file => [file.id, file.display_url]));
 }
 
+export function comparisonShouldLoad(activated, files) {
+  return Boolean(activated) && Array.isArray(files) && files.some(file => file?.display_url);
+}
+
 export function buildFrameTimeline(frames) {
   let total = 0;
   const starts = (frames || []).map(frame => {

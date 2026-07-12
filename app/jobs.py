@@ -8,7 +8,7 @@ import shutil
 
 from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
 from .conversion_gate import conversion_lock
-from .estimate_history import record_successful_job
+from .estimate_history import job_duration_estimate, record_successful_job
 from .impact_metrics import record_creative_output
 from .gif_optimizer import optimize_gif
 from .file_safety import (
@@ -34,6 +34,7 @@ from .progress import (
     mark_job_started,
     rounded_seconds,
     update_job_label,
+    update_job_stage,
 )
 from .utils import find_background_image
 
@@ -70,6 +71,10 @@ def public_job(job):
         "progress_percent": job.get("progress_percent", 0),
         "elapsed_seconds": job.get("elapsed_seconds"),
         "eta_seconds": job.get("eta_seconds"),
+        "eta_confidence": job.get("eta_confidence", "none"),
+        "expected_duration_seconds": job.get("expected_duration_seconds"),
+        "progress_stage": job.get("progress_stage", ""),
+        "progress_indeterminate": False,
         "output_size_bytes": job.get("output_size_bytes"),
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
@@ -207,31 +212,25 @@ def _queue_summary(all_jobs):
         end = max(finishes) if len(completed) == total and finishes else now
         elapsed = rounded_seconds(end - min(starts))
 
-    finished_durations = [
-        j.get("elapsed_seconds")
-        for j in completed
-        if j.get("elapsed_seconds") and j.get("elapsed_seconds") > 0
-    ]
     eta = None
+    confidence = "none"
     if len(completed) < total:
-        running_remaining = sum(
-            (100 - max(0, min(100, j.get("progress_percent") or 0))) / 100.0
-            for j in running
-        )
-        remaining_units = len(queued) + running_remaining
-        if finished_durations:
-            eta = rounded_seconds(
-                (sum(finished_durations) / len(finished_durations)) * remaining_units
-            )
-        elif elapsed and percent > 0:
-            eta = rounded_seconds(elapsed * (100 - percent) / percent)
+        remaining = [j.get("eta_seconds") for j in running]
+        remaining.extend(j.get("expected_duration_seconds") for j in queued)
+        if remaining and all(value is not None for value in remaining):
+            eta = rounded_seconds(sum(float(value) for value in remaining))
+            confidence = "history" if all(
+                j.get("eta_confidence") == "history" for j in running + queued
+            ) else "learning"
+        elif running or queued:
+            confidence = "calibrating"
 
     if percent >= 100:
         label = f"Complete · {total} item{'s' if total != 1 else ''}"
     elif eta is not None:
-        label = f"{percent}% complete · {format_duration(eta)} remaining"
+        label = f"{percent}% complete · about {format_duration(eta)} remaining"
     else:
-        label = f"{percent}% complete"
+        label = f"{percent}% complete · learning timing" if confidence == "calibrating" else f"{percent}% complete"
 
     return {
         "total_active_items": total,
@@ -239,6 +238,7 @@ def _queue_summary(all_jobs):
         "queue_progress_percent": percent,
         "queue_elapsed_seconds": elapsed,
         "queue_eta_seconds": eta,
+        "queue_eta_confidence": confidence,
         "queue_progress_label": label,
     }
 
@@ -332,6 +332,7 @@ def enqueue_job(video_path, cfg, batch_id=None):
     tmp_dir = os.path.join(PROCESS_TMP_ROOT, f"{base}_{job_id}")
     log_path = os.path.join(LOG_DIR, f"{job_id}.txt")
     logger = create_logger(job_id, log_path)
+    duration_estimate = job_duration_estimate(cfg)
     logger.info("Job created")
     logger.info(f"Source: {video_path}")
     logger.info(f"Output: {out_gif}")
@@ -349,6 +350,8 @@ def enqueue_job(video_path, cfg, batch_id=None):
         "logger": logger,
         "source_identity": source_identity,
         "output_state": output_state,
+        "expected_duration_seconds": duration_estimate.get("seconds"),
+        "eta_confidence": duration_estimate.get("confidence"),
     }
     initialize_job_progress(job)
     with lock:
@@ -455,6 +458,11 @@ def worker():
                         background_image=bg_image,
                     )
                     if ok:
+                        update_job_stage(
+                            job,
+                            92 if job["cfg"].get("optimize", True) else 97,
+                            "Optimizing" if job["cfg"].get("optimize", True) else "Finalizing",
+                        )
                         optimize_gif(tmp_gif, job, job["logger"])
                         try:
                             if not _valid_staged_gif(tmp_gif):
@@ -469,6 +477,7 @@ def worker():
                                     "Source video changed during GIF generation"
                                 )
                             staged_identity = regular_file_identity(tmp_gif)
+                            update_job_stage(job, 98, "Installing")
                             job["logger"].info("Installing GIF atomically")
                             atomic_install_file(
                                 tmp_gif,

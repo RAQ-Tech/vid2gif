@@ -185,7 +185,9 @@ def capture_manifest(area, path, lib_root=None):
     for base, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = [
             name for name in dirs
-            if name not in SKIP_DIRS and not os.path.islink(os.path.join(base, name))
+            if name not in SKIP_DIRS
+            and not (area == "video_previews" and name.lower() in {"trailer", "trailers"})
+            and not os.path.islink(os.path.join(base, name))
         ]
         for name in names:
             if not _is_relevant(area, name):

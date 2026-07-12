@@ -413,6 +413,16 @@ body {
   min-width: 0;
 }
 
+.progress-bar.progress-indeterminate {
+  background-size: 1rem 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar.progress-bar-animated {
+    animation: none;
+  }
+}
+
 .toolbar-row {
   margin-bottom: 14px;
 }

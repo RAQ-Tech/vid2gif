@@ -270,7 +270,7 @@
               <div class="test-lab-run-progress">
                 <div id="testLabRunStatus"><div class="text-muted">No test run yet.</div></div>
                 <div class="progress" role="progressbar" aria-label="Test lab progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                  <div id="testLabRunProgressBar" class="progress-bar" style="width: 0%">0%</div>
+                  <div id="testLabRunProgressBar" class="progress-bar" style="width: 0%"></div>
                 </div>
                 <div id="testLabRunVariants" class="test-lab-run-variants"></div>
               </div>
@@ -373,8 +373,8 @@
             <div id="queue-summary-label" class="metric-value">{{ queue_summary.queue_progress_label }}</div>
           </div>
           <div class="metric-progress">
-            <div class="progress" role="progressbar" aria-label="Overall queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ queue_summary.queue_progress_percent }}">
-              <div id="queue-progress-bar" class="progress-bar" style="width: {{ queue_summary.queue_progress_percent }}%">{{ queue_summary.queue_progress_percent }}%</div>
+            <div class="progress progress-thin" role="progressbar" aria-label="Overall queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ queue_summary.queue_progress_percent }}">
+              <div id="queue-progress-bar" class="progress-bar" style="width: {{ queue_summary.queue_progress_percent }}%"></div>
             </div>
             <div class="metric-row">
               <span id="queue-items">{{ queue_summary.completed_active_items }} of {{ queue_summary.total_active_items }} items complete</span>
@@ -430,8 +430,8 @@
               <td class="path-cell"><code title="{{ j.video }}">{{ j.video }}</code></td>
               <td><span class="badge text-bg-primary">{{ j.status }}</span></td>
               <td class="progress-cell">
-                <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
-                  <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%">{{ j.progress_percent or 0 }}%</div>
+                <div class="progress progress-thin" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
+                  <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%"></div>
                 </div>
                 <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Starting' }}</div>
               </td>
@@ -452,8 +452,8 @@
               <td class="path-cell"><code title="{{ j.video }}">{{ j.video }}</code></td>
               <td><span class="badge text-bg-secondary">{{ j.status }}</span></td>
               <td class="progress-cell">
-                <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
-                  <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%">{{ j.progress_percent or 0 }}%</div>
+                <div class="progress progress-thin" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ j.progress_percent or 0 }}">
+                  <div class="progress-bar" style="width: {{ j.progress_percent or 0 }}%"></div>
                 </div>
                 <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Waiting' }}</div>
               </td>
@@ -543,7 +543,7 @@
               <span id="jobStatus" class="status-pill idle">idle</span>
             </div>
             <div class="progress" role="progressbar" aria-label="Current job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-              <div id="jobProgressBar" class="progress-bar" style="width: 0%">0%</div>
+              <div id="jobProgressBar" class="progress-bar" style="width: 0%"></div>
             </div>
             <div class="metric-row">
               <span id="jobElapsed">Elapsed: not started</span>
@@ -562,7 +562,7 @@
               <span id="queueItems" class="small text-muted">0 of 0 items</span>
             </div>
             <div class="progress" role="progressbar" aria-label="Queue progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-              <div id="queueProgressBar" class="progress-bar" style="width: 0%">0%</div>
+              <div id="queueProgressBar" class="progress-bar" style="width: 0%"></div>
             </div>
             <div class="metric-row">
               <span id="queueElapsed">Elapsed: not started</span>

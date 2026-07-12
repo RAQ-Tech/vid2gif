@@ -59,13 +59,16 @@
     return Math.max(0, Math.min(100, Math.round(Number(percent || 0))));
   }
 
-  function setProgressBar(id, percent) {
+  function setProgressBar(id, model) {
     const bar = byId(id);
     if (!bar) return;
-    const pct = clampPercent(percent);
-    bar.style.width = `${pct}%`;
-    bar.textContent = bar.classList.contains('progress-bar') && bar.parentElement.classList.contains('progress-thin') ? '' : `${pct}%`;
-    bar.parentElement.setAttribute('aria-valuenow', pct);
+    const data = typeof model === 'object' ? model : {progress_percent: model};
+    if (window.vid2gifProgress) window.vid2gifProgress.apply(bar, data);
+    else {
+      const pct = clampPercent(data?.progress_percent);
+      bar.style.width = `${pct}%`;
+      bar.parentElement?.setAttribute('aria-valuenow', String(pct));
+    }
   }
 
   function jobLogHref(id) {
@@ -87,8 +90,8 @@
   function progressCell(j) {
     const pct = clampPercent(j.progress_percent);
     const label = escapeHtml(j.progress_label || j.progress_text || (j.status === 'queued' ? 'Waiting' : 'Starting'));
-    return `<div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">` +
-           `<div class="progress-bar" style="width: ${pct}%">${pct}%</div></div>` +
+    return `<div class="progress progress-thin" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">` +
+           `<div class="progress-bar" style="width: ${pct}%"></div></div>` +
            `<div class="small text-muted mt-1">${label}</div>`;
   }
 
@@ -115,7 +118,7 @@
       topCurrentJob.textContent = current ? (current.progress_label || current.status || 'Running') : 'No current job';
     }
     if (topCurrentPercent) topCurrentPercent.textContent = `${current ? clampPercent(current.progress_percent) : 0}%`;
-    setProgressBar('topCurrentProgressBar', current ? current.progress_percent : 0);
+    setProgressBar('topCurrentProgressBar', current || {progress_percent: 0});
   }
 
   function updateTopFromJobs(all) {
@@ -136,7 +139,7 @@
     const pct = clampPercent(data.queue_progress_percent);
     const summaryLabel = byId('queue-summary-label');
     if (summaryLabel) summaryLabel.textContent = data.queue_progress_label || `${pct}% complete`;
-    setProgressBar('queue-progress-bar', pct);
+    setProgressBar('queue-progress-bar', data);
     const items = byId('queue-items');
     const elapsed = byId('queue-elapsed');
     const eta = byId('queue-eta');
@@ -147,7 +150,8 @@
     }
     if (eta) {
       eta.textContent =
-        `Remaining: ${data.queue_eta_seconds === null || data.queue_eta_seconds === undefined ? 'unknown' : formatDuration(data.queue_eta_seconds)}`;
+        window.vid2gifProgress?.etaLabel(data.queue_eta_seconds, data.queue_eta_confidence) ||
+        `Remaining: ${data.queue_eta_seconds == null ? 'unknown' : formatDuration(data.queue_eta_seconds)}`;
     }
   }
 
@@ -295,25 +299,27 @@
     }
     setStatus(job.status);
     setProgress(job.progress_label || job.progress_text || '');
-    setProgressBar('jobProgressBar', job.progress_percent);
+    setProgressBar('jobProgressBar', job);
     byId('jobProgressLabel').textContent = job.progress_label || job.progress_text || job.status || 'Idle';
     byId('jobElapsed').textContent =
       `Elapsed: ${job.elapsed_seconds === null || job.elapsed_seconds === undefined ? 'not started' : formatDuration(job.elapsed_seconds)}`;
     byId('jobEta').textContent =
-      `Remaining: ${job.eta_seconds === null || job.eta_seconds === undefined ? 'unknown' : formatDuration(job.eta_seconds)}`;
+      window.vid2gifProgress?.etaLabel(job.eta_seconds, job.eta_confidence) ||
+      `Remaining: ${job.eta_seconds == null ? 'unknown' : formatDuration(job.eta_seconds)}`;
     byId('jobSize').textContent = `Size: ${formatSize(job.output_size_bytes, 'pending')}`;
     byId('jobOptimization').textContent = `Optimization: ${job.gif_optimization_label || 'pending'}`;
   }
 
   function setQueueMetrics(data) {
     if (!data) return;
-    setProgressBar('queueProgressBar', data.queue_progress_percent);
+    setProgressBar('queueProgressBar', data);
     byId('queueProgressLabel').textContent = data.queue_progress_label || 'No active queue';
     byId('queueItems').textContent = `${data.completed_active_items || 0} of ${data.total_active_items || 0} items`;
     byId('queueElapsed').textContent =
       `Elapsed: ${data.queue_elapsed_seconds === null || data.queue_elapsed_seconds === undefined ? 'not started' : formatDuration(data.queue_elapsed_seconds)}`;
     byId('queueEta').textContent =
-      `Remaining: ${data.queue_eta_seconds === null || data.queue_eta_seconds === undefined ? 'unknown' : formatDuration(data.queue_eta_seconds)}`;
+      window.vid2gifProgress?.etaLabel(data.queue_eta_seconds, data.queue_eta_confidence) ||
+      `Remaining: ${data.queue_eta_seconds == null ? 'unknown' : formatDuration(data.queue_eta_seconds)}`;
   }
 
   function newestFinishedJob(all) {

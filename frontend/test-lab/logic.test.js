@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildFrameTimeline,
   comparisonPlayerSignature,
+  comparisonShouldLoad,
   comparisonStructureSignature,
   frameIndexForPhase,
   frameIndexForTime,
@@ -16,6 +17,13 @@ import {
   variantRequest,
   variantSummary,
 } from './logic.js';
+
+test('comparison playback stays dormant until explicitly activated', () => {
+  const files = [{id: 'one', display_url: '/preview.gif'}];
+  assert.equal(comparisonShouldLoad(false, files), false);
+  assert.equal(comparisonShouldLoad(true, files), true);
+  assert.equal(comparisonShouldLoad(true, [{id: 'one', display_url: ''}]), false);
+});
 
 test('comparison migration compacts legacy slots, removes duplicates, and caps at four', () => {
   const storage = {

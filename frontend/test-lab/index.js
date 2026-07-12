@@ -5,6 +5,7 @@ import {
   MAX_COMPARISON_ITEMS,
   MAX_VARIANTS,
   comparisonPlayerSignature,
+  comparisonShouldLoad,
   comparisonStructureSignature,
   createId,
   loadComparisonIds,
@@ -111,6 +112,7 @@ const state = {
   pendingRunId: storageGet(PENDING_RUN_STORAGE_KEY) || '',
   inventoryLoaded: false,
   trayQuery: '',
+  playerActivated: false,
 };
 
 let runPollTimer = null;
@@ -332,9 +334,9 @@ function renderRun(run) {
   const variants = byId('testLabRunVariants');
   const bar = byId('testLabRunProgressBar');
   const progress = clampPercent(run?.progress_percent);
-  if (bar) {
+  if (window.vid2gifProgress) window.vid2gifProgress.apply(bar, run || {progress_percent: 0});
+  else if (bar) {
     bar.style.width = `${progress}%`;
-    bar.textContent = `${progress}%`;
     bar.parentElement?.setAttribute('aria-valuenow', String(progress));
   }
   if (!run) {
@@ -361,9 +363,15 @@ function tileStatusMarkup(file) {
     return `<div class="test-player-status error" data-player-status="${escapeHtml(file.id)}"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><span>${escapeHtml(file.preview_error || 'Preview generation failed')}</span><button type="button" class="btn btn-outline-light btn-sm" data-retry-preview="${escapeHtml(file.id)}">Retry</button></div>`;
   }
   if (!file.display_url) {
-    return `<div class="test-player-status" data-player-status="${escapeHtml(file.id)}"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Preparing preview</span></div>`;
+    const content = state.playerActivated
+      ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Preparing preview</span>'
+      : '<i class="bi bi-play-circle" aria-hidden="true"></i><span>Press Play to load preview</span>';
+    return `<div class="test-player-status" data-player-status="${escapeHtml(file.id)}">${content}</div>`;
   }
-  return `<div class="test-player-status" data-player-status="${escapeHtml(file.id)}"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Decoding GIF</span></div>`;
+  const content = state.playerActivated
+    ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Decoding GIF</span>'
+    : '<i class="bi bi-play-circle" aria-hidden="true"></i><span>Press Play to load preview</span>';
+  return `<div class="test-player-status" data-player-status="${escapeHtml(file.id)}">${content}</div>`;
 }
 
 function playerTile(file) {
@@ -421,8 +429,8 @@ function updatePlayerFrame(playerState) {
 function updatePlayerControls(playerState) {
   const play = byId('testLabPlayPause');
   if (play) {
-    play.disabled = playerState.readyCount === 0;
-    const label = playerState.playing ? 'Pause previews' : 'Play previews';
+    play.disabled = comparisonFiles().length === 0;
+    const label = playerState.playing ? 'Pause previews' : (playerState.readyCount ? 'Play previews' : 'Load and play previews');
     if (play.title !== label) play.title = label;
     if (play.getAttribute('aria-label') !== label) play.setAttribute('aria-label', label);
     const icon = play.querySelector('[data-player-play-icon]');
@@ -440,6 +448,14 @@ const player = new SynchronizedGifPlayer({
 
 function comparisonFiles() {
   return state.comparisonIds.map(id => state.filesById.get(id)).filter(Boolean);
+}
+
+function resetPlayerActivation() {
+  state.playerActivated = false;
+  currentPlayerSignature = '';
+  clearTimeout(previewPollTimer);
+  previewPollTimer = null;
+  player.clear();
 }
 
 function updateComparisonMetadata(files) {
@@ -519,6 +535,7 @@ function initializeDeckSortable() {
       const index = Math.max(0, Math.min(event.newIndex, state.comparisonIds.length));
       state.comparisonIds.splice(index, 0, id);
       saveComparison();
+      resetPlayerActivation();
       renderComparison(true);
       announce(`${state.filesById.get(id).name} added to comparison`);
     },
@@ -526,6 +543,9 @@ function initializeDeckSortable() {
       if (event.from !== deck || event.to !== deck) return;
       state.comparisonIds = Array.from(deck.querySelectorAll('.test-player-tile'), item => item.dataset.fileId);
       saveComparison();
+      resetPlayerActivation();
+      currentStructureSignature = '';
+      renderComparison(true);
       announce('Comparison order updated');
     },
   });
@@ -552,8 +572,8 @@ function renderComparison(force = false) {
   }
   const files = comparisonFiles();
   const signature = comparisonStructureSignature(files);
-  requestSelectedPreviews(files);
-  if (!force && signature === currentStructureSignature) {
+  if (state.playerActivated) requestSelectedPreviews(files);
+  if (!force && signature === currentStructureSignature && (!state.playerActivated || currentPlayerSignature)) {
     updateComparisonMetadata(files);
     return;
   }
@@ -563,6 +583,12 @@ function renderComparison(force = false) {
   deck.dataset.count = String(files.length);
   deck.innerHTML = files.map(playerTile).join('') + (files.length < MAX_COMPARISON_ITEMS ? dropzoneMarkup(files.length === 0) : '');
   initializeDeckSortable();
+
+  if (!comparisonShouldLoad(state.playerActivated, files)) {
+    player.clear();
+    updatePlayerControls(player.playerState());
+    return;
+  }
 
   const waiting = files.some(file => !file.display_url && file.preview_status !== 'failed');
   const playable = files.filter(file => file.display_url);
@@ -692,6 +718,7 @@ async function handleCompletedRun(run) {
   await refreshInventory();
   state.comparisonIds = successfulFileIds(run);
   saveComparison();
+  resetPlayerActivation();
   currentStructureSignature = '';
   currentPlayerSignature = '';
   renderComparison(true);
@@ -840,6 +867,9 @@ function handleKeyboardDrag(event, fileId) {
     keyboardDrag = null;
     event.currentTarget.setAttribute('aria-pressed', 'false');
     saveComparison();
+    resetPlayerActivation();
+    currentStructureSignature = '';
+    renderComparison(true);
     announce('GIF dropped');
     return;
   }
@@ -864,6 +894,7 @@ function addFromKeyboard(fileId) {
   }
   state.comparisonIds.push(fileId);
   saveComparison();
+  resetPlayerActivation();
   renderComparison(true);
   announce(`${state.filesById.get(fileId)?.name || 'GIF'} added to comparison`);
 }
@@ -911,7 +942,18 @@ function bindEvents() {
     if (event.target.closest('#testLabRemoveVariant')) removeVariant();
   });
   byId('testLabRunButton')?.addEventListener('click', startRun);
-  byId('testLabPlayPause')?.addEventListener('click', () => player.playing ? player.pause() : player.play());
+  byId('testLabPlayPause')?.addEventListener('click', () => {
+    if (player.playing) {
+      player.pause();
+    } else if (player.tracks.size) {
+      player.play();
+    } else {
+      state.playerActivated = true;
+      currentStructureSignature = '';
+      currentPlayerSignature = '';
+      renderComparison(true);
+    }
+  });
   byId('testLabRestartPreviews')?.addEventListener('click', () => player.restart(true));
   byId('testLabTimeline')?.addEventListener('input', event => player.seek(Number(event.target.value) / 1000));
   byId('testLabPlaybackSpeed')?.addEventListener('change', event => player.setSpeed(event.target.value));
@@ -927,12 +969,14 @@ function bindEvents() {
     if (remove) {
       state.comparisonIds = state.comparisonIds.filter(id => id !== remove.dataset.removeComparison);
       saveComparison();
+      resetPlayerActivation();
       currentStructureSignature = '';
       currentPlayerSignature = '';
       renderComparison(true);
     }
     if (retryPreview) requestPreview(retryPreview.dataset.retryPreview, true);
     if (retryDecode) {
+      state.playerActivated = true;
       currentStructureSignature = '';
       currentPlayerSignature = '';
       renderComparison(true);

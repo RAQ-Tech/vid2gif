@@ -9,6 +9,7 @@ from . import config
 from . import dashboard
 from . import maintenance
 from . import maintenance_scan_store
+from . import task_progress
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import video_preview_maintenance
@@ -34,6 +35,15 @@ AREA_HREFS = {
     "actor_images": "/maintenance#actor-images",
 }
 TERMINAL = {"success", "failed", "cancelled", "skipped"}
+STEP_WORKFLOWS = {
+    "overview": "library_overview_scan",
+    "duplicates": "duplicate_scan",
+    "video_previews_missing": "video_preview_missing_scan",
+    "video_previews_quality": "video_preview_quality_scan",
+    "subtitles": "subtitle_scan",
+    "posters": "poster_scan",
+    "actor_images": "actor_image_scan",
+}
 
 _lock = threading.Lock()
 _current = None
@@ -81,7 +91,9 @@ def _public(run):
                 error="The active attempt did not complete; latest successful area results remain available.",
             )
     public = copy.deepcopy(run)
-    public.pop("_active_cancel", None)
+    for key in list(public):
+        if key.startswith("_"):
+            public.pop(key, None)
     public["active"] = public.get("status") in {"queued", "running", "cancelling"}
     return public
 
@@ -120,12 +132,31 @@ def _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_s
         scan = (payload or {}).get("scan") or {}
         status = scan.get("status") or "failed"
         local_progress = int(scan.get("progress_percent") or 0)
-        overall = int(100 * (completed_steps + local_progress / 100) / max(total_steps, 1))
+        overall = int(100 * completed_steps / max(total_steps, 1))
         label = scan.get("progress_label") or sublabel or AREA_LABELS[area]
-        _update(run, progress_percent=overall, progress_label=label)
+        pending_steps = (run.get("_expanded_steps") or [])[completed_steps + 1:]
+        eta_parts = [scan.get("eta_seconds")]
+        eta_parts.extend(
+            task_progress.duration_estimate(STEP_WORKFLOWS.get(step, step)).get("seconds")
+            for step in pending_steps
+        )
+        eta = sum(eta_parts) if eta_parts and all(value is not None for value in eta_parts) else None
+        _update(
+            run,
+            progress_percent=overall,
+            progress_indeterminate=True,
+            progress_completed_steps=completed_steps,
+            progress_total_steps=total_steps,
+            eta_seconds=eta,
+            eta_confidence="history" if eta is not None else "calibrating",
+            progress_label=f"{completed_steps} of {total_steps} checks complete · {label}",
+        )
         _area_update(
             run, area, status=status, scan_id=scan.get("id") or scan_id,
-            progress_percent=local_progress, progress_label=label, error=err or scan.get("error") or "",
+            progress_percent=local_progress,
+            progress_indeterminate=bool(scan.get("progress_indeterminate")),
+            eta_seconds=scan.get("eta_seconds"),
+            progress_label=label, error=err or scan.get("error") or "",
             result_count=_scan_result_count(scan, area), finished_at=scan.get("finished_at"),
         )
         if status not in {"queued", "running", "cancelling"}:
@@ -157,6 +188,8 @@ def _execute(run):
     for area in selected:
         expanded.extend(["video_previews_missing", "video_previews_quality"] if area == "video_previews" else [area])
     total_steps = len(expanded)
+    run["_expanded_steps"] = expanded
+    run["progress_total_steps"] = total_steps
     completed = 0
     issues = False
     _update(run, status="running", started_at=utc_iso(), progress_label="Starting maintenance scans")
@@ -171,6 +204,12 @@ def _execute(run):
                 if not settings.get("emby_url") or not settings.get("emby_api_key"):
                     _area_update(run, area, status="skipped", error="Emby configuration is required", progress_percent=100, progress_label="Skipped: configure Emby", finished_at=utc_iso())
                     completed += 1
+                    _update(
+                        run,
+                        progress_percent=int(100 * completed / max(total_steps, 1)),
+                        progress_indeterminate=False,
+                        progress_completed_steps=completed,
+                    )
                     continue
             if step == "overview":
                 result, err = _run_step(run, area, lambda path: dashboard.start_library_scan(path), _library_status, lambda _id: dashboard.cancel_library_scan(), completed, total_steps)
@@ -193,16 +232,21 @@ def _execute(run):
             completed += 1
             if err or not result or result.get("status") not in {"success", "skipped"}:
                 issues = True
-            _update(run, progress_percent=int(100 * completed / max(total_steps, 1)))
+            _update(
+                run,
+                progress_percent=int(100 * completed / max(total_steps, 1)),
+                progress_indeterminate=False,
+                progress_completed_steps=completed,
+            )
         if run.get("cancel_requested"):
             status = "cancelled"
             label = "Maintenance scan cancelled"
         else:
             status = "complete_with_issues" if issues else "complete"
             label = "Maintenance scans complete with issues" if issues else "Maintenance scans complete"
-        _update(run, status=status, progress_percent=100, progress_label=label, current_area="", finished_at=utc_iso(), _active_cancel=None)
+        _update(run, status=status, progress_percent=100, progress_indeterminate=False, progress_completed_steps=total_steps, eta_seconds=0, progress_label=label, current_area="", finished_at=utc_iso(), _active_cancel=None)
     except Exception as exc:
-        _update(run, status="complete_with_issues", error=str(exc), progress_percent=100, progress_label="Maintenance scans stopped unexpectedly", current_area="", finished_at=utc_iso(), _active_cancel=None)
+        _update(run, status="complete_with_issues", error=str(exc), progress_percent=100, progress_indeterminate=False, eta_seconds=0, progress_label="Maintenance scans stopped unexpectedly", current_area="", finished_at=utc_iso(), _active_cancel=None)
     finally:
         try:
             _write_state({"last_scope": run["path"], "last_run": _public(run)})
@@ -234,6 +278,8 @@ def start(path=None, areas=None, synchronous=False):
         run = {
             "id": run_id, "status": "queued", "path": os.path.realpath(real), "selected_areas": selected,
             "created_at": utc_iso(), "started_at": None, "finished_at": None, "progress_percent": 0,
+            "progress_indeterminate": False, "eta_seconds": None, "eta_confidence": "none",
+            "progress_completed_steps": 0, "progress_total_steps": 0,
             "progress_label": "Queued", "current_area": "", "error": "", "cancel_requested": False,
             "areas": {area: {"key": area, "label": AREA_LABELS[area], "href": AREA_HREFS[area], "status": "queued", "scan_id": "", "progress_percent": 0, "progress_label": "Queued", "error": "", "result_count": 0, "started_at": None, "finished_at": None} for area in selected},
         }
