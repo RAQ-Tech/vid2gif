@@ -414,6 +414,15 @@ def test_entrypoint_chowns_library_only_when_requested():
     assert "for dir in /library /state" not in entrypoint
 
 
+def test_entrypoint_defaults_to_group_writable_umask():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    entrypoint = (ROOT / "docker-entrypoint.sh").read_text()
+
+    assert "UMASK=002" in dockerfile
+    assert 'UMASK="${UMASK:-002}"' in entrypoint
+    assert 'umask "$UMASK"' in entrypoint
+
+
 def test_runtime_requirements_exclude_dev_tools():
     requirements = (ROOT / "requirements.txt").read_text()
     dev_requirements = (ROOT / "requirements-dev.txt").read_text()

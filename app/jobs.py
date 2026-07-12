@@ -11,6 +11,13 @@ from .conversion_gate import conversion_lock
 from .estimate_history import record_successful_job
 from .impact_metrics import record_creative_output
 from .gif_optimizer import optimize_gif
+from .file_safety import (
+    FileSafetyError,
+    atomic_install_file,
+    identity_matches,
+    regular_file_identity,
+    target_state,
+)
 from .ffmpeg_utils import (
     get_duration,
     probe_video_details,
@@ -28,7 +35,7 @@ from .progress import (
     rounded_seconds,
     update_job_label,
 )
-from .utils import find_background_image, path_is_under
+from .utils import find_background_image
 
 
 def _env_int(name, default):
@@ -283,10 +290,42 @@ def new_queue_batch_id():
     return datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
+def _safe_video_identity(video_path):
+    return regular_file_identity(
+        video_path, root=LIB_ROOT, allowed_extensions=VIDEO_EXTS
+    )
+
+
+def _valid_staged_gif(path):
+    try:
+        if os.path.getsize(path) < 6:
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(6) in {b"GIF87a", b"GIF89a"}
+    except OSError:
+        return False
+
+
+def _ensure_job_safety_state(job):
+    source_identity = job.get("source_identity") or _safe_video_identity(job.get("video"))
+    if not source_identity:
+        raise FileSafetyError("Source is not a safe, compatible video file")
+    job["source_identity"] = source_identity
+    if "output_state" not in job:
+        job["output_state"] = target_state(job.get("out_gif"), root=LIB_ROOT)
+    return source_identity, job["output_state"]
+
+
 def enqueue_job(video_path, cfg, batch_id=None):
-    if not path_is_under(video_path, LIB_ROOT):
-        return None, "Path must be under /library"
+    source_identity = _safe_video_identity(video_path)
+    if not source_identity:
+        return None, "Choose a regular, non-symlink video under /library"
+    video_path = os.path.realpath(video_path)
     out_gif = os.path.join(os.path.dirname(video_path), "poster.gif")
+    try:
+        output_state = target_state(out_gif, root=LIB_ROOT)
+    except FileSafetyError as exc:
+        return None, str(exc)
     base = os.path.splitext(os.path.basename(video_path))[0]
     job_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     batch_id = batch_id or job_id
@@ -308,6 +347,8 @@ def enqueue_job(video_path, cfg, batch_id=None):
         "log_path": log_path,
         "progress_text": "",
         "logger": logger,
+        "source_identity": source_identity,
+        "output_state": output_state,
     }
     initialize_job_progress(job)
     with lock:
@@ -319,11 +360,13 @@ def enqueue_job(video_path, cfg, batch_id=None):
 
 def find_videos(root_path):
     vids = []
-    for base, _, files in os.walk(root_path):
+    for base, dirs, files in os.walk(root_path, followlinks=False):
+        dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
-            if ext in VIDEO_EXTS:
-                vids.append(os.path.join(base, fn))
+            path = os.path.join(base, fn)
+            if ext in VIDEO_EXTS and _safe_video_identity(path):
+                vids.append(os.path.realpath(path))
     return vids
 
 
@@ -346,6 +389,21 @@ def worker():
             mark_job_started(job)
             job["logger"].info("Job started")
             emit_queue_status()
+            try:
+                source_identity, output_state = _ensure_job_safety_state(job)
+            except FileSafetyError as exc:
+                mark_job_finished(job, "failed")
+                job["logger"].error(str(exc))
+                continue
+            if not identity_matches(
+                job["video"],
+                source_identity,
+                root=LIB_ROOT,
+                allowed_extensions=VIDEO_EXTS,
+            ):
+                mark_job_finished(job, "failed")
+                job["logger"].error("Source video changed while the job was queued")
+                continue
             try:
                 os.makedirs(job["tmp_dir"], exist_ok=True)
             except Exception as e:
@@ -399,11 +457,29 @@ def worker():
                     if ok:
                         optimize_gif(tmp_gif, job, job["logger"])
                         try:
-                            job["logger"].info("Moving GIF into place")
-                            shutil.move(tmp_gif, job["out_gif"])
+                            if not _valid_staged_gif(tmp_gif):
+                                raise FileSafetyError("Generated GIF failed validation")
+                            if not identity_matches(
+                                job["video"],
+                                source_identity,
+                                root=LIB_ROOT,
+                                allowed_extensions=VIDEO_EXTS,
+                            ):
+                                raise FileSafetyError(
+                                    "Source video changed during GIF generation"
+                                )
+                            staged_identity = regular_file_identity(tmp_gif)
+                            job["logger"].info("Installing GIF atomically")
+                            atomic_install_file(
+                                tmp_gif,
+                                job["out_gif"],
+                                root=LIB_ROOT,
+                                expected_source=staged_identity,
+                                expected_target=output_state,
+                            )
                         except Exception as e:
                             mark_job_finished(job, "failed")
-                            job["logger"].error(f"Failed to move GIF: {e}")
+                            job["logger"].error(f"Failed to install GIF safely: {e}")
                         else:
                             if os.path.isfile(job["out_gif"]):
                                 mark_job_finished(job, "success", job["out_gif"])

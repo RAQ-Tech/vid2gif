@@ -2,7 +2,6 @@ import datetime
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -21,6 +20,7 @@ from .config import (
     LIB_ROOT,
     VIDEO_EXTS,
 )
+from .file_safety import atomic_install_file, regular_file_identity, target_state
 from .progress import format_duration, utc_iso
 from .table_sort import sort_records
 from .utils import BACKGROUND_IMAGE_EXTS, path_is_under, resolve_case_insensitive
@@ -121,14 +121,7 @@ def _path_key(path, root):
 
 
 def _file_identity(path):
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    return {
-        "size": stat.st_size,
-        "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
-    }
+    return regular_file_identity(path)
 
 
 def _read_json(path, default):
@@ -426,20 +419,18 @@ def _same_file_bytes(first, second):
     return first_hash.digest() == second_hash.digest()
 
 
-def _copy_file_atomic(source, target):
-    tmp_path = f"{target}.{os.getpid()}.tmp"
-    try:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        shutil.copy2(source, tmp_path)
-        os.replace(tmp_path, target)
-    except Exception:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
-        raise
+def _copy_file_atomic(source, target, *, root, expected_target=None):
+    return atomic_install_file(
+        source,
+        target,
+        root=root,
+        expected_source=regular_file_identity(source),
+        expected_target=(
+            expected_target
+            if expected_target is not None
+            else target_state(target, root=root)
+        ),
+    )
 
 
 def _probe_image_dimensions(path, timeout=IMAGE_PROBE_TIMEOUT_SECONDS):
@@ -561,7 +552,12 @@ def _process_candidate(candidate, root):
         return "error", "Artwork changed during preflight"
     try:
         if not backup_exists:
-            _copy_file_atomic(poster, backup)
+            _copy_file_atomic(
+                poster,
+                backup,
+                root=root,
+                expected_target={"exists": False, "identity": None},
+            )
             backup_created = True
             if _file_identity(backup).get("size") != poster_identity.get("size") or not _probe_image_dimensions(backup):
                 raise RuntimeError("Backup verification failed")
@@ -571,10 +567,20 @@ def _process_candidate(candidate, root):
                 raise RuntimeError("Backup changed during preflight")
         if _file_identity(background) != background_identity or _file_identity(poster) != poster_identity:
             raise RuntimeError("Artwork changed before replacement")
-        _copy_file_atomic(background, poster)
+        _copy_file_atomic(
+            background,
+            poster,
+            root=root,
+            expected_target=target_state(poster, root=root),
+        )
         installed = _probe_image_dimensions(poster)
         if not installed or not installed["landscape"] or installed["width"] != background_dimensions["width"] or installed["height"] != background_dimensions["height"]:
-            _copy_file_atomic(backup, poster)
+            _copy_file_atomic(
+                backup,
+                poster,
+                root=root,
+                expected_target=target_state(poster, root=root),
+            )
             raise RuntimeError("Poster verification failed; original was restored")
     except Exception as exc:
         return "error", str(exc)

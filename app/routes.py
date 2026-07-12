@@ -1600,14 +1600,29 @@ def api_add():
         return jsonify({"error": "Path not found"}), 400
     if not path_is_under(real_target, LIB_ROOT):
         return jsonify({"error": "Path not found"}), 400
+    if os.path.islink(real_target):
+        return jsonify({"error": "Symlinked sources are not supported"}), 400
 
     cfg = _job_config_from_values(request.form)
 
     batch_id = new_queue_batch_id()
+    accepted = 0
+    first_error = ""
     if os.path.isdir(real_target):
         for v in find_videos(real_target):
-            enqueue_job(v, cfg, batch_id=batch_id)
+            job_id, err = enqueue_job(v, cfg, batch_id=batch_id)
+            if job_id:
+                accepted += 1
+            elif err and not first_error:
+                first_error = err
     else:
-        enqueue_job(real_target, cfg, batch_id=batch_id)
+        job_id, err = enqueue_job(real_target, cfg, batch_id=batch_id)
+        if job_id:
+            accepted += 1
+        elif err:
+            first_error = err
+
+    if not accepted:
+        return jsonify({"error": first_error or "No compatible videos found"}), 400
 
     return _redirect_to_gifs("logs")

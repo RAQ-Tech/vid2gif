@@ -15,6 +15,7 @@ from . import impact_metrics
 from . import maintenance_scan_store
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
+from .file_safety import regular_file_identity
 from .progress import format_size, utc_iso
 from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
@@ -105,14 +106,7 @@ def _write_json(path, data):
 
 
 def _file_identity(path):
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    return {
-        "size": stat.st_size,
-        "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
-    }
+    return regular_file_identity(path)
 
 
 def _validate_scan_path(path, lib_root):

@@ -20,7 +20,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1 \
     PUID=99 \
-    PGID=100
+    PGID=100 \
+    UMASK=002
 
 EXPOSE 904
 

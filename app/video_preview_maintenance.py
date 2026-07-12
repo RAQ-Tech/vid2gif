@@ -21,6 +21,14 @@ from . import impact_metrics
 from . import maintenance_scan_store
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
+from .file_safety import (
+    FileSafetyError,
+    atomic_install_file,
+    atomic_quarantine_file,
+    identity_matches as safe_identity_matches,
+    regular_file_identity,
+    target_state,
+)
 from .maintenance import QUARANTINE_DIRNAME
 from .progress import format_size, utc_iso
 from .table_sort import sort_records
@@ -640,27 +648,11 @@ BIF_MAGIC = b"\x89BIF\r\n\x1a\n"
 
 
 def _stat_identity(path):
-    stat = _safe_stat(path)
-    if not stat:
-        return None
-    return {
-        "real_path": os.path.realpath(path),
-        "size": stat.st_size,
-        "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
-    }
+    return regular_file_identity(path)
 
 
 def _identity_matches(path, identity):
-    if not identity or not os.path.isfile(path):
-        return False
-    current = _stat_identity(path)
-    if not current:
-        return False
-    return (
-        current.get("real_path") == identity.get("real_path")
-        and current.get("size") == identity.get("size")
-        and current.get("mtime_ns") == identity.get("mtime_ns")
-    )
+    return safe_identity_matches(path, identity)
 
 
 def parse_bif(path, sample_limit=QUALITY_SAMPLE_LIMIT):
@@ -2036,7 +2028,12 @@ def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
                 os.remove(source)
             else:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.move(source, dest)
+                atomic_quarantine_file(
+                    source,
+                    dest,
+                    root=lib_root,
+                    expected_source=item.get("identity"),
+                )
         except Exception as exc:
             refusal = _quality_refusal(file_id, source, str(exc))
             refused.append(refusal)
@@ -2454,12 +2451,17 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
             return None, "Video path is unsafe"
         stem = os.path.splitext(os.path.basename(video_path))[0]
         output_path = os.path.join(os.path.dirname(video_path), f"{stem}-{width}-{interval}.bif")
+        try:
+            output_state = target_state(output_path, root=root)
+        except FileSafetyError as exc:
+            return None, f"BIF destination is unsafe: {exc}"
         files.append({
             "item_id": item_id,
             "video_path": video_path,
             "video_relative_path": _relative_path(video_path, root),
             "video_identity": _stat_identity(video_path) or {},
             "output_path": os.path.realpath(output_path),
+            "output_state": output_state,
             "output_relative_path": _relative_path(output_path, root),
             "emby_item_id": item.get("emby_item_id", ""),
             "emby_item_type": item.get("emby_item_type", ""),
@@ -2543,7 +2545,16 @@ def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, r
         raise RuntimeError(stderr or "FFmpeg frame extraction failed")
 
 
-def _install_generated_bif(work_bif, target, video_path, width, interval_seconds):
+def _install_generated_bif(
+    work_bif,
+    target,
+    video_path,
+    width,
+    interval_seconds,
+    *,
+    lib_root=LIB_ROOT,
+    expected_target=None,
+):
     if _matching_bifs_for_video(video_path):
         raise FileExistsError("A matching BIF appeared after the generation plan was created")
     parsed = parse_bif(work_bif)
@@ -2557,16 +2568,14 @@ def _install_generated_bif(work_bif, target, video_path, width, interval_seconds
         raise ValueError(
             f"Generated BIF frame count is unexpected ({parsed.get('image_count', 0)} / {expected_count})"
         )
-    tmp_target = os.path.join(os.path.dirname(target), f".{os.path.basename(target)}.{os.getpid()}.tmp")
-    try:
-        shutil.copy2(work_bif, tmp_target)
-        os.replace(tmp_target, target)
-    finally:
-        try:
-            if os.path.exists(tmp_target):
-                os.remove(tmp_target)
-        except OSError:
-            pass
+    staged_identity = regular_file_identity(work_bif)
+    atomic_install_file(
+        work_bif,
+        target,
+        root=lib_root,
+        expected_source=staged_identity,
+        expected_target=expected_target,
+    )
     _record_generated_bif(target, width, interval_seconds)
     return parsed
 
@@ -2603,8 +2612,16 @@ def _execute_generation(run, plan):
                 )
                 work_bif = os.path.join(item_work, "preview.bif")
                 _write_bif_from_jpegs(frames, work_bif, plan["interval_seconds"])
+                if not _identity_matches(video, item.get("video_identity")):
+                    raise RuntimeError("Video changed during BIF generation")
                 parsed = _install_generated_bif(
-                    work_bif, item["output_path"], video, plan["width"], plan["interval_seconds"]
+                    work_bif,
+                    item["output_path"],
+                    video,
+                    plan["width"],
+                    plan["interval_seconds"],
+                    lib_root=plan["lib_root"],
+                    expected_target=item.get("output_state"),
                 )
                 result.update({
                     "status": "generated",

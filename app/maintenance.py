@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -17,6 +16,9 @@ from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
+from .file_safety import atomic_quarantine_file
+from .file_safety import identity_matches as safe_identity_matches
+from .file_safety import regular_file_identity
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
 
@@ -230,28 +232,11 @@ def parse_nfo_identity(video_path):
 
 
 def _stat_identity(path):
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    return {
-        "real_path": os.path.normcase(os.path.realpath(path)),
-        "size": stat.st_size,
-        "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
-    }
+    return regular_file_identity(path)
 
 
 def _identity_matches(path, identity):
-    if not identity or not os.path.isfile(path):
-        return False
-    current = _stat_identity(path)
-    if not current:
-        return False
-    return (
-        current.get("real_path") == identity.get("real_path")
-        and current.get("size") == identity.get("size")
-        and current.get("mtime_ns") == identity.get("mtime_ns")
-    )
+    return safe_identity_matches(path, identity)
 
 
 def _validate_scan_path(path, lib_root):
@@ -1962,7 +1947,12 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
                     _finish_item(index, source)
                     continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.move(source, dest)
+                atomic_quarantine_file(
+                    source,
+                    dest,
+                    root=lib_root,
+                    expected_source=item.get("identity"),
+                )
             elif operation == "rename":
                 if not dest or not path_is_under(dest, lib_root):
                     refusal = _refusal(file_id, source, "Rename target is outside the library")
@@ -1976,7 +1966,13 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
                     log_records.append({"type": "file", "result": "refused", **refusal})
                     _finish_item(index, source)
                     continue
-                os.rename(source, dest)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                atomic_quarantine_file(
+                    source,
+                    dest,
+                    root=lib_root,
+                    expected_source=item.get("identity"),
+                )
             else:
                 refusal = _refusal(file_id, source, "Unsupported operation")
                 refused.append(refusal)

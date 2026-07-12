@@ -19,6 +19,7 @@ def test_api_add_accepts_original_fps(monkeypatch):
         captured["video"] = video
         captured["cfg"] = cfg
         captured["batch_id"] = batch_id
+        return "job-1", None
 
     monkeypatch.setattr(routes, "resolve_case_insensitive", fake_resolve)
     monkeypatch.setattr(routes, "enqueue_job", fake_enqueue)
@@ -50,6 +51,7 @@ def test_api_add_accepts_original_fps_dropdown_and_optimize_toggle(monkeypatch):
         captured["video"] = video
         captured["cfg"] = cfg
         captured["batch_id"] = batch_id
+        return "job-1", None
 
     monkeypatch.setattr(routes, "resolve_case_insensitive", fake_resolve)
     monkeypatch.setattr(routes, "enqueue_job", fake_enqueue)

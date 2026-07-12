@@ -3,7 +3,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import threading
 import time
 
@@ -15,6 +14,7 @@ from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
+from .file_safety import atomic_quarantine_file
 from .progress import format_size, utc_iso
 from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
@@ -1103,7 +1103,12 @@ def _run_action(plan, run):
                     if os.path.lexists(destination):
                         raise FileExistsError("Quarantine destination already exists")
                     os.makedirs(os.path.dirname(destination), exist_ok=True)
-                    shutil.move(source, destination)
+                    atomic_quarantine_file(
+                        source,
+                        destination,
+                        root=plan["lib_root"],
+                        expected_source=item.get("identity"),
+                    )
                 status = "applied"
                 applied_bytes += item.get("size_bytes") or 0
             except Exception as exc:

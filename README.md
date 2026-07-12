@@ -71,6 +71,7 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
      -p 904:904 \
      -e PUID=99 \
      -e PGID=100 \
+     -e UMASK=002 \
      -v /path/to/videos:/library \
      -v /path/to/state:/state \
      vid2gif
@@ -82,6 +83,7 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
 | --- | --- | --- |
 | `PUID` | `99` | User ID the app runs as in Docker |
 | `PGID` | `100` | Group ID the app runs as in Docker |
+| `UMASK` | `002` | Create group-writable files and directories for shared media-library access |
 | `LIB_ROOT` | `/library` | Location of the video library |
 | `STATE_ROOT` | `/state` | Base directory for logs and temporary output |
 | `LOG_DIR` | `/state/logs` | Job log directory |
@@ -102,6 +104,15 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
 
 These can be overridden when invoking `python -m app.main` or the Docker
 container, for example `docker run -e LIB_ROOT=/media/videos ...`.
+
+Media outputs are staged outside the library, copied to a hidden temporary
+file beside the destination, flushed, and installed atomically. Jobs capture
+the source video and existing destination identities when queued and refuse to
+install if either changes. Quarantine actions use a same-filesystem,
+no-overwrite link-and-unlink operation; they refuse cross-filesystem fallback
+instead of risking a partial copy followed by deletion. Permanent-delete
+maintenance actions remain explicit and irreversible, so quarantine is the
+recommended operation for live libraries.
 
 The Docker entrypoint always ensures `/state` is writable for logs and
 temporary files. It does not scan and chown `/library` by default, which avoids
