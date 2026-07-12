@@ -864,7 +864,9 @@ def build_import_plan(payload, lib_root=LIB_ROOT):
     if not isinstance(payload, dict):
         return None, "Plan payload is invalid"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, freshness_error = maintenance_scan_store.action_allowed("actor_images", scan_id)
+    allowed, freshness_error = maintenance_scan_store.action_allowed(
+        "actor_images", scan_id, lib_root
+    )
     if not allowed:
         return None, freshness_error
     with actor_lock:

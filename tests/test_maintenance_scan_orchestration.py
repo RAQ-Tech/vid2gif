@@ -59,6 +59,38 @@ def test_freshness_ignores_unrelated_files_and_detects_relevant_changes(monkeypa
     assert video.exists()
 
 
+def test_scan_cache_is_not_restored_or_actionable_after_library_mount_changes(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    library = tmp_path / "library"
+    _write(library / "Movie" / "Movie.mkv", b"old-library-video")
+    monkeypatch.setattr(config, "STATE_ROOT", str(state))
+    monkeypatch.setattr(config, "LIB_ROOT", str(library))
+    scan = {
+        "id": "duplicates-old-mount",
+        "path": str(library),
+        "status": "success",
+        "finished_at": "2026-01-01T00:00:00+00:00",
+        "items": [],
+    }
+    assert maintenance_scan_store.persist_success(
+        "duplicates", "duplicates", scan, str(library)
+    )
+
+    archived = tmp_path / "library-old"
+    library.rename(archived)
+    _write(library / "Different" / "Different.mkv", b"new-library-video")
+
+    assert maintenance_scan_store.restore_scan("duplicates") is None
+    allowed, error = maintenance_scan_store.action_allowed(
+        "duplicates", scan["id"]
+    )
+    assert allowed is False
+    assert "mounted library changed" in error
+    freshness = maintenance_scan_store._check_cache("duplicates", force=True)
+    assert freshness["status"] == "changed"
+    assert freshness["library_root_changed"] is True
+
+
 def test_scan_all_is_sequential_and_continues_after_failure(monkeypatch, tmp_path):
     state = tmp_path / "state"
     library = tmp_path / "library"

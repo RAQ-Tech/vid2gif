@@ -69,6 +69,29 @@ def _parse_iso(value):
         return None
 
 
+def _library_root_identity(lib_root=None):
+    root = os.path.realpath(lib_root or config.LIB_ROOT)
+    try:
+        value = os.stat(root, follow_symlinks=False)
+    except OSError:
+        return None
+    return {
+        "device": int(getattr(value, "st_dev", 0)),
+        "inode": int(getattr(value, "st_ino", 0)),
+    }
+
+
+def _library_root_matches(payload, lib_root=None):
+    expected = (payload or {}).get("library_root_identity")
+    current = _library_root_identity(lib_root)
+    return bool(
+        isinstance(expected, dict)
+        and current
+        and expected.get("device") == current.get("device")
+        and expected.get("inode") == current.get("inode")
+    )
+
+
 def _atomic_write_gzip(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -194,6 +217,7 @@ def persist_success(cache_key, area, scan, lib_root=None, manifest=None):
             "area": area,
             "saved_at": utc_iso(),
             "path": path,
+            "library_root_identity": _library_root_identity(lib_root),
             "scan": _json_safe(copy.deepcopy(scan)),
             "manifest": identities,
             "freshness": {
@@ -232,6 +256,8 @@ def public_cache_metadata(cache_key, scan=None):
 
 def restore_scan(cache_key):
     payload = load_latest(cache_key)
+    if not _library_root_matches(payload):
+        return None
     scan = copy.deepcopy((payload or {}).get("scan"))
     if not isinstance(scan, dict) or scan.get("status") != "success" or not scan.get("id"):
         return None
@@ -240,10 +266,12 @@ def restore_scan(cache_key):
     return scan
 
 
-def action_allowed(cache_key, scan_id):
+def action_allowed(cache_key, scan_id, lib_root=None):
     payload = load_latest(cache_key)
     if not payload or str((payload.get("scan") or {}).get("id") or "") != str(scan_id or ""):
         return True, ""
+    if not _library_root_matches(payload, lib_root):
+        return False, "The mounted library changed after this scan. Rescan before creating an action plan."
     freshness = payload.get("freshness") or {}
     if freshness.get("status") == "changed":
         return False, "Library files changed after this scan. Rescan before creating an action plan."
@@ -259,6 +287,21 @@ def _check_cache_locked(cache_key, force=False):
     payload = load_latest(cache_key)
     if not payload:
         return {"status": "unknown", "checked_at": utc_iso(), "added": 0, "removed": 0, "changed": 0}
+    if not _library_root_matches(payload):
+        freshness = {
+            "status": "changed",
+            "checked_at": utc_iso(),
+            "added": 0,
+            "removed": 0,
+            "changed": 0,
+            "library_root_changed": True,
+        }
+        payload["freshness"] = freshness
+        try:
+            _atomic_write_gzip(_path(cache_key), payload)
+        except OSError:
+            pass
+        return freshness
     previous = payload.get("freshness") or {}
     checked_ts = _parse_iso(previous.get("checked_at"))
     if not force and checked_ts and time.time() - checked_ts < FRESHNESS_THROTTLE_SECONDS:

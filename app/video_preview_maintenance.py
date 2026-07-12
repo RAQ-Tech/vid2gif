@@ -1474,7 +1474,9 @@ def build_quality_repair_plan(payload, lib_root=LIB_ROOT):
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, freshness_error = maintenance_scan_store.action_allowed("video_previews_quality", scan_id)
+    allowed, freshness_error = maintenance_scan_store.action_allowed(
+        "video_previews_quality", scan_id, lib_root
+    )
     if not allowed:
         return None, freshness_error
     item_ids = payload.get("item_ids")
@@ -2414,7 +2416,9 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, freshness_error = maintenance_scan_store.action_allowed("video_previews_missing", scan_id)
+    allowed, freshness_error = maintenance_scan_store.action_allowed(
+        "video_previews_missing", scan_id, lib_root
+    )
     if not allowed:
         return None, freshness_error
     raw_ids = payload.get("item_ids")

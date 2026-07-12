@@ -935,7 +935,7 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, error = maintenance_scan_store.action_allowed("posters", scan_id)
+    allowed, error = maintenance_scan_store.action_allowed("posters", scan_id, lib_root)
     if not allowed:
         return None, error
     selected = {str(value) for value in payload.get("item_ids") or [] if str(value)}
