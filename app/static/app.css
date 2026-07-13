@@ -1809,6 +1809,58 @@ th[aria-sort="descending"] .table-sort-icon {
   white-space: nowrap;
 }
 
+.preview-folder-browser .media-browser-files {
+  max-height: 20rem;
+  align-content: flex-start;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.generation-status {
+  padding: 14px;
+  border: 1px solid var(--bs-border-color);
+  border-left: 4px solid var(--bs-primary);
+  border-radius: 8px;
+  background: var(--bs-tertiary-bg);
+}
+
+.generation-status-heading,
+.generation-status-meta {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.generation-status-meta {
+  color: var(--bs-secondary-color);
+  font-size: 0.85rem;
+}
+
+.generation-current code {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.generation-results {
+  display: grid;
+  gap: 6px;
+}
+
+.generation-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 0.82rem;
+}
+
+.generation-result code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .compact-control {
   display: grid;
   gap: 4px;

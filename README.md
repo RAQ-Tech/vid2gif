@@ -98,6 +98,7 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
 | `LANDSCAPE_POSTER_AUTO` | `0` | Enable automatic landscape poster maintenance at startup |
 | `LANDSCAPE_POSTER_INTERVAL_SECONDS` | `900` | Incremental landscape poster scan interval when automation is enabled |
 | `LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS` | `86400` | Maximum interval between full landscape poster reconciliation scans |
+| `VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT` | `120` | Stop and skip one BIF extraction when FFmpeg writes no new frame for this many seconds |
 | `EMBY_REFRESH_ENABLED` | `0` | Request an Emby library refresh after landscape poster changes |
 | `EMBY_URL` | empty | Emby server base URL, for example `http://emby:8096` |
 | `EMBY_API_KEY` | empty | Emby API key used for optional library refresh |
@@ -141,7 +142,10 @@ BIFs can be quarantined or deleted first; a fresh scan then provides the missing
 videos eligible for direct BIF generation. Width and interval settings persist,
 and the page compares them with the newest valid externally observed BIF before
 generation. Frames and the BIF archive are built under `/state`, validated, and
-atomically installed only while the video still has no matching BIF.
+atomically installed only while the video still has no matching BIF. Generation
+status is persisted under `/state`, including the current video and completed
+per-file results. Decoder errors and stalled extraction are bounded to one video
+so a malformed source cannot silently block the rest of a batch.
 
 Subtitle health results can quarantine or permanently delete flagged unexpected
 or unknown-language SRT sidecars. Video files and missing-subtitle findings are

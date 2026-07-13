@@ -1035,7 +1035,17 @@ def api_maintenance_video_previews_scan():
     )
     if err:
         return jsonify({"error": err}), 400
+    video_preview_maintenance.save_scan_path(scan.get("path"), LIB_ROOT)
     return jsonify({"scan": video_preview_maintenance.public_scan(scan)})
+
+
+@app.route("/api/maintenance/video-previews/scan-path", methods=["POST"])
+def api_maintenance_video_previews_scan_path():
+    data = request.get_json(silent=True) or {}
+    saved, err = video_preview_maintenance.save_scan_path(data.get("path"), LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan_source": saved})
 
 
 @app.route("/api/maintenance/video-previews/status")

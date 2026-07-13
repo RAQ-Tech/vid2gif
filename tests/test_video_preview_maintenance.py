@@ -1,10 +1,14 @@
 import json
 import os
 import struct
+import subprocess
+import sys
+import time
 import urllib.error
 from pathlib import Path
 
 from app import (
+    app_settings,
     emby_catalog,
     impact_metrics,
     maintenance_scan_store,
@@ -28,6 +32,7 @@ def _reset_preview_state(monkeypatch, tmp_path):
     generation_root = tmp_path / "state" / "video-preview-generation"
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_ROOT", str(generation_root))
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_MANIFEST_PATH", str(generation_root / "manifest.json"))
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_RUN_PATH", str(generation_root / "latest-run.json"))
     impact_root = tmp_path / "state" / "dashboard"
     monkeypatch.setattr(impact_metrics, "IMPACT_ROOT", str(impact_root))
     monkeypatch.setattr(impact_metrics, "IMPACT_PATH", str(impact_root / "impact-metrics.json"))
@@ -1051,6 +1056,12 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
         _write(Path(pattern % 2), _jpeg(b"frame-two"))
 
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+    duration_probes = []
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_probe_video_duration",
+        lambda path: duration_probes.append(path) or 10,
+    )
     sync_calls = []
 
     def fake_sync(changes, **kwargs):
@@ -1082,6 +1093,7 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
     assert sync_calls[0][0][0]["refresh_scope"] == "thumbnail"
     assert notification_calls[0][1]["succeeded_count"] == 1
     assert run["emby_notification"]["id"] == "notice-generation"
+    assert duration_probes == [str(video)]
 
 
 def test_bif_generation_refuses_late_matching_bif(monkeypatch, tmp_path):
@@ -1105,6 +1117,173 @@ def test_bif_generation_refuses_late_matching_bif(monkeypatch, tmp_path):
     assert run["generated_count"] == 0
     assert run["refused_count"] == 1
     assert not (video.parent / "Movie-320-10.bif").exists()
+
+
+def test_bif_generation_continues_after_one_video_fails_and_persists_results(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    broken = _write(lib / "A Broken" / "A Broken.mkv", b"broken")
+    healthy = _write(lib / "B Healthy" / "B Healthy.mkv", b"healthy")
+    scan = _scan(lib, monkeypatch, tmp_path)
+    plan, err = video_preview_maintenance.build_generation_plan(
+        {"scan_id": scan["id"], "item_ids": [item["id"] for item in scan["items"]]},
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    def fake_extract(video_path, pattern, _width, _interval, _run):
+        if video_path == str(broken):
+            raise RuntimeError("decoder rejected corrupt video")
+        _write(Path(pattern % 1), _jpeg(b"healthy-frame"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+    monkeypatch.setattr(video_preview_maintenance.emby_sync, "sync_changes", lambda *_args, **_kwargs: None)
+    run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
+
+    assert run_err is None
+    assert run["status"] == "success"
+    assert run["processed_count"] == 2
+    assert run["generated_count"] == 1
+    assert run["refused_count"] == 1
+    assert run["items"][0]["reason"] == "decoder rejected corrupt video"
+    assert (healthy.parent / "B Healthy-320-10.bif").is_file()
+    assert Path(video_preview_maintenance.GENERATION_RUN_PATH).is_file()
+
+    video_preview_maintenance.generation_runs.clear()
+    restored, restored_err = video_preview_maintenance.generation_status(run["id"])
+    assert restored_err is None
+    assert restored["run"]["restored"] is True
+    assert restored["run"]["generated_count"] == 1
+    assert restored["run"]["items"][0]["status"] == "refused"
+
+
+def test_generation_status_marks_unfinished_persisted_run_interrupted(monkeypatch, tmp_path):
+    _reset_preview_state(monkeypatch, tmp_path)
+    video_preview_maintenance._write_json(
+        video_preview_maintenance.GENERATION_RUN_PATH,
+        {
+            "schema_version": video_preview_maintenance.GENERATION_RUN_SCHEMA_VERSION,
+            "run": {
+                "id": "unfinished-run",
+                "status": "running",
+                "file_count": 25,
+                "processed_count": 3,
+                "generated_count": 3,
+                "refused_count": 0,
+                "progress_percent": 12,
+                "progress_label": "Video 4 of 25",
+                "items": [],
+            },
+        },
+    )
+
+    payload, err = video_preview_maintenance.generation_status("unfinished-run")
+
+    assert err is None
+    assert payload["run"]["status"] == "interrupted"
+    assert "stopped or restarted" in payload["run"]["error"]
+    assert payload["run"]["restored"] is True
+
+
+def test_generation_cancellation_does_not_mislabel_current_video_refused(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv", b"video")
+    scan = _scan(lib, monkeypatch, tmp_path)
+    plan, err = video_preview_maintenance.build_generation_plan(
+        {"scan_id": scan["id"], "item_ids": [scan["items"][0]["id"]]},
+        lib_root=str(lib),
+    )
+    assert err is None
+
+    def cancel_extract(*_args, **_kwargs):
+        raise video_preview_maintenance.ScanCancelled()
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", cancel_extract)
+    run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
+
+    assert run_err is None
+    assert run["status"] == "cancelled"
+    assert run["processed_count"] == 0
+    assert run["refused_count"] == 0
+    assert run["items"] == []
+
+
+def test_frame_extraction_drains_large_stderr_without_pipe_deadlock(monkeypatch, tmp_path):
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    real_popen = subprocess.Popen
+
+    def noisy_popen(_command, **kwargs):
+        return real_popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stderr.buffer.write(b'x' * 262144); sys.stderr.flush(); raise SystemExit(1)",
+            ],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(video_preview_maintenance.subprocess, "Popen", noisy_popen)
+    started = time.monotonic()
+    try:
+        video_preview_maintenance._run_frame_extraction(
+            "ignored.mkv",
+            str(frame_dir / "%08d.jpg"),
+            320,
+            10,
+            {"id": "noisy", "file_count": 1, "processed_count": 0},
+        )
+        assert False, "Expected noisy FFmpeg failure"
+    except RuntimeError as exc:
+        assert len(str(exc)) <= 2000
+    assert time.monotonic() - started < 5
+
+
+def test_frame_extraction_times_out_when_no_frames_advance(monkeypatch, tmp_path):
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+
+    class EmptyStderr:
+        def read(self, _size):
+            return b""
+
+    class StalledProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stderr = EmptyStderr()
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    commands = []
+
+    def stalled_popen(command, **_kwargs):
+        commands.append(command)
+        return StalledProcess()
+
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_STALL_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(video_preview_maintenance.subprocess, "Popen", stalled_popen)
+    try:
+        video_preview_maintenance._run_frame_extraction(
+            "ignored.mkv",
+            str(frame_dir / "%08d.jpg"),
+            320,
+            10,
+            {"id": "stalled", "file_count": 1, "processed_count": 0},
+        )
+        assert False, "Expected stalled FFmpeg failure"
+    except RuntimeError as exc:
+        assert "no frame progress" in str(exc)
+    assert "-xerror" in commands[0]
+    assert commands[0][commands[0].index("-map") + 1] == "0:v:0"
 
 
 def test_bif_quality_cancel_reuses_active_scan(monkeypatch, tmp_path):
@@ -1260,6 +1439,9 @@ def test_video_preview_ui_assets_render():
     assert 'id="qualityApplyButton"' in html
     assert 'id="previewGenerationPlanButton"' in html
     assert 'id="previewGenerationStartButton"' in html
+    assert 'id="previewBrowserCollapse" class="collapse"' in html
+    assert 'id="previewGenerationStatus"' in html
+    assert 'id="previewGenerationCurrent"' in html
     assert 'id="qualityAction"' in html
     assert 'id="qualitySelectWarningButton"' in html
     assert "fetch('/api/maintenance/video-previews/scan'" in script
@@ -1275,11 +1457,43 @@ def test_video_preview_ui_assets_render():
     assert "fetch('/api/maintenance/video-previews/generation/plan'" in script
     assert "fetch('/api/maintenance/video-previews/generation/start'" in script
     assert "/api/maintenance/video-previews/generation/status?run_id=" in script
+    assert "fetch('/api/maintenance/video-previews/scan-path'" in script
+    assert "refreshGenerationStatus();" in script
+    assert "openPreviewBrowser(config.libRoot || '/library');" not in script
     assert "escapeHtml(item.relative_path" in script
     assert "escapeHtml(change.source || '')" in script
     assert "frame_count_detail" in script
     assert "Frames Actual / Expected" in script
     assert "interval mismatch" not in script
+
+
+def test_video_preview_scan_source_is_validated_and_persisted(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    selected = lib / "XXX"
+    selected.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    settings_path = tmp_path / "state" / "app_settings.json"
+    monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
+    monkeypatch.setattr(app_settings, "LIB_ROOT", str(lib))
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(settings_path))
+
+    client = routes.app.test_client()
+    saved = client.post(
+        "/api/maintenance/video-previews/scan-path",
+        json={"path": str(selected)},
+    )
+    rejected = client.post(
+        "/api/maintenance/video-previews/scan-path",
+        json={"path": str(outside)},
+    )
+    page = client.get("/maintenance")
+
+    assert saved.status_code == 200
+    assert saved.get_json()["scan_source"]["path"] == str(selected.resolve())
+    assert rejected.status_code == 400
+    assert app_settings.load_settings()["video_preview_scan_path"] == str(selected.resolve())
+    assert f'value="{selected.resolve()}"' in page.get_data(as_text=True)
 
 
 def test_both_preview_scans_publish_emby_identity(monkeypatch, tmp_path):

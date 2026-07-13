@@ -374,10 +374,10 @@
           </div>
           <label class="form-label" for="previewPath">Library path</label>
           <div class="input-group">
-            <input id="previewPath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
-            <button id="previewBrowseButton" class="btn btn-outline-secondary" type="button">
-              <i class="bi bi-search" aria-hidden="true"></i>
-              <span>Browse</span>
+            <input id="previewPath" class="form-control" value="{{ bif_settings.video_preview_scan_path }}" placeholder="{{ lib_root }}">
+            <button id="previewBrowseButton" class="btn btn-outline-secondary" type="button" aria-expanded="false" aria-controls="previewBrowserCollapse">
+              <i class="bi bi-folder2-open" aria-hidden="true"></i>
+              <span>Browse Folders</span>
             </button>
             <button id="previewScanButton" class="btn btn-primary" type="button">
               <i class="bi bi-search" aria-hidden="true"></i>
@@ -392,7 +392,9 @@
               <span>Verify Again</span>
             </button>
           </div>
-          <div id="previewBrowser" class="media-browser mt-3"></div>
+          <div id="previewBrowserCollapse" class="collapse">
+            <div id="previewBrowser" class="media-browser preview-folder-browser mt-3"></div>
+          </div>
         </div>
 
         <div id="previewMessage" class="scan-estimate mt-3" aria-live="polite">
@@ -445,6 +447,28 @@
             <button id="previewGenerationCancelButton" class="btn btn-outline-danger btn-sm" type="button" disabled>Cancel</button>
           </div>
           <div id="previewGenerationSummary" class="maintenance-plan-summary mt-3"></div>
+          <div id="previewGenerationStatus" class="generation-status mt-3 d-none" aria-live="polite">
+            <div class="generation-status-heading">
+              <div>
+                <div id="previewGenerationTitle" class="fw-semibold">BIF generation</div>
+                <div id="previewGenerationProgressLabel" class="small text-muted">Waiting to start</div>
+              </div>
+              <span id="previewGenerationBadge" class="badge text-bg-secondary">Idle</span>
+            </div>
+            <div class="progress mt-3" role="progressbar" aria-label="BIF generation progress" aria-valuemin="0" aria-valuemax="100">
+              <div id="previewGenerationProgressBar" class="progress-bar" style="width: 0%"></div>
+            </div>
+            <div class="generation-status-meta mt-2">
+              <span id="previewGenerationCounts">0 of 0 processed</span>
+              <span id="previewGenerationProgressPercent">0%</span>
+            </div>
+            <div class="generation-current mt-3">
+              <div class="metric-label">Current video</div>
+              <code id="previewGenerationCurrent">Nothing is running.</code>
+              <div id="previewGenerationItemProgress" class="small text-muted mt-1"></div>
+            </div>
+            <div id="previewGenerationResults" class="generation-results mt-3"></div>
+          </div>
         </div>
 
         <div class="toolbar-row mt-3">
@@ -959,7 +983,8 @@
   window.vid2gifMaintenanceConfig = {
     libRoot: {{ lib_root|tojson }},
     bifWidth: {{ bif_settings.video_preview_bif_width|tojson }},
-    bifInterval: {{ bif_settings.video_preview_bif_interval_seconds|tojson }}
+    bifInterval: {{ bif_settings.video_preview_bif_interval_seconds|tojson }},
+    previewScanPath: {{ bif_settings.video_preview_scan_path|tojson }}
   };
 </script>
 {% endblock %}

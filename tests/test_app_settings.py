@@ -17,6 +17,7 @@ def test_app_settings_defaults_to_720_when_missing(tmp_path):
     assert settings["subtitle_flag_unknown_language"] is True
     assert settings["video_preview_bif_width"] == 320
     assert settings["video_preview_bif_interval_seconds"] == 10
+    assert settings["video_preview_scan_path"] == app_settings.LIB_ROOT
 
 
 def test_app_settings_persists_bif_generation_profile(tmp_path):
@@ -30,6 +31,31 @@ def test_app_settings_persists_bif_generation_profile(tmp_path):
     settings = app_settings.load_settings(str(path))
     assert settings["video_preview_bif_width"] == 480
     assert settings["video_preview_bif_interval_seconds"] == 30
+
+
+def test_app_settings_validates_persisted_video_preview_scan_path(monkeypatch, tmp_path):
+    library = tmp_path / "library"
+    selected = library / "XXX"
+    selected.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(app_settings, "LIB_ROOT", str(library))
+
+    settings, err = app_settings.update_settings(
+        {"video_preview_scan_path": str(selected)},
+        str(path),
+    )
+    invalid, invalid_err = app_settings.update_settings(
+        {"video_preview_scan_path": str(outside)},
+        str(path),
+    )
+
+    assert err is None
+    assert settings["video_preview_scan_path"] == str(selected)
+    assert invalid is None
+    assert "under the library root" in invalid_err
+    assert app_settings.load_settings(str(path))["video_preview_scan_path"] == str(selected)
 
 
 def test_app_settings_persists_custom_preview_height(tmp_path):
@@ -304,7 +330,7 @@ def test_global_settings_import_legacy_emby_connection_once(monkeypatch, tmp_pat
     assert reloaded["emby_url"] == "http://legacy:8096"
     assert imported["emby_sync_after_maintenance"] is True
     assert imported["emby_playback_protection"] is True
-    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == 9
+    assert json.loads(app_path.read_text(encoding="utf-8"))["schema_version"] == app_settings.SCHEMA_VERSION
     assert imported["emby_admin_notifications"] == "warnings"
 
 

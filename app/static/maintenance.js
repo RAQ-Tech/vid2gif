@@ -23,7 +23,7 @@
   let previewPageOffset = 0;
   let previewPageLimit = 25;
   let previewSort = {column: 'video', direction: 'asc'};
-  let previewLastPath = '';
+  let previewLastPath = config.previewScanPath || config.libRoot || '/library';
   const previewSelectedMissing = new Set();
   let previewGenerationPlan = null;
   let previewGenerationRun = null;
@@ -931,9 +931,47 @@
     }
   }
 
+  function setPreviewBrowserOpen(open) {
+    const panel = byId('previewBrowserCollapse');
+    const button = byId('previewBrowseButton');
+    if (!panel) return;
+    if (window.bootstrap?.Collapse) {
+      const collapse = window.bootstrap.Collapse.getOrCreateInstance(panel, {toggle: false});
+      if (open) collapse.show();
+      else collapse.hide();
+    } else {
+      panel.classList.toggle('show', open);
+    }
+    if (button) {
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const label = button.querySelector('span');
+      if (label) label.textContent = open ? 'Hide Folders' : 'Browse Folders';
+    }
+  }
+
+  function previewBrowserIsOpen() {
+    return byId('previewBrowserCollapse')?.classList.contains('show') || false;
+  }
+
+  async function persistPreviewPath(path) {
+    const res = await fetch('/api/maintenance/video-previews/scan-path', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path})
+    });
+    const data = await readJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || 'Scan source could not be saved');
+    const saved = data.scan_source?.path || path;
+    previewLastPath = saved;
+    config.previewScanPath = saved;
+    if (byId('previewPath')) byId('previewPath').value = saved;
+    return saved;
+  }
+
   async function openPreviewBrowser(path) {
     const browser = byId('previewBrowser');
     if (!browser) return;
+    setPreviewBrowserOpen(true);
     browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
     try {
       const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
@@ -1539,7 +1577,14 @@
       previewSelectedMissing.clear();
       (data.items || []).filter(item => item.status === 'missing').forEach(item => previewSelectedMissing.add(item.id));
       previewGenerationPlan = null;
-      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size || previewScan?.freshness?.status === 'changed';
+      const generationActive = ['queued', 'running', 'cancelling'].includes(previewGenerationRun?.status || '');
+      const generationMadeScanStale = previewGenerationRun?.status === 'success'
+        && previewGenerationRun?.scan_id === previewScan?.id
+        && Number(previewGenerationRun?.generated_count || 0) > 0;
+      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size
+        || previewScan?.freshness?.status === 'changed'
+        || generationActive
+        || generationMadeScanStale;
       byId('previewGenerationStartButton').disabled = true;
       byId('previewSelectMissingButton').disabled = !(data.items || []).some(item => item.status === 'missing');
       byId('previewDeselectMissingButton').disabled = !previewSelectedMissing.size;
@@ -1631,7 +1676,6 @@
     stopPreviewPolling();
     previewItemsPage = null;
     previewPageOffset = 0;
-    previewLastPath = path;
     setPreviewMessage('Starting video preview scan', '');
     setPreviewProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
     try {
@@ -1645,6 +1689,9 @@
         setPreviewMessage(data.error || 'Video preview scan could not start', '');
         return;
       }
+      previewLastPath = data.scan?.path || path;
+      config.previewScanPath = previewLastPath;
+      if (byId('previewPath')) byId('previewPath').value = previewLastPath;
       handlePreviewScan(data.scan);
       previewPollTimer = setInterval(() => pollPreviewScan(data.scan.id), 1000);
     } catch (e) {
@@ -1750,6 +1797,95 @@
     previewGenerationPollTimer = null;
   }
 
+  function renderGenerationRun(run) {
+    const panel = byId('previewGenerationStatus');
+    if (!panel || !run) return;
+    panel.classList.remove('d-none');
+    const active = ['queued', 'running', 'cancelling'].includes(run.status || '');
+    const titleByStatus = {
+      queued: 'BIF generation is queued',
+      running: 'BIF generation is running',
+      cancelling: 'Cancelling BIF generation',
+      success: Number(run.refused_count || 0) ? 'BIF generation finished with issues' : 'BIF generation finished',
+      cancelled: 'BIF generation was cancelled',
+      interrupted: 'BIF generation was interrupted',
+      failed: 'BIF generation failed'
+    };
+    const badgeByStatus = {
+      queued: ['Queued', 'text-bg-info'],
+      running: ['Running', 'text-bg-primary'],
+      cancelling: ['Cancelling', 'text-bg-warning'],
+      success: [Number(run.refused_count || 0) ? 'Issues' : 'Complete', Number(run.refused_count || 0) ? 'text-bg-warning' : 'text-bg-success'],
+      cancelled: ['Cancelled', 'text-bg-secondary'],
+      interrupted: ['Interrupted', 'text-bg-warning'],
+      failed: ['Failed', 'text-bg-danger']
+    };
+    const badgeState = badgeByStatus[run.status] || [run.status || 'Unknown', 'text-bg-secondary'];
+    const title = byId('previewGenerationTitle');
+    const badge = byId('previewGenerationBadge');
+    const label = byId('previewGenerationProgressLabel');
+    const percent = byId('previewGenerationProgressPercent');
+    const bar = byId('previewGenerationProgressBar');
+    if (title) title.textContent = titleByStatus[run.status] || 'BIF generation';
+    if (badge) {
+      badge.textContent = badgeState[0];
+      badge.className = `badge ${badgeState[1]}`;
+    }
+    if (label) label.textContent = run.progress_label || run.progress_detail || '';
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(run);
+    window.vid2gifProgress.apply(bar, run);
+
+    const processed = Number(run.processed_count || 0);
+    const total = Number(run.file_count || 0);
+    const generated = Number(run.generated_count || 0);
+    const refused = Number(run.refused_count || 0);
+    const counts = byId('previewGenerationCounts');
+    if (counts) counts.textContent = `${processed} of ${total} processed - ${generated} generated - ${refused} skipped`;
+
+    const current = byId('previewGenerationCurrent');
+    const itemProgress = byId('previewGenerationItemProgress');
+    if (current) {
+      current.textContent = active && run.current_video
+        ? run.current_video
+        : (run.error || 'No generation process is currently running.');
+    }
+    if (itemProgress) {
+      const frameText = Number(run.expected_frame_count || 0)
+        ? `${Number(run.current_frame_count || 0)} of about ${Number(run.expected_frame_count)} frames`
+        : `${Number(run.current_frame_count || 0)} frames written`;
+      itemProgress.textContent = active
+        ? `Video ${Number(run.current_index || 0)} of ${total} - ${run.current_stage || 'Working'} - ${frameText}`
+        : (run.status === 'success'
+          ? 'Run Verify Again to refresh the missing list before starting another batch.'
+          : (run.progress_detail || ''));
+    }
+
+    const resultTarget = byId('previewGenerationResults');
+    if (resultTarget) {
+      const items = run.items || run.result?.items || [];
+      const recent = items.slice(-5).reverse();
+      resultTarget.innerHTML = recent.length
+        ? `<div class="metric-label">Latest results</div>${recent.map(item => {
+            const generatedItem = item.status === 'generated';
+            const detail = item.reason ? `<div class="text-danger mt-1">${escapeHtml(item.reason)}</div>` : '';
+            return `<div class="generation-result">` +
+              `<span class="badge ${generatedItem ? 'text-bg-success' : 'text-bg-warning'}">${generatedItem ? 'Generated' : 'Skipped'}</span>` +
+              `<div><code>${escapeHtml(item.video || item.item_id || 'Video')}</code>${detail}</div>` +
+              `</div>`;
+          }).join('')}`
+        : '<div class="small text-muted">Per-video results will appear here as the batch runs.</div>';
+    }
+
+    byId('previewGenerationCancelButton').disabled = !active || run.status === 'cancelling';
+    if (active) {
+      byId('previewGenerationStartButton').disabled = true;
+      byId('previewGenerationPlanButton').disabled = true;
+    } else if (run.status === 'success' && run.scan_id === previewScan?.id && Number(run.generated_count || 0) > 0) {
+      byId('previewGenerationStartButton').disabled = true;
+      byId('previewGenerationPlanButton').disabled = true;
+    }
+  }
+
   async function pollGeneration(runId) {
     try {
       const res = await fetch(`/api/maintenance/video-previews/generation/status?run_id=${encodeURIComponent(runId)}`);
@@ -1757,25 +1893,47 @@
       if (!res.ok) throw new Error(data.error || 'Generation status unavailable');
       previewGenerationRun = data.run;
       const active = ['queued', 'running', 'cancelling'].includes(data.run?.status || '');
-      byId('previewGenerationCancelButton').disabled = !active;
+      renderGenerationRun(data.run);
       if (active) {
-        setPreviewMessage(data.run.progress_label || 'Generating BIFs', `${data.run.generated_count || 0} generated, ${data.run.refused_count || 0} refused`);
+        setPreviewMessage('BIF generation is running', data.run.progress_detail || data.run.progress_label || '');
         return;
       }
       stopGenerationPolling();
       if (data.run?.status === 'success') {
-        setPreviewMessage('BIF generation complete', `${data.run.generated_count || 0} generated, ${data.run.refused_count || 0} refused`);
+        setPreviewMessage('BIF generation complete', `${data.run.generated_count || 0} generated, ${data.run.refused_count || 0} skipped. Run Verify Again to refresh the missing list.`);
         appendEmbySyncNotice('previewMessageDetail', embySyncFrom(data.run));
         appendEmbyNotificationNotice('previewMessageDetail', notificationFrom(data.run));
         previewGenerationPlan = null;
-        await startPreviewScan(previewLastPath);
+        previewSelectedMissing.clear();
+        byId('previewGenerationStartButton').disabled = true;
+        byId('previewGenerationPlanButton').disabled = true;
+        renderPreviewItems(previewItemsPage);
       } else {
-        setPreviewMessage(data.run?.status === 'cancelled' ? 'BIF generation cancelled' : 'BIF generation failed', data.run?.error || '');
+        const title = data.run?.status === 'cancelled'
+          ? 'BIF generation cancelled'
+          : (data.run?.status === 'interrupted' ? 'BIF generation interrupted' : 'BIF generation failed');
+        setPreviewMessage(title, data.run?.error || data.run?.progress_detail || '');
         appendEmbyNotificationNotice('previewMessageDetail', notificationFrom(data.run));
       }
     } catch (e) {
-      stopGenerationPolling();
-      setPreviewMessage('Generation status unavailable', e.message || '');
+      const label = byId('previewGenerationProgressLabel');
+      if (label) label.textContent = `Status temporarily unavailable; retrying. ${e.message || ''}`;
+    }
+  }
+
+  async function refreshGenerationStatus() {
+    try {
+      const res = await fetch('/api/maintenance/video-previews/generation/status');
+      const data = await readJsonResponse(res);
+      if (!res.ok || !data.run) return;
+      previewGenerationRun = data.run;
+      renderGenerationRun(data.run);
+      const active = ['queued', 'running', 'cancelling'].includes(data.run.status || '');
+      if (active && !previewGenerationPollTimer) {
+        previewGenerationPollTimer = setInterval(() => pollGeneration(data.run.id), 1000);
+      }
+    } catch (_e) {
+      // A missing historical run must not block the rest of maintenance hydration.
     }
   }
 
@@ -1787,6 +1945,10 @@
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || 'BIF generation could not start');
       previewGenerationRun = data.run;
+      const summary = byId('previewGenerationSummary');
+      if (summary) summary.innerHTML = '';
+      renderGenerationRun(data.run);
+      setPreviewMessage('BIF generation started', data.run.progress_detail || 'The live run is shown below.');
       byId('previewGenerationStartButton').disabled = true;
       byId('previewGenerationCancelButton').disabled = false;
       stopGenerationPolling();
@@ -1799,8 +1961,15 @@
 
   async function cancelGeneration() {
     if (!previewGenerationRun?.id) return;
-    await fetch('/api/maintenance/video-previews/generation/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({run_id: previewGenerationRun.id})});
-    byId('previewGenerationCancelButton').disabled = true;
+    try {
+      const res = await fetch('/api/maintenance/video-previews/generation/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({run_id: previewGenerationRun.id})});
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Generation could not be cancelled');
+      previewGenerationRun = data.run;
+      renderGenerationRun(data.run);
+    } catch (e) {
+      setPreviewMessage('Generation could not be cancelled', e.message || '');
+    }
   }
 
   function renderPreviewEmbyTasks(data) {
@@ -3649,7 +3818,11 @@
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
     byId('previewBrowseButton')?.addEventListener('click', () => {
-      openPreviewBrowser(byId('previewPath')?.value.trim() || config.libRoot || '/library');
+      if (previewBrowserIsOpen()) {
+        setPreviewBrowserOpen(false);
+      } else {
+        openPreviewBrowser(byId('previewPath')?.value.trim() || config.previewScanPath || config.libRoot || '/library');
+      }
     });
     byId('previewScanButton')?.addEventListener('click', () => startPreviewScan());
     byId('previewCancelScanButton')?.addEventListener('click', cancelPreviewScan);
@@ -3883,7 +4056,12 @@
         openPreviewBrowser(folder.getAttribute('data-preview-folder'));
       } else if (choose) {
         const path = choose.getAttribute('data-preview-choose') || '';
-        if (byId('previewPath')) byId('previewPath').value = path;
+        persistPreviewPath(path)
+          .then(() => {
+            setPreviewBrowserOpen(false);
+            setPreviewMessage('Scan source saved', path);
+          })
+          .catch(error => setPreviewMessage('Scan source could not be saved', error.message || ''));
       }
     });
 
@@ -4132,13 +4310,13 @@
     setSubtitleProgress(null);
     setActorProgress(null);
     openBrowser(config.libRoot || '/library');
-    openPreviewBrowser(config.libRoot || '/library');
     openSubtitleBrowser(config.libRoot || '/library');
     openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
     refreshOverviewStatus();
     refreshDuplicateStatus();
     refreshPreviewStatus();
+    refreshGenerationStatus();
     refreshQualityStatus();
     refreshPreviewTasks();
     if (embyOpsVisible()) {

@@ -7,7 +7,7 @@ from .config import LANDSCAPE_POSTER_ROOT, LIB_ROOT, STATE_ROOT
 from .utils import path_is_under
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DEFAULT_TEST_LAB_PREVIEW_HEIGHT = 720
 PREVIEW_HEIGHT_PRESETS = (540, 720, 1080, 1440, 2160)
 SETTINGS_PATH = os.path.join(STATE_ROOT, "app_settings.json")
@@ -50,6 +50,7 @@ _SETTING_KEYS = {
     "subtitle_subgen_detection",
     "video_preview_bif_width",
     "video_preview_bif_interval_seconds",
+    "video_preview_scan_path",
     "emby_url",
     "emby_api_key",
     "emby_api_key_clear",
@@ -97,6 +98,7 @@ def default_settings():
         "subtitle_subgen_detection": True,
         "video_preview_bif_width": DEFAULT_VIDEO_PREVIEW_BIF_WIDTH,
         "video_preview_bif_interval_seconds": DEFAULT_VIDEO_PREVIEW_BIF_INTERVAL_SECONDS,
+        "video_preview_scan_path": LIB_ROOT,
         "emby_url": str(os.getenv("EMBY_URL", "") or "").strip(),
         "emby_api_key": str(os.getenv("EMBY_API_KEY", "") or "").strip(),
         "emby_path_mappings": [],
@@ -342,6 +344,10 @@ def _coerce_settings(data):
             1,
             3600,
         ),
+        "video_preview_scan_path": str(
+            data.get("video_preview_scan_path", defaults["video_preview_scan_path"])
+            or defaults["video_preview_scan_path"]
+        ).strip(),
         "emby_url": str(data.get("emby_url", defaults["emby_url"]) or "").strip(),
         "emby_api_key": str(data.get("emby_api_key", defaults["emby_api_key"]) or "").strip(),
         "emby_path_mappings": _coerce_emby_path_mappings(data.get("emby_path_mappings", [])),
@@ -473,6 +479,16 @@ def _validation_error(updates):
             return f"{label} must be a whole number"
         if not minimum <= value <= maximum:
             return f"{label} must be between {minimum} and {maximum}"
+    if "video_preview_scan_path" in updates:
+        raw_scan_path = str(updates.get("video_preview_scan_path") or "").strip()
+        scan_path = os.path.realpath(raw_scan_path)
+        if (
+            not raw_scan_path
+            or not path_is_under(scan_path, LIB_ROOT)
+            or not os.path.isdir(scan_path)
+            or os.path.islink(scan_path)
+        ):
+            return "Video preview scan path must be an existing folder under the library root"
     if "table_preferences" in updates and not isinstance(updates.get("table_preferences"), dict):
         return "Table preferences are invalid"
     if "emby_path_mappings" in updates:

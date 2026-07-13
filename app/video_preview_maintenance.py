@@ -72,6 +72,13 @@ LOG_RETENTION_COUNT = 25
 LOG_MAX_BYTES = 1024 * 1024
 GENERATION_ROOT = os.path.join(STATE_ROOT, "video-preview-generation")
 GENERATION_MANIFEST_PATH = os.path.join(GENERATION_ROOT, "manifest.json")
+GENERATION_RUN_PATH = os.path.join(GENERATION_ROOT, "latest-run.json")
+GENERATION_RUN_SCHEMA_VERSION = 1
+GENERATION_STALL_TIMEOUT_SECONDS = max(
+    30,
+    _env_int("VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT", 120),
+)
+GENERATION_STDERR_LIMIT = 32 * 1024
 __test__ = False
 
 preview_scans = {}
@@ -83,6 +90,7 @@ quality_apply_runs = {}
 generation_plans = {}
 generation_runs = {}
 preview_lock = threading.Lock()
+generation_persist_lock = threading.Lock()
 
 
 class ScanCancelled(Exception):
@@ -1813,6 +1821,20 @@ def _validate_repair_root(move_root, lib_root):
     return real, None
 
 
+def save_scan_path(path, lib_root=LIB_ROOT):
+    real_path, err = _validate_scan_path(path, lib_root)
+    if err:
+        return None, err
+    settings, settings_err = app_settings.update_settings(
+        {"video_preview_scan_path": real_path}
+    )
+    if settings_err:
+        return None, "Scan source could not be saved"
+    return {
+        "path": settings.get("video_preview_scan_path") or real_path,
+    }, None
+
+
 def _repair_destination(path, lib_root, move_root):
     lib_real = os.path.realpath(lib_root)
     move_real = os.path.realpath(move_root)
@@ -2876,28 +2898,116 @@ def _write_bif_from_jpegs(jpeg_paths, output_path, interval_seconds):
                 shutil.copyfileobj(frame, output, length=1024 * 1024)
 
 
+def _terminate_generation_process(process):
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _ffmpeg_error_summary(data):
+    text = bytes(data or b"").decode("utf-8", errors="replace").strip()
+    if not text:
+        return "FFmpeg frame extraction failed"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    summary = " | ".join(lines[-6:])
+    if len(summary) > 2000:
+        summary = summary[-2000:]
+    return summary
+
+
 def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, run):
     command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", video_path,
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-xerror", "-i", video_path,
+        "-map", "0:v:0",
         "-vf", (
             f"select='eq(n,0)+gte(t-prev_selected_t,{int(interval_seconds)})',"
             f"scale={int(width)}:-2:flags=lanczos"
         ),
         "-fps_mode", "vfr", "-pix_fmt", "yuvj420p", "-q:v", "2", output_pattern,
     ]
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    while process.poll() is None:
-        if run.get("cancel_requested"):
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            raise ScanCancelled()
-        time.sleep(0.1)
-    stderr = (process.stderr.read() if process.stderr else b"").decode("utf-8", errors="replace").strip()
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    stderr_tail = bytearray()
+    stderr_lock = threading.Lock()
+
+    def drain_stderr():
+        if not process.stderr:
+            return
+        while True:
+            chunk = process.stderr.read(4096)
+            if not chunk:
+                break
+            with stderr_lock:
+                stderr_tail.extend(chunk)
+                if len(stderr_tail) > GENERATION_STDERR_LIMIT:
+                    del stderr_tail[:-GENERATION_STDERR_LIMIT]
+
+    stderr_thread = threading.Thread(
+        target=drain_stderr,
+        daemon=True,
+        name=f"vid2gif-ffmpeg-stderr-{run.get('id', 'generation')}",
+    )
+    stderr_thread.start()
+    frame_dir = os.path.dirname(output_pattern)
+    frame_count = 0
+    last_progress = time.monotonic()
+    last_checked = 0.0
+    try:
+        while process.poll() is None:
+            if run.get("cancel_requested"):
+                _terminate_generation_process(process)
+                raise ScanCancelled()
+            now = time.monotonic()
+            if now - last_checked >= 0.5:
+                last_checked = now
+                try:
+                    observed = sum(
+                        1
+                        for entry in os.scandir(frame_dir)
+                        if entry.is_file() and entry.name.lower().endswith(".jpg")
+                    )
+                except OSError:
+                    observed = frame_count
+                if observed > frame_count:
+                    frame_count = observed
+                    last_progress = now
+                    expected = int(run.get("expected_frame_count") or 0)
+                    item_fraction = min(0.99, frame_count / expected) if expected else 0.0
+                    overall = 100 * (
+                        int(run.get("processed_count") or 0) + item_fraction
+                    ) / max(1, int(run.get("file_count") or 1))
+                    run.update(
+                        {
+                            "current_frame_count": frame_count,
+                            "item_progress_percent": int(item_fraction * 100) if expected else None,
+                            "progress_percent": round(overall, 1),
+                        }
+                    )
+                    _persist_generation_run(run)
+                if now - last_progress >= GENERATION_STALL_TIMEOUT_SECONDS:
+                    _terminate_generation_process(process)
+                    raise RuntimeError(
+                        "FFmpeg made no frame progress for "
+                        f"{GENERATION_STALL_TIMEOUT_SECONDS} seconds; the video may be corrupt or unreadable"
+                    )
+            time.sleep(0.1)
+    finally:
+        if process.poll() is None:
+            _terminate_generation_process(process)
+        stderr_thread.join(timeout=5)
     if process.returncode != 0:
-        raise RuntimeError(stderr or "FFmpeg frame extraction failed")
+        with stderr_lock:
+            error_data = bytes(stderr_tail)
+        raise RuntimeError(_ffmpeg_error_summary(error_data))
 
 
 def _install_generated_bif(
@@ -2909,6 +3019,7 @@ def _install_generated_bif(
     *,
     lib_root=LIB_ROOT,
     expected_target=None,
+    duration=None,
 ):
     if _matching_bifs_for_video(video_path):
         raise FileExistsError("A matching BIF appeared after the generation plan was created")
@@ -2917,7 +3028,6 @@ def _install_generated_bif(
         raise ValueError("Generated BIF failed structural validation")
     if not parsed.get("image_count"):
         raise ValueError("Generated BIF contains no frames")
-    duration = _probe_video_duration(video_path)
     expected_count = _expected_bif_frame_count(duration, interval_seconds)
     if expected_count is not None and abs(parsed.get("image_count", 0) - expected_count) > 1:
         raise ValueError(
@@ -2941,8 +3051,58 @@ def public_generation_run(run):
     return {key: value for key, value in run.items() if not key.startswith("_")}
 
 
+def _persist_generation_run(run, force=False):
+    if not run:
+        return
+    now = time.monotonic()
+    if not force and now - float(run.get("_last_persist_monotonic") or 0) < 1.0:
+        return
+    run["_last_persist_monotonic"] = now
+    payload = {
+        "schema_version": GENERATION_RUN_SCHEMA_VERSION,
+        "run": copy.deepcopy(public_generation_run(run)),
+    }
+    with generation_persist_lock:
+        _write_json(GENERATION_RUN_PATH, payload)
+
+
+def _load_persisted_generation_run():
+    payload = _read_json(GENERATION_RUN_PATH, {})
+    if payload.get("schema_version") != GENERATION_RUN_SCHEMA_VERSION:
+        return None
+    run = payload.get("run")
+    if not isinstance(run, dict) or not run.get("id"):
+        return None
+    run = copy.deepcopy(run)
+    run["restored"] = True
+    if run.get("status") in {"queued", "running", "cancelling"}:
+        run.update(
+            {
+                "status": "interrupted",
+                "finished_at": utc_iso(),
+                "progress_label": "BIF generation interrupted",
+                "error": (
+                    "vid2gif stopped or restarted before this generation run finished. "
+                    "Completed BIFs remain installed; run a new missing scan to continue."
+                ),
+            }
+        )
+        _persist_generation_run(run, force=True)
+    return run
+
+
 def _execute_generation(run, plan):
-    run.update({"status": "running", "started_at": utc_iso(), "progress_label": "Generating BIF previews"})
+    run.update(
+        {
+            "status": "running",
+            "started_at": utc_iso(),
+            "progress_label": "Starting BIF generation",
+            "progress_detail": "Preparing the first video",
+            "current_stage": "Preparing",
+            "items": [],
+        }
+    )
+    _persist_generation_run(run, force=True)
     results = []
     generated = 0
     refused = 0
@@ -2954,6 +3114,23 @@ def _execute_generation(run, plan):
                 raise ScanCancelled()
             video = item["video_path"]
             result = {"item_id": item["item_id"], "video": item["video_relative_path"], "output": item["output_relative_path"]}
+            duration = _probe_video_duration(video)
+            expected_frames = _expected_bif_frame_count(duration, plan["interval_seconds"])
+            run.update(
+                {
+                    "current_index": index,
+                    "current_item_id": item["item_id"],
+                    "current_video": item["video_relative_path"],
+                    "current_output": item["output_relative_path"],
+                    "current_stage": "Extracting frames",
+                    "current_frame_count": 0,
+                    "expected_frame_count": expected_frames,
+                    "item_progress_percent": 0 if expected_frames else None,
+                    "progress_label": f"Video {index} of {plan['file_count']}",
+                    "progress_detail": item["video_relative_path"],
+                }
+            )
+            _persist_generation_run(run, force=True)
             try:
                 if not _identity_matches(video, item.get("video_identity")):
                     raise RuntimeError("Video changed after the missing-BIF scan")
@@ -2965,10 +3142,20 @@ def _execute_generation(run, plan):
                     (os.path.join(item_work, name) for name in os.listdir(item_work) if name.lower().endswith(".jpg")),
                     key=str.lower,
                 )
+                run.update(
+                    {
+                        "current_stage": "Packaging preview",
+                        "current_frame_count": len(frames),
+                        "item_progress_percent": 99,
+                    }
+                )
+                _persist_generation_run(run, force=True)
                 work_bif = os.path.join(item_work, "preview.bif")
                 _write_bif_from_jpegs(frames, work_bif, plan["interval_seconds"])
                 if not _identity_matches(video, item.get("video_identity")):
                     raise RuntimeError("Video changed during BIF generation")
+                run.update({"current_stage": "Validating and installing"})
+                _persist_generation_run(run, force=True)
                 parsed = _install_generated_bif(
                     work_bif,
                     item["output_path"],
@@ -2977,6 +3164,7 @@ def _execute_generation(run, plan):
                     plan["interval_seconds"],
                     lib_root=plan["lib_root"],
                     expected_target=item.get("output_state"),
+                    duration=duration,
                 )
                 result.update({
                     "status": "generated",
@@ -2984,6 +3172,8 @@ def _execute_generation(run, plan):
                     "output_size_bytes": os.path.getsize(item["output_path"]),
                 })
                 generated += 1
+            except ScanCancelled:
+                raise
             except Exception as exc:
                 result.update({"status": "refused", "reason": str(exc)})
                 refused += 1
@@ -2994,10 +3184,24 @@ def _execute_generation(run, plan):
                 "refused_count": refused,
                 "progress_percent": int(100 * index / max(1, plan["file_count"])),
                 "progress_label": f"Processed {index} of {plan['file_count']} videos",
+                "progress_detail": (
+                    f"{generated} generated, {refused} could not be generated"
+                ),
+                "current_stage": "Installed" if result.get("status") == "generated" else "Skipped with an error",
+                "item_progress_percent": 100,
+                "items": copy.deepcopy(results),
             })
+            _persist_generation_run(run, force=True)
         generated_ids = {item.get("item_id") for item in results if item.get("status") == "generated"}
         if generated:
-            run.update(progress_label="Synchronizing generated BIF files with Emby")
+            run.update(
+                progress_label="Synchronizing generated BIF files with Emby",
+                progress_detail=f"{generated} generated, {refused} could not be generated",
+                current_stage="Synchronizing with Emby",
+                current_video="",
+                current_output="",
+            )
+            _persist_generation_run(run, force=True)
         emby = emby_sync.sync_changes(
             [
                 {
@@ -3016,7 +3220,11 @@ def _execute_generation(run, plan):
             "status": "success",
             "finished_at": utc_iso(),
             "progress_percent": 100,
-            "progress_label": "BIF generation complete",
+            "progress_label": "BIF generation complete" if not refused else "BIF generation complete with issues",
+            "progress_detail": f"{generated} generated, {refused} could not be generated",
+            "current_stage": "Complete",
+            "current_video": "",
+            "current_output": "",
             "emby_sync": emby,
             "result": {"items": results, "generated_count": generated, "refused_count": refused, "emby_sync": emby, "emby": emby, "scan_path": plan["scan_path"]},
         })
@@ -3031,6 +3239,7 @@ def _execute_generation(run, plan):
         )
         run["emby_notification"] = notification
         run["result"]["emby_notification"] = notification
+        _persist_generation_run(run, force=True)
         _write_log("bif-generation", {"plan_id": plan["id"], "generated_count": generated, "refused_count": refused, "items": results})
         impact_metrics.record_maintenance_action(
             plan.get("id"),
@@ -3055,9 +3264,31 @@ def _execute_generation(run, plan):
             label="Video preview generation",
         )
     except ScanCancelled:
-        run.update({"status": "cancelled", "finished_at": utc_iso(), "progress_label": "BIF generation cancelled", "result": {"items": results}})
+        run.update(
+            {
+                "status": "cancelled",
+                "finished_at": utc_iso(),
+                "progress_label": "BIF generation cancelled",
+                "progress_detail": f"{generated} generated before cancellation",
+                "current_stage": "Cancelled",
+                "result": {"items": results, "generated_count": generated, "refused_count": refused},
+                "items": copy.deepcopy(results),
+            }
+        )
+        _persist_generation_run(run, force=True)
     except Exception as exc:
-        run.update({"status": "failed", "finished_at": utc_iso(), "progress_label": "BIF generation failed", "error": str(exc), "result": {"items": results}})
+        run.update(
+            {
+                "status": "failed",
+                "finished_at": utc_iso(),
+                "progress_label": "BIF generation failed",
+                "progress_detail": f"{generated} generated before the run failed",
+                "current_stage": "Failed",
+                "error": str(exc),
+                "result": {"items": results, "generated_count": generated, "refused_count": refused},
+                "items": copy.deepcopy(results),
+            }
+        )
         notification = emby_notifications.notify_maintenance(
             "BIF generation",
             run["id"],
@@ -3069,6 +3300,7 @@ def _execute_generation(run, plan):
         )
         run["emby_notification"] = notification
         run["result"]["emby_notification"] = notification
+        _persist_generation_run(run, force=True)
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
 
@@ -3082,11 +3314,17 @@ def start_generation(plan_id, synchronous=False):
         if active:
             return active, None
         run = {
-            "id": _now_id(), "plan_id": plan["id"], "status": "queued", "created_at": utc_iso(),
+            "id": _now_id(), "plan_id": plan["id"], "scan_id": plan["scan_id"],
+            "status": "queued", "created_at": utc_iso(),
             "file_count": plan["file_count"], "processed_count": 0, "generated_count": 0,
-            "refused_count": 0, "progress_percent": 0, "progress_label": "Queued", "cancel_requested": False,
+            "refused_count": 0, "progress_percent": 0, "progress_label": "Queued",
+            "progress_detail": f"Waiting to generate {plan['file_count']} video preview(s)",
+            "current_index": 0, "current_item_id": "", "current_video": "", "current_output": "",
+            "current_stage": "Queued", "current_frame_count": 0, "expected_frame_count": None,
+            "item_progress_percent": None, "items": [], "cancel_requested": False,
         }
         generation_runs[run["id"]] = run
+    _persist_generation_run(run, force=True)
     if synchronous:
         _execute_generation(run, plan)
     else:
@@ -3102,6 +3340,11 @@ def generation_status(run_id=None):
             run = max(generation_runs.values(), key=lambda item: item.get("created_at") or "")
         else:
             run = None
+    if not run:
+        restored = _load_persisted_generation_run()
+        if restored and (not run_id or restored.get("id") == str(run_id)):
+            with preview_lock:
+                run = generation_runs.setdefault(restored["id"], restored)
     if run_id and not run:
         return None, "Generation run not found"
     return {"run": public_generation_run(run)}, None
@@ -3116,6 +3359,8 @@ def cancel_generation(run_id):
             run["cancel_requested"] = True
             run["status"] = "cancelling"
             run["progress_label"] = "Cancelling BIF generation"
+            run["current_stage"] = "Cancelling"
+    _persist_generation_run(run, force=True)
     return public_generation_run(run), None
 
 
