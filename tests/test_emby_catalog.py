@@ -52,6 +52,7 @@ def test_catalog_requests_documented_fields_and_indexes_media_sources():
             "Name": "Movie",
             "Type": "Movie",
             "Path": "/media/Movie.mkv",
+            "RunTimeTicks": 900_000_000,
             "MediaSources": [{"Path": "D:\\Movies\\Movie.mkv"}],
         }
     ]
@@ -63,10 +64,12 @@ def test_catalog_requests_documented_fields_and_indexes_media_sources():
     request = captured[-1]
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)
     assert query["Recursive"] == ["true"]
-    assert query["Fields"] == ["Path,MediaSources,MediaStreams"]
+    assert query["Fields"] == ["Path,MediaSources,MediaStreams,RunTimeTicks"]
     assert query["IncludeItemTypes"] == ["Movie,Episode,Video,Series,Season,BoxSet"]
     assert emby_catalog.match_path(catalog, "/media/Movie.mkv")["emby_item_id"] == "m1"
     assert emby_catalog.match_path(catalog, "d:/movies/movie.mkv")["emby_item_id"] == "m1"
+    assert emby_catalog.duration_seconds_for_path(catalog, "/media/Movie.mkv") == 90
+    assert "emby_run_time_seconds" not in emby_catalog.match_path(catalog, "/media/Movie.mkv")
     assert summary["server_id"] == "server-1"
     assert summary["catalog_item_count"] == 1
     assert request.get_header("X-emby-token") == "secret"

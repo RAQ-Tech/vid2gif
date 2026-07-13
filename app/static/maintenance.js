@@ -1973,9 +1973,11 @@
     if (warnings) warnings.textContent = String(scan?.warning_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
     const scanButton = byId('qualityScanButton');
+    const fullScanButton = byId('qualityFullScanButton');
     const cancelButton = byId('qualityCancelButton');
     const planButton = byId('qualityPlanButton');
     if (scanButton) scanButton.disabled = active;
+    if (fullScanButton) fullScanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
     if (planButton) planButton.disabled = active || !scan || scan.status !== 'success' || !(scan.repairable_count || 0) || scan?.freshness?.status === 'changed';
   }
@@ -2091,9 +2093,10 @@
     if (!scan) {
       setQualityMessage('No BIF quality scan yet.', '');
     } else if (scan.status === 'success') {
+      const workSummary = `${scan.reused_count || 0} reused, ${scan.analyzed_count || 0} analyzed`;
       setQualityMessage(
         `${scan.bad_count || 0} bad BIF file${(scan.bad_count || 0) === 1 ? '' : 's'}`,
-        withEmbyCoverage(`${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed`, scan)
+        withEmbyCoverage(`${scan.warning_count || 0} warnings, ${scan.ok_count || 0} passed; ${workSummary}`, scan)
       );
       appendEmbySyncNotice('qualityMessageDetail', embySyncFrom(apply));
       appendEmbyNotificationNotice('qualityMessageDetail', notificationFrom(apply));
@@ -2143,7 +2146,7 @@
     }
   }
 
-  async function startQualityScan() {
+  async function startQualityScan(forceFull = false) {
     const path = (byId('previewPath')?.value || config.libRoot || '/library').trim();
     if (!path) {
       setQualityMessage('Choose a folder under the library', '');
@@ -2164,13 +2167,14 @@
     if (summary) summary.innerHTML = '';
     const applyButton = byId('qualityApplyButton');
     if (applyButton) applyButton.disabled = true;
-    setQualityMessage('Starting BIF quality scan', '');
-    setQualityProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
+    const modeLabel = forceFull ? 'full BIF quality scan' : 'BIF change scan';
+    setQualityMessage(`Starting ${modeLabel}`, '');
+    setQualityProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued', scan_mode: forceFull ? 'full' : 'incremental'});
     try {
       const res = await fetch('/api/maintenance/video-previews/quality/scan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path})
+        body: JSON.stringify({path, force_full: forceFull})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -3683,7 +3687,8 @@
       previewPageOffset = 0;
       loadPreviewItems(0);
     });
-    byId('qualityScanButton')?.addEventListener('click', startQualityScan);
+    byId('qualityScanButton')?.addEventListener('click', () => startQualityScan(false));
+    byId('qualityFullScanButton')?.addEventListener('click', () => startQualityScan(true));
     byId('qualityCancelButton')?.addEventListener('click', cancelQualityScan);
     byId('qualityPlanButton')?.addEventListener('click', reviewQualityPlan);
     byId('qualityApplyButton')?.addEventListener('click', applyQualityPlan);

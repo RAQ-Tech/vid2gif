@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import json
@@ -61,6 +62,7 @@ ITEM_PAGE_MAX = 100
 LARGE_RESULT_COUNT = 100
 QUALITY_SAMPLE_LIMIT = max(4, _env_int("VIDEO_PREVIEW_QUALITY_SAMPLE_LIMIT", 24))
 QUALITY_DECODE_SAMPLE_LIMIT = max(2, _env_int("VIDEO_PREVIEW_QUALITY_DECODE_SAMPLE_LIMIT", 8))
+QUALITY_ANALYZER_VERSION = 2
 QUALITY_APPLY_LARGE_FILE_COUNT = 100
 FFPROBE_TIMEOUT_SECONDS = max(1, _env_int("VIDEO_PREVIEW_FFPROBE_TIMEOUT", 10))
 JPEG_DECODE_TIMEOUT_SECONDS = max(1, _env_int("VIDEO_PREVIEW_JPEG_DECODE_TIMEOUT", 5))
@@ -647,6 +649,9 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, 
 
 
 BIF_MAGIC = b"\x89BIF\r\n\x1a\n"
+DECODED_FINGERPRINT_WIDTH = 16
+DECODED_FINGERPRINT_HEIGHT = 9
+DECODED_FINGERPRINT_BYTES = DECODED_FINGERPRINT_WIDTH * DECODED_FINGERPRINT_HEIGHT
 
 
 def _stat_identity(path):
@@ -655,6 +660,29 @@ def _stat_identity(path):
 
 def _identity_matches(path, identity):
     return safe_identity_matches(path, identity)
+
+
+def _quality_analysis_signature():
+    payload = {
+        "analyzer_version": QUALITY_ANALYZER_VERSION,
+        "sample_limit": QUALITY_SAMPLE_LIMIT,
+        "decode_sample_limit": QUALITY_DECODE_SAMPLE_LIMIT,
+        "fingerprint_size": [DECODED_FINGERPRINT_WIDTH, DECODED_FINGERPRINT_HEIGHT],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _quality_file_identity(path, lib_root):
+    identity = regular_file_identity(path, root=lib_root)
+    if not identity:
+        return None
+    return {
+        "relative_path": _relative_path(path, lib_root).replace(os.sep, "/"),
+        "size": int(identity.get("size") or 0),
+        "mtime_ns": int(identity.get("mtime_ns") or 0),
+    }
 
 
 def parse_bif(path, sample_limit=QUALITY_SAMPLE_LIMIT):
@@ -869,6 +897,78 @@ def _decode_jpeg_fingerprint(data, timeout=JPEG_DECODE_TIMEOUT_SECONDS):
     }
 
 
+def _fingerprint_decoded_frame(raw):
+    if len(raw) != DECODED_FINGERPRINT_BYTES:
+        return None
+    average = sum(raw) / len(raw)
+    quantized = bytes(min(15, max(0, value // 16)) for value in raw)
+    return {
+        "hash": hashlib.sha256(quantized).hexdigest(),
+        "average_luma": average,
+    }
+
+
+def _decode_jpeg_fingerprints(frames, timeout=JPEG_DECODE_TIMEOUT_SECONDS):
+    frames = [bytes(frame or b"") for frame in (frames or [])]
+    if not frames:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "-i",
+                "pipe:0",
+                "-frames:v",
+                str(len(frames)),
+                "-vf",
+                f"scale={DECODED_FINGERPRINT_WIDTH}:{DECODED_FINGERPRINT_HEIGHT}:force_original_aspect_ratio=decrease,"
+                f"pad={DECODED_FINGERPRINT_WIDTH}:{DECODED_FINGERPRINT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,format=gray",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "pipe:1",
+            ],
+            input=b"".join(frames),
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+
+    raw = (proc.stdout or b"") if proc is not None else b""
+    expected_size = len(frames) * DECODED_FINGERPRINT_BYTES
+    if proc is not None and proc.returncode == 0 and len(raw) == expected_size:
+        decoded = []
+        for index in range(len(frames)):
+            start = index * DECODED_FINGERPRINT_BYTES
+            result = _fingerprint_decoded_frame(
+                raw[start : start + DECODED_FINGERPRINT_BYTES]
+            )
+            if result:
+                decoded.append(result)
+        if len(decoded) == len(frames):
+            return decoded
+
+    # A malformed frame can make image2pipe return partial output. Preserve the
+    # previous per-frame behavior for that unusual BIF so one bad sample does
+    # not hide valid decoded samples.
+    return [
+        result
+        for result in (
+            _decode_jpeg_fingerprint(frame, timeout=timeout) for frame in frames
+        )
+        if result
+    ]
+
+
 def _max_equal_run(values):
     best = 0
     current = 0
@@ -907,15 +1007,29 @@ def _expected_bif_frame_count(duration_seconds, interval_seconds):
     return max(1, int(math.ceil(duration / interval)))
 
 
-def analyze_bif_quality(bif_path, video_path, lib_root):
+def analyze_bif_quality(
+    bif_path,
+    video_path,
+    lib_root,
+    *,
+    duration_seconds=None,
+    duration_source=None,
+):
     parsed = parse_bif(bif_path)
     stat = _safe_stat(bif_path)
     identity = _stat_identity(bif_path) or {}
+    bif_identity = _quality_file_identity(bif_path, lib_root)
+    video_identity = _quality_file_identity(video_path, lib_root)
     interval_from_name = bif_interval_seconds(os.path.basename(bif_path), os.path.splitext(os.path.basename(video_path))[0])
     timestamp_multiplier_ms = parsed.get("timestamp_multiplier_ms") or 0
     interval_from_header = max(1, int(round(timestamp_multiplier_ms / 1000))) if timestamp_multiplier_ms else None
     interval_seconds = interval_from_name or interval_from_header
-    duration = _probe_video_duration(video_path)
+    duration = _positive_duration(duration_seconds)
+    if not duration:
+        duration = _probe_video_duration(video_path)
+        duration_source = "ffprobe" if duration else "unavailable"
+    else:
+        duration_source = str(duration_source or "cache")
     frame_count = parsed.get("image_count") or 0
     expected_frame_count = _expected_bif_frame_count(duration, interval_seconds)
     frame_count_ratio = (
@@ -945,14 +1059,13 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
     else:
         samples = parsed.get("samples") or []
         raw_hashes = [sample.get("sha256") for sample in samples if sample.get("sha256")]
-        decoded = []
         decode_indexes = set(_sample_indexes(len(samples), min(QUALITY_DECODE_SAMPLE_LIMIT, len(samples))))
-        for sample_index, sample in enumerate(samples):
-            if sample_index not in decode_indexes:
-                continue
-            result = _decode_jpeg_fingerprint(sample.get("bytes") or b"")
-            if result:
-                decoded.append(result)
+        decode_frames = [
+            sample.get("bytes") or b""
+            for sample_index, sample in enumerate(samples)
+            if sample_index in decode_indexes
+        ]
+        decoded = _decode_jpeg_fingerprints(decode_frames)
         frame_keys = [item["hash"] for item in decoded] or raw_hashes
         blank_count = sum(1 for item in decoded if item.get("average_luma", 255) < 8 or item.get("average_luma", 0) > 247)
         unique_raw = len(set(raw_hashes))
@@ -1019,6 +1132,7 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
         "frame_count_ratio": frame_count_ratio,
         "frame_count_detail": frame_count_detail,
         "duration_seconds": duration,
+        "duration_source": duration_source,
         "interval_seconds": interval_seconds,
         "timestamp_multiplier_ms": timestamp_multiplier_ms,
         "sample_summary": sample_summary,
@@ -1026,6 +1140,10 @@ def analyze_bif_quality(bif_path, video_path, lib_root):
         "size_label": format_size(stat.st_size if stat else 0),
         "modified_at": utc_iso(stat.st_mtime) if stat else None,
         "identity": identity,
+        "bif_identity": bif_identity,
+        "video_identity": video_identity,
+        "analyzer_version": QUALITY_ANALYZER_VERSION,
+        "analysis_signature": _quality_analysis_signature(),
     }
 
 
@@ -1040,13 +1158,147 @@ def _find_matching_video_for_bif(bif_path, folder_files):
     return ""
 
 
-def _scan_quality_items(scan, lib_root):
-    items = []
-    seen = set()
+def _quality_manifest_entry(path, scan_path):
+    try:
+        stat = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None, None
+    relative = os.path.relpath(path, scan_path).replace(os.sep, "/")
+    return relative, [
+        int(stat.st_size),
+        int(getattr(stat, "st_mtime_ns", stat.st_mtime * 1_000_000_000)),
+    ]
+
+
+def _record_quality_manifest_files(manifest, base, files, scan_path):
+    for filename in files:
+        extension = os.path.splitext(filename)[1].lower()
+        if extension != ".bif" and extension not in VIDEO_EXTS:
+            continue
+        path = os.path.join(base, filename)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        relative, identity = _quality_manifest_entry(path, scan_path)
+        if relative and identity:
+            manifest[relative] = identity
+
+
+def _capture_quality_manifest(scan, lib_root):
+    manifest = {}
     path = scan["path"]
     for base, dirs, files in os.walk(path, followlinks=False):
         _check_quality_cancelled(scan)
         dirs[:] = [d for d in dirs if not _skip_dir(base, d, lib_root)]
+        _record_quality_manifest_files(manifest, base, files, path)
+    return manifest
+
+
+def _latest_reusable_quality_scan(scan):
+    scan_path = os.path.realpath(scan.get("path") or "")
+    lib_root = os.path.realpath(scan.get("lib_root") or "")
+    with preview_lock:
+        candidates = [
+            candidate
+            for candidate in quality_scans.values()
+            if candidate is not scan
+            and candidate.get("status") == "success"
+            and os.path.realpath(candidate.get("path") or "") == scan_path
+            and os.path.realpath(candidate.get("lib_root") or "") == lib_root
+        ]
+        if not candidates:
+            return None
+        latest = max(
+            candidates,
+            key=lambda item: item.get("_finished_ts") or item.get("_created_ts") or 0,
+        )
+        return copy.deepcopy(latest)
+
+
+def _quality_identity_key(identity):
+    return str((identity or {}).get("relative_path") or "")
+
+
+def _quality_item_reusable(item, bif_identity, video_identity):
+    return bool(
+        isinstance(item, dict)
+        and item.get("analyzer_version") == QUALITY_ANALYZER_VERSION
+        and item.get("analysis_signature") == _quality_analysis_signature()
+        and item.get("bif_identity") == bif_identity
+        and item.get("video_identity") == video_identity
+    )
+
+
+def _reused_quality_item(item, bif_path, video_path, lib_root, bif_identity, video_identity):
+    reused = copy.deepcopy(item)
+    stat = _safe_stat(bif_path)
+    for key in (
+        "emby_item_id",
+        "emby_item_type",
+        "emby_item_name",
+        "emby_match_status",
+    ):
+        reused.pop(key, None)
+    reused.update(
+        {
+            "id": _path_id(bif_path, lib_root),
+            "path": os.path.realpath(bif_path),
+            "relative_path": _relative_path(bif_path, lib_root),
+            "name": os.path.basename(bif_path),
+            "video_path": os.path.realpath(video_path),
+            "video_relative_path": _relative_path(video_path, lib_root),
+            "video_name": os.path.basename(video_path),
+            "size_bytes": stat.st_size if stat else 0,
+            "size_label": format_size(stat.st_size if stat else 0),
+            "modified_at": utc_iso(stat.st_mtime) if stat else None,
+            "identity": _stat_identity(bif_path) or {},
+            "bif_identity": bif_identity,
+            "video_identity": video_identity,
+            "analyzer_version": QUALITY_ANALYZER_VERSION,
+            "analysis_signature": _quality_analysis_signature(),
+        }
+    )
+    return reused
+
+
+def _positive_duration(value):
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return None
+    return duration if math.isfinite(duration) and duration > 0 else None
+
+
+def _scan_quality_items(scan, lib_root, catalog_result, settings):
+    items = []
+    seen = set()
+    path = scan["path"]
+    manifest = {}
+    run_counts = {
+        "reused_count": 0,
+        "analyzed_count": 0,
+        "emby_duration_count": 0,
+        "cached_duration_count": 0,
+        "ffprobe_duration_count": 0,
+        "duration_unavailable_count": 0,
+    }
+    previous = None if scan.get("force_full") else _latest_reusable_quality_scan(scan)
+    previous_items = list((previous or {}).get("items") or [])
+    previous_by_bif = {
+        _quality_identity_key(item.get("bif_identity")): item
+        for item in previous_items
+        if _quality_identity_key(item.get("bif_identity"))
+    }
+    previous_by_video = {
+        _quality_identity_key(item.get("video_identity")): item
+        for item in previous_items
+        if _quality_identity_key(item.get("video_identity"))
+    }
+    catalog, _catalog_summary = catalog_result
+    mappings = (settings or {}).get("emby_path_mappings") or []
+    for base, dirs, files in os.walk(path, followlinks=False):
+        _check_quality_cancelled(scan)
+        dirs[:] = [d for d in dirs if not _skip_dir(base, d, lib_root)]
+        _record_quality_manifest_files(manifest, base, files, path)
         for filename in sorted(files, key=str.lower):
             if os.path.splitext(filename)[1].lower() != ".bif":
                 continue
@@ -1057,16 +1309,71 @@ def _scan_quality_items(scan, lib_root):
             video_path = _find_matching_video_for_bif(bif_path, files)
             if not video_path:
                 continue
-            items.append(analyze_bif_quality(bif_path, video_path, lib_root))
+            bif_identity = _quality_file_identity(bif_path, lib_root)
+            video_identity = _quality_file_identity(video_path, lib_root)
+            previous_item = previous_by_bif.get(_quality_identity_key(bif_identity))
+            if _quality_item_reusable(previous_item, bif_identity, video_identity):
+                item = _reused_quality_item(
+                    previous_item,
+                    bif_path,
+                    video_path,
+                    lib_root,
+                    bif_identity,
+                    video_identity,
+                )
+                run_counts["reused_count"] += 1
+            else:
+                duration = None
+                duration_source = None
+                duration = _positive_duration(
+                    emby_catalog.duration_seconds_for_path(
+                        catalog, video_path, mappings
+                    )
+                )
+                if duration:
+                    duration_source = "emby"
+                if not duration and not scan.get("force_full"):
+                    cached_item = previous_by_video.get(
+                        _quality_identity_key(video_identity)
+                    )
+                    if (
+                        cached_item
+                        and cached_item.get("video_identity") == video_identity
+                    ):
+                        duration = _positive_duration(
+                            cached_item.get("duration_seconds")
+                        )
+                        if duration:
+                            duration_source = "cache"
+                item = analyze_bif_quality(
+                    bif_path,
+                    video_path,
+                    lib_root,
+                    duration_seconds=duration,
+                    duration_source=duration_source,
+                )
+                run_counts["analyzed_count"] += 1
+                source = item.get("duration_source")
+                if source == "emby":
+                    run_counts["emby_duration_count"] += 1
+                elif source == "cache":
+                    run_counts["cached_duration_count"] += 1
+                elif source == "ffprobe":
+                    run_counts["ffprobe_duration_count"] += 1
+                else:
+                    run_counts["duration_unavailable_count"] += 1
+            items.append(item)
             if len(items) % 10 == 0:
                 _set_quality_progress(
                     scan,
                     min(95, 5 + len(items)),
-                    f"Checked {len(items)} BIF files",
+                    f"{run_counts['reused_count']} reused, {run_counts['analyzed_count']} analyzed",
                     checked_bif_count=len(items),
+                    reused_count=run_counts["reused_count"],
+                    analyzed_count=run_counts["analyzed_count"],
                 )
     items.sort(key=lambda item: item["relative_path"].lower())
-    return items
+    return items, manifest, run_counts
 
 
 def _quality_cancel_requested(scan):
@@ -1103,7 +1410,15 @@ def public_quality_scan(scan):
         "finished_at": scan.get("finished_at"),
         "active": scan.get("status") in SCAN_ACTIVE_STATUSES,
         "cancel_requested": bool(scan.get("cancel_requested")),
+        "scan_mode": scan.get("scan_mode", "incremental"),
+        "force_full": bool(scan.get("force_full")),
         "checked_bif_count": counts.get("checked_bif_count", scan.get("checked_bif_count", 0)),
+        "reused_count": counts.get("reused_count", scan.get("reused_count", 0)),
+        "analyzed_count": counts.get("analyzed_count", scan.get("analyzed_count", 0)),
+        "emby_duration_count": counts.get("emby_duration_count", 0),
+        "cached_duration_count": counts.get("cached_duration_count", 0),
+        "ffprobe_duration_count": counts.get("ffprobe_duration_count", 0),
+        "duration_unavailable_count": counts.get("duration_unavailable_count", 0),
         "bad_count": counts.get("bad_count", 0),
         "warning_count": counts.get("warning_count", 0),
         "ok_count": counts.get("ok_count", 0),
@@ -1117,6 +1432,8 @@ def public_quality_scan(scan):
         ),
     }
     public.update(maintenance_scan_store.public_cache_metadata("video_previews_quality", scan))
+    if isinstance(scan.get("freshness"), dict):
+        public["freshness"] = dict(scan["freshness"])
     return public
 
 
@@ -1176,24 +1493,48 @@ def _run_quality_scan(scan, lib_root):
             _started_ts=started,
             started_at=utc_iso(started),
         )
-        items = _scan_quality_items(scan, lib_root)
-        counts = _quality_counts(items)
-        emby_mapping = emby_catalog.enrich_records(
-            items,
-            app_settings.load_settings(),
-            lambda item: item.get("video_path"),
+        settings = app_settings.load_settings()
+        catalog_result = emby_catalog.load_catalog(
+            settings,
             before_page=lambda: _check_quality_cancelled(scan),
         )
+        items, start_manifest, run_counts = _scan_quality_items(
+            scan,
+            lib_root,
+            catalog_result,
+            settings,
+        )
+        counts = {**_quality_counts(items), **run_counts}
+        emby_mapping = emby_catalog.enrich_records(
+            items,
+            settings,
+            lambda item: item.get("video_path"),
+            before_page=lambda: _check_quality_cancelled(scan),
+            catalog_result=catalog_result,
+        )
+        end_manifest = _capture_quality_manifest(scan, lib_root)
+        freshness = maintenance_scan_store.compare_manifests(
+            start_manifest, end_manifest
+        )
         finished = time.time()
+        result_label = (
+            f"{counts['bad_count']} bad, {counts['warning_count']} warnings; "
+            f"{counts['reused_count']} reused, {counts['analyzed_count']} analyzed"
+        )
+        if freshness.get("status") == "changed":
+            result_label += "; library changed during scan"
         _set_quality_progress(
             scan,
             100,
-            f"{counts['bad_count']} bad, {counts['warning_count']} warnings",
+            result_label,
             status="success",
             items=items,
             counts=counts,
             checked_bif_count=counts["checked_bif_count"],
+            reused_count=counts["reused_count"],
+            analyzed_count=counts["analyzed_count"],
             emby_mapping=emby_mapping,
+            freshness=freshness,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -1216,7 +1557,12 @@ def _run_quality_scan(scan, lib_root):
         )
         _write_log("quality-scan", {"scan_id": scan["id"], "path": scan["path"], "counts": counts})
         persisted = maintenance_scan_store.persist_success(
-            "video_previews_quality", "video_previews", scan, lib_root
+            "video_previews_quality",
+            "video_previews",
+            scan,
+            lib_root,
+            manifest=start_manifest,
+            freshness=freshness,
         )
         if persisted:
             with preview_lock:
@@ -1265,7 +1611,7 @@ def _run_quality_scan(scan, lib_root):
         )
 
 
-def start_quality_scan(path, lib_root=LIB_ROOT, synchronous=False):
+def start_quality_scan(path, lib_root=LIB_ROOT, synchronous=False, force_full=False):
     _ensure_quality_cache_loaded()
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
@@ -1286,7 +1632,11 @@ def start_quality_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "started_at": None,
         "finished_at": None,
         "cancel_requested": False,
+        "scan_mode": "full" if force_full else "incremental",
+        "force_full": bool(force_full),
         "checked_bif_count": 0,
+        "reused_count": 0,
+        "analyzed_count": 0,
         "items": [],
         "counts": {},
         "lib_root": os.path.realpath(lib_root),

@@ -13,7 +13,7 @@ from .progress import utc_iso
 SUCCESS_CACHE_SECONDS = 300
 FAILURE_CACHE_SECONDS = 30
 CATALOG_ITEM_TYPES = "Movie,Episode,Video,Series,Season,BoxSet"
-CATALOG_FIELDS = "Path,MediaSources,MediaStreams"
+CATALOG_FIELDS = "Path,MediaSources,MediaStreams,RunTimeTicks"
 
 _cache = {}
 _cache_lock = threading.Lock()
@@ -91,10 +91,15 @@ def public_summary(summary, settings=None):
 
 
 def _catalog_entry(item):
+    try:
+        run_time_ticks = float(item.get("RunTimeTicks") or 0)
+    except (TypeError, ValueError):
+        run_time_ticks = 0
     return {
         "emby_item_id": str(item.get("Id") or item.get("id") or ""),
         "emby_item_type": str(item.get("Type") or item.get("type") or ""),
         "emby_item_name": str(item.get("Name") or item.get("name") or ""),
+        "_run_time_seconds": run_time_ticks / 10_000_000 if run_time_ticks > 0 else None,
     }
 
 
@@ -409,13 +414,37 @@ def match_paths(catalog, paths, mappings=None):
     }
 
 
-def enrich_records(records, settings, path_getter, *, opener=None, before_page=None, force=False):
-    catalog, base = load_catalog(
-        settings,
-        force=force,
-        opener=opener,
-        before_page=before_page,
-    )
+def duration_seconds_for_path(catalog, local_path, mappings=None):
+    match = match_path(catalog, local_path, mappings)
+    if match.get("emby_match_status") != "matched":
+        return None
+    entry = (catalog.get("items_by_id") or {}).get(match.get("emby_item_id")) or {}
+    try:
+        duration = float(entry.get("_run_time_seconds") or 0)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
+
+
+def enrich_records(
+    records,
+    settings,
+    path_getter,
+    *,
+    opener=None,
+    before_page=None,
+    force=False,
+    catalog_result=None,
+):
+    if catalog_result is None:
+        catalog, base = load_catalog(
+            settings,
+            force=force,
+            opener=opener,
+            before_page=before_page,
+        )
+    else:
+        catalog, base = catalog_result
     mappings = (settings or {}).get("emby_path_mappings") or []
     counts = {"matched": 0, "unmatched": 0, "ambiguous": 0}
     for record in records or []:

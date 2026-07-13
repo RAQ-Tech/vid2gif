@@ -1156,6 +1156,7 @@ def api_maintenance_video_previews_quality_scan():
         data.get("path"),
         lib_root=LIB_ROOT,
         synchronous=_truthy(data.get("synchronous")),
+        force_full=_truthy(data.get("force_full")),
     )
     if err:
         return jsonify({"error": err}), 400

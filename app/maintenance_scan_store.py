@@ -207,7 +207,31 @@ def capture_manifest(area, path, lib_root=None):
     return files
 
 
-def persist_success(cache_key, area, scan, lib_root=None, manifest=None):
+def compare_manifests(original, current):
+    original = original or {}
+    current = current or {}
+    added = len(set(current) - set(original))
+    removed = len(set(original) - set(current))
+    changed = sum(
+        1 for key in set(current) & set(original) if current[key] != original[key]
+    )
+    return {
+        "status": "changed" if added or removed or changed else "unchanged",
+        "checked_at": utc_iso(),
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    }
+
+
+def persist_success(
+    cache_key,
+    area,
+    scan,
+    lib_root=None,
+    manifest=None,
+    freshness=None,
+):
     if not isinstance(scan, dict) or scan.get("status") != "success":
         return False
     path = os.path.realpath(scan.get("path") or lib_root or config.LIB_ROOT)
@@ -222,7 +246,7 @@ def persist_success(cache_key, area, scan, lib_root=None, manifest=None):
             "library_root_identity": _library_root_identity(lib_root),
             "scan": _json_safe(copy.deepcopy(scan)),
             "manifest": identities,
-            "freshness": {
+            "freshness": dict(freshness) if isinstance(freshness, dict) else {
                 "status": "unchanged",
                 "checked_at": utc_iso(),
                 "added": 0,
@@ -311,16 +335,7 @@ def _check_cache_locked(cache_key, force=False):
     try:
         current = capture_manifest(payload.get("area"), payload.get("path"))
         original = payload.get("manifest") or {}
-        added = len(set(current) - set(original))
-        removed = len(set(original) - set(current))
-        changed = sum(1 for key in set(current) & set(original) if current[key] != original[key])
-        freshness = {
-            "status": "changed" if added or removed or changed else "unchanged",
-            "checked_at": utc_iso(),
-            "added": added,
-            "removed": removed,
-            "changed": changed,
-        }
+        freshness = compare_manifests(original, current)
     except Exception as exc:
         freshness = {
             "status": "unknown",

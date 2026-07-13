@@ -4,7 +4,13 @@ import struct
 import urllib.error
 from pathlib import Path
 
-from app import emby_catalog, impact_metrics, routes, video_preview_maintenance
+from app import (
+    emby_catalog,
+    impact_metrics,
+    maintenance_scan_store,
+    routes,
+    video_preview_maintenance,
+)
 
 
 def _write(path, data=b"x"):
@@ -14,6 +20,8 @@ def _write(path, data=b"x"):
 
 
 def _reset_preview_state(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setattr(maintenance_scan_store.config, "STATE_ROOT", str(state_root))
     log_dir = tmp_path / "state" / "maintenance-logs" / "video-previews"
     monkeypatch.setattr(video_preview_maintenance, "LOG_DIR", str(log_dir))
     monkeypatch.setattr(video_preview_maintenance, "LOG_INDEX", str(log_dir / "index.json"))
@@ -40,6 +48,8 @@ def _reset_preview_state(monkeypatch, tmp_path):
     video_preview_maintenance.quality_apply_runs.clear()
     video_preview_maintenance.generation_plans.clear()
     video_preview_maintenance.generation_runs.clear()
+    monkeypatch.setattr(video_preview_maintenance, "_preview_cache_loaded", True)
+    monkeypatch.setattr(video_preview_maintenance, "_quality_cache_loaded", True)
     return log_dir
 
 
@@ -78,7 +88,7 @@ def _jpeg(payload):
 def _quality_scan(lib, monkeypatch, tmp_path, target=None):
     _reset_preview_state(monkeypatch, tmp_path)
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 900)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
     scan, err = video_preview_maintenance.start_quality_scan(
         str(target or lib),
         lib_root=str(lib),
@@ -309,12 +319,66 @@ def test_bif_parser_flags_corrupt_magic_and_offsets(tmp_path):
     assert any("outside the file" in error or "outside the data section" in error for error in parsed_invalid["errors"])
 
 
+def test_bif_batch_decoder_uses_one_ffmpeg_process(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = (
+            bytes([16]) * video_preview_maintenance.DECODED_FINGERPRINT_BYTES
+            + bytes([224]) * video_preview_maintenance.DECODED_FINGERPRINT_BYTES
+        )
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr(video_preview_maintenance.subprocess, "run", fake_run)
+
+    decoded = video_preview_maintenance._decode_jpeg_fingerprints(
+        [b"first-jpeg", b"second-jpeg"]
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["input"] == b"first-jpegsecond-jpeg"
+    assert calls[0][0][calls[0][0].index("-frames:v") + 1] == "2"
+    assert len(decoded) == 2
+    assert decoded[0]["hash"] != decoded[1]["hash"]
+
+
+def test_bif_batch_decoder_falls_back_when_output_is_partial(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = bytes([16]) * video_preview_maintenance.DECODED_FINGERPRINT_BYTES
+
+    monkeypatch.setattr(
+        video_preview_maintenance.subprocess,
+        "run",
+        lambda *args, **kwargs: Result(),
+    )
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_decode_jpeg_fingerprint",
+        lambda frame, timeout=5: calls.append(frame) or {
+            "hash": frame.decode(),
+            "average_luma": 100,
+        },
+    )
+
+    decoded = video_preview_maintenance._decode_jpeg_fingerprints([b"one", b"two"])
+
+    assert calls == [b"one", b"two"]
+    assert [item["hash"] for item in decoded] == ["one", "two"]
+
+
 def test_bif_quality_flags_repeated_frames(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     video = _write(lib / "Movie" / "Movie.mkv")
     bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"same")] * 8))
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 1260)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
@@ -329,7 +393,7 @@ def test_bif_quality_flags_severe_frame_count_shortfall(monkeypatch, tmp_path):
     video = _write(lib / "Movie" / "Movie.mkv")
     bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"one"), _jpeg(b"two")]))
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 3600)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
@@ -348,7 +412,7 @@ def test_bif_quality_warns_for_moderate_frame_count_shortfall(monkeypatch, tmp_p
     frames = [_jpeg(f"frame-{index}".encode()) for index in range(16)]
     bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes(frames))
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 3600)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
@@ -365,7 +429,7 @@ def test_bif_quality_accepts_matching_ten_second_bif(monkeypatch, tmp_path):
     frames = [_jpeg(f"frame-{index}".encode()) for index in range(90)]
     bif = _write(lib / "Movie" / "Movie-320-10.bif", _bif_bytes(frames, multiplier=10000))
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 900)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
@@ -383,7 +447,7 @@ def test_bif_quality_uses_header_multiplier_when_name_has_no_interval(monkeypatc
     frames = [_jpeg(f"frame-{index}".encode()) for index in range(12)]
     bif = _write(lib / "Movie" / "Movie.bif", _bif_bytes(frames, multiplier=60000))
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 720)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
@@ -398,7 +462,7 @@ def test_bif_quality_skips_expected_count_without_duration(monkeypatch, tmp_path
     video = _write(lib / "Movie" / "Movie.mkv")
     bif = _write(lib / "Movie" / "Movie-320-180.bif", _bif_bytes([_jpeg(b"one"), _jpeg(b"two")]))
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: None)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
 
@@ -418,8 +482,10 @@ def test_bif_quality_flags_blank_decoded_frames(monkeypatch, tmp_path):
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 900)
     monkeypatch.setattr(
         video_preview_maintenance,
-        "_decode_jpeg_fingerprint",
-        lambda data, timeout=5: {"hash": str(data), "average_luma": 0},
+        "_decode_jpeg_fingerprints",
+        lambda frames, timeout=5: [
+            {"hash": str(data), "average_luma": 0} for data in frames
+        ],
     )
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
@@ -450,6 +516,222 @@ def test_bif_quality_scan_and_items_are_bounded(monkeypatch, tmp_path):
     assert page["large_result"] is True
 
 
+def test_bif_quality_incremental_reuse_and_full_scan_process_counts(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    first_video = _write(lib / "One" / "One.mkv", b"video-one")
+    first_bif = _write(
+        lib / "One" / "One-320-180.bif",
+        _bif_bytes([_jpeg(f"one-{index}".encode()) for index in range(8)]),
+    )
+    _write(lib / "Two" / "Two.mkv", b"video-two")
+    _write(
+        lib / "Two" / "Two-320-180.bif",
+        _bif_bytes([_jpeg(f"two-{index}".encode()) for index in range(8)]),
+    )
+    _reset_preview_state(monkeypatch, tmp_path)
+    calls = {"probe": 0, "decode": 0}
+
+    def fake_probe(path, timeout=10):
+        calls["probe"] += 1
+        return 900
+
+    def fake_decode(frames, timeout=5):
+        calls["decode"] += 1
+        return []
+
+    monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", fake_probe)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", fake_decode)
+
+    first, err = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+    second, err2 = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+
+    assert err is None and err2 is None
+    assert first["counts"]["analyzed_count"] == 2
+    assert first["counts"]["reused_count"] == 0
+    assert second["counts"]["analyzed_count"] == 0
+    assert second["counts"]["reused_count"] == 2
+    assert calls == {"probe": 2, "decode": 2}
+
+    first_bif.write_bytes(
+        _bif_bytes([_jpeg(f"one-changed-{index}".encode()) for index in range(8)])
+    )
+    changed_bif, err3 = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+
+    assert err3 is None
+    assert changed_bif["counts"]["analyzed_count"] == 1
+    assert changed_bif["counts"]["reused_count"] == 1
+    assert changed_bif["counts"]["cached_duration_count"] == 1
+    assert calls == {"probe": 2, "decode": 3}
+
+    first_video.write_bytes(b"video-one-was-replaced")
+    changed_video, err4 = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+
+    assert err4 is None
+    assert changed_video["counts"]["analyzed_count"] == 1
+    assert changed_video["counts"]["reused_count"] == 1
+    assert changed_video["counts"]["ffprobe_duration_count"] == 1
+    assert calls == {"probe": 3, "decode": 4}
+
+    full, err5 = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True, force_full=True
+    )
+
+    assert err5 is None
+    assert full["scan_mode"] == "full"
+    assert full["counts"]["analyzed_count"] == 2
+    assert full["counts"]["reused_count"] == 0
+    assert full["counts"]["cached_duration_count"] == 0
+    assert calls == {"probe": 5, "decode": 6}
+
+
+def test_bif_quality_analyzer_signature_invalidates_cached_result(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    _write(
+        lib / "Movie" / "Movie-320-180.bif",
+        _bif_bytes([_jpeg(f"frame-{index}".encode()) for index in range(8)]),
+    )
+    _reset_preview_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_probe_video_duration",
+        lambda path, timeout=10: 900,
+    )
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_decode_jpeg_fingerprints",
+        lambda frames, timeout=5: [],
+    )
+    first, _err = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+    first["items"][0]["analysis_signature"] = "older-analyzer"
+
+    second, err = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+
+    assert err is None
+    assert second["counts"]["analyzed_count"] == 1
+    assert second["counts"]["reused_count"] == 0
+    assert second["counts"]["cached_duration_count"] == 1
+
+
+def test_bif_quality_uses_emby_duration_without_ffprobe(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mkv")
+    _write(
+        lib / "Movie" / "Movie-320-180.bif",
+        _bif_bytes([_jpeg(f"frame-{index}".encode()) for index in range(5)]),
+    )
+    _reset_preview_state(monkeypatch, tmp_path)
+    settings = {
+        "emby_url": "http://emby:8096",
+        "emby_api_key": "secret",
+        "emby_path_mappings": [],
+    }
+    catalog = emby_catalog._build_catalog(
+        [
+            {
+                "Id": "movie-1",
+                "Name": "Movie",
+                "Type": "Movie",
+                "Path": str(video),
+                "RunTimeTicks": 9_000_000_000,
+            }
+        ],
+        {"Id": "server"},
+        emby_catalog.configuration_fingerprint(settings),
+    )
+    summary = emby_catalog.known_matches_summary(
+        settings, 1, catalog_item_count=1, server_id="server"
+    )
+    monkeypatch.setattr(video_preview_maintenance.app_settings, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        video_preview_maintenance.emby_catalog,
+        "load_catalog",
+        lambda *args, **kwargs: (catalog, summary),
+    )
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_probe_video_duration",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ffprobe should not run")),
+    )
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_decode_jpeg_fingerprints",
+        lambda frames, timeout=5: [],
+    )
+
+    scan, err = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True, force_full=True
+    )
+
+    assert err is None
+    assert scan["status"] == "success"
+    assert scan["counts"]["emby_duration_count"] == 1
+    assert scan["counts"]["ffprobe_duration_count"] == 0
+    assert scan["items"][0]["duration_seconds"] == 900
+    assert scan["items"][0]["duration_source"] == "emby"
+
+
+def test_bif_quality_marks_scan_stale_when_library_changes_during_scan(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    _write(
+        lib / "Movie" / "Movie-320-180.bif",
+        _bif_bytes([_jpeg(f"frame-{index}".encode()) for index in range(8)]),
+    )
+    _reset_preview_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_probe_video_duration",
+        lambda path, timeout=10: 900,
+    )
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_decode_jpeg_fingerprints",
+        lambda frames, timeout=5: [],
+    )
+    capture = video_preview_maintenance._capture_quality_manifest
+
+    def mutate_then_capture(scan, lib_root):
+        _write(
+            lib / "Movie" / "Movie-320-10.bif",
+            _bif_bytes([_jpeg(f"changed-{index}".encode()) for index in range(8)])
+        )
+        return capture(scan, lib_root)
+
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "_capture_quality_manifest",
+        mutate_then_capture,
+    )
+
+    scan, err = video_preview_maintenance.start_quality_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+    public = video_preview_maintenance.public_quality_scan(scan)
+    allowed, action_error = maintenance_scan_store.action_allowed(
+        "video_previews_quality", scan["id"], str(lib)
+    )
+
+    assert err is None
+    assert scan["status"] == "success"
+    assert public["freshness"]["status"] == "changed"
+    assert public["freshness"]["added"] == 1
+    assert allowed is False
+    assert "changed" in action_error.lower()
+
+
 def test_bif_quality_routes_scan_plan_and_apply(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
@@ -457,7 +739,7 @@ def test_bif_quality_routes_scan_plan_and_apply(monkeypatch, tmp_path):
     _write(movie / "Movie.mkv")
     _reset_preview_state(monkeypatch, tmp_path)
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", lambda path, timeout=10: 900)
-    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprint", lambda data, timeout=5: None)
+    monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", lambda frames, timeout=5: [])
     monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
 
     class ImmediateThread:
@@ -474,7 +756,7 @@ def test_bif_quality_routes_scan_plan_and_apply(monkeypatch, tmp_path):
 
     scan_res = client.post(
         "/api/maintenance/video-previews/quality/scan",
-        json={"path": str(lib), "synchronous": True},
+        json={"path": str(lib), "synchronous": True, "force_full": True},
     )
     scan = scan_res.get_json()["scan"]
     items_res = client.get(
@@ -500,6 +782,9 @@ def test_bif_quality_routes_scan_plan_and_apply(monkeypatch, tmp_path):
     )
 
     assert scan_res.status_code == 200
+    assert scan["scan_mode"] == "full"
+    assert scan["analyzed_count"] == 1
+    assert scan["reused_count"] == 0
     assert scan["bad_count"] == 1
     assert items_res.status_code == 200
     assert items_res.get_json()["items"][0]["name"] == "Movie-320-180.bif"
@@ -971,6 +1256,7 @@ def test_video_preview_ui_assets_render():
     assert "Interval Mismatch" not in html
     assert "Interval mismatches" not in html
     assert 'id="qualityScanButton"' in html
+    assert 'id="qualityFullScanButton"' in html
     assert 'id="qualityApplyButton"' in html
     assert 'id="previewGenerationPlanButton"' in html
     assert 'id="previewGenerationStartButton"' in html
@@ -981,6 +1267,7 @@ def test_video_preview_ui_assets_render():
     assert "fetch('/api/maintenance/video-previews/emby/tasks')" in script
     assert "fetch('/api/maintenance/video-previews/emby/run-extraction'" in script
     assert "fetch('/api/maintenance/video-previews/quality/scan'" in script
+    assert "force_full: forceFull" in script
     assert "/api/maintenance/video-previews/quality/items?scan_id=" in script
     assert "fetch('/api/maintenance/video-previews/quality/plan'" in script
     assert "fetch('/api/maintenance/video-previews/quality/apply'" in script
