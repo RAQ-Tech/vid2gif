@@ -16,6 +16,7 @@ from . import maintenance_scan_store
 from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import atomic_quarantine_file
+from .operation_gate import coordinated_library_operation
 from .progress import format_size, utc_iso
 from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
@@ -625,6 +626,9 @@ def _active_scan_locked():
     return max(active, key=lambda item: item.get("_created_ts") or 0)
 
 
+@coordinated_library_operation(
+    "Scan subtitle health", kind="scan", href="/maintenance#subtitles"
+)
 def _run_scan(scan, settings, lib_root):
     try:
         started = time.time()
@@ -1061,6 +1065,12 @@ def _save_action_log(plan, run, records):
         pass
 
 
+@coordinated_library_operation(
+    "Apply subtitle maintenance",
+    kind="mutation",
+    href="/maintenance#subtitles",
+    state_index=1,
+)
 def _run_action(plan, run):
     records = []
     applied_bytes = 0

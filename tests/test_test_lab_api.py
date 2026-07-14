@@ -417,9 +417,9 @@ def test_test_lab_preview_worker_creates_scaled_preview(monkeypatch, tmp_path):
         output = args[args.index("--output") + 1]
         with open(output, "wb") as f:
             f.write(_gif_bytes(height=720))
-        return __import__("subprocess").CompletedProcess(args, 0)
+        return test_lab.ProcessResult(returncode=0)
 
-    monkeypatch.setattr(test_lab.subprocess, "run", fake_run)
+    monkeypatch.setattr(test_lab, "run_streaming_process", fake_run)
 
     test_lab._preview_worker("run1/variant-1.gif", 720)
 

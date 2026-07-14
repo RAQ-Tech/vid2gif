@@ -45,6 +45,9 @@ jobs:
       - name: Audit frontend dependencies
         run: npm audit --audit-level=low
 
+      - name: Install browser test runtime
+        run: npx playwright install --with-deps chromium
+
       - name: Test and build frontend
         run: |
           npm run test:frontend
@@ -53,3 +56,6 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+      - name: Run browser and accessibility tests
+        run: npm run test:browser

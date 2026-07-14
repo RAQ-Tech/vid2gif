@@ -12,6 +12,7 @@ def _clear_jobs_and_queue():
     jobs.jobs.clear()
     with jobs.job_queue.mutex:
         jobs.job_queue.queue.clear()
+        jobs.job_queue.unfinished_tasks = 0
 
 
 def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
@@ -78,6 +79,31 @@ def test_worker_creates_and_cleans_tmp_dir(tmp_path, monkeypatch):
     assert recorded == [job_id]
     assert job['gif_optimization_status'] == 'optimized'
     assert not os.path.exists(job['tmp_dir'])
+    _clear_jobs_and_queue()
+
+
+def test_cancel_job_removes_a_queued_job_without_leaving_queue_work(monkeypatch, tmp_path):
+    _clear_jobs_and_queue()
+    monkeypatch.setattr(jobs, "_persist_job_state", lambda: True)
+    logger = logging.getLogger("test_cancel_queued_job")
+    logger.handlers.clear()
+    logger.addHandler(logging.NullHandler())
+    job = {
+        "id": "cancel-me",
+        "status": "queued",
+        "logger": logger,
+        "progress_percent": 0,
+    }
+    jobs.jobs[job["id"]] = job
+    jobs.job_queue.put(job["id"])
+
+    payload, error = jobs.cancel_job(job["id"])
+
+    assert error is None
+    assert payload["status"] == "stopped"
+    assert list(jobs.job_queue.queue) == []
+    assert jobs.job_queue.unfinished_tasks == 0
+    assert job["logger"] is None
     _clear_jobs_and_queue()
 
 

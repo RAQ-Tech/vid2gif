@@ -17,6 +17,7 @@ from . import task_progress
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import regular_file_identity
+from .operation_gate import coordinated_library_operation, library_operation
 from .progress import format_size, utc_iso
 from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
@@ -570,6 +571,9 @@ def _build_items(settings, scan, lib_root, opener=None):
     return items, len(people), len(media_items)
 
 
+@coordinated_library_operation(
+    "Scan actor images", kind="scan", href="/maintenance#actor-images"
+)
 def _run_scan(scan, lib_root, opener=None):
     try:
         started = time.time()
@@ -1116,6 +1120,22 @@ def _identity_matches(path, identity):
 
 
 def _execute_import_apply(apply_id, opener=None):
+    with actor_lock:
+        run = actor_apply_runs.get(apply_id)
+    if not run:
+        return
+    with library_operation(
+        f"mutation:actor-images:{apply_id}",
+        label="Apply actor image imports",
+        kind="mutation",
+        state=run,
+        href="/maintenance#actor-images",
+    ) as activity:
+        _execute_import_apply_inner(apply_id, opener=opener)
+        activity.set_outcome(run.get("status"))
+
+
+def _execute_import_apply_inner(apply_id, opener=None):
     with actor_lock:
         run = actor_apply_runs.get(apply_id)
         plan = actor_plans.get(run.get("plan_id")) if run else None

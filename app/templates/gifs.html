@@ -255,10 +255,16 @@
                   <i class="bi bi-activity" aria-hidden="true"></i>
                   <span>Run</span>
                 </div>
-                <button id="testLabRunButton" type="button" class="btn btn-primary btn-sm">
-                  <i class="bi bi-play-fill" aria-hidden="true"></i>
-                  <span>Generate GIF</span>
-                </button>
+                <div class="d-flex gap-2">
+                  <button id="testLabCancelButton" type="button" class="btn btn-outline-danger btn-sm d-none">
+                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                    <span>Cancel</span>
+                  </button>
+                  <button id="testLabRunButton" type="button" class="btn btn-primary btn-sm">
+                    <i class="bi bi-play-fill" aria-hidden="true"></i>
+                    <span>Generate GIF</span>
+                  </button>
+                </div>
               </div>
               <div class="scan-estimate" aria-live="polite">
                 <i class="bi bi-info-circle" aria-hidden="true"></i>
@@ -417,7 +423,7 @@
         <div class="table-responsive workspace-table-wrap">
           <table class="table table-hover align-middle workspace-table" data-table-id="gif-queue" data-sort-mode="none">
             <thead>
-              <tr><th data-column-id="move" data-resizable="false">Move</th><th data-column-id="id">ID</th><th data-column-id="video">Video</th><th data-column-id="status">Status</th><th data-column-id="progress">Progress</th><th data-column-id="log" data-resizable="false">Log</th></tr>
+              <tr><th data-column-id="move" data-resizable="false">Move</th><th data-column-id="id">ID</th><th data-column-id="video">Video</th><th data-column-id="status">Status</th><th data-column-id="progress">Progress</th><th data-column-id="log" data-resizable="false">Actions</th></tr>
             </thead>
             <tbody id="queue-body">
             {% for j in running_jobs %}
@@ -435,7 +441,10 @@
                 </div>
                 <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Starting' }}</div>
               </td>
-              <td><a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td>
+              <td class="control-cell">
+                <button type="button" class="btn btn-outline-danger btn-icon btn-sm" data-job-cancel="{{ j.id }}" title="Cancel job" aria-label="Cancel job {{ j.id }}"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+                <a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log" aria-label="Open log for job {{ j.id }}"><i class="bi bi-file-text" aria-hidden="true"></i></a>
+              </td>
             </tr>
             {% endfor %}
             {% for j in queued_jobs %}
@@ -457,7 +466,10 @@
                 </div>
                 <div class="small text-muted mt-1">{{ j.progress_label or j.progress_text or 'Waiting' }}</div>
               </td>
-              <td><a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td>
+              <td class="control-cell">
+                <button type="button" class="btn btn-outline-danger btn-icon btn-sm" data-job-cancel="{{ j.id }}" title="Cancel job" aria-label="Cancel job {{ j.id }}"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+                <a class="btn btn-outline-secondary btn-icon btn-sm" href="/logs/{{ j.id }}" title="Open raw log" aria-label="Open log for job {{ j.id }}"><i class="bi bi-file-text" aria-hidden="true"></i></a>
+              </td>
             </tr>
             {% endfor %}
             </tbody>

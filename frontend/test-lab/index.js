@@ -21,7 +21,7 @@ import {SynchronizedGifPlayer} from './player.js';
 
 const DRAFT_STORAGE_KEY = 'testlab_workbench_v1';
 const PENDING_RUN_STORAGE_KEY = 'testlab_pending_run';
-const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'partial', 'stopped']);
+const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'partial', 'stopped', 'interrupted', 'cancelled']);
 
 const byId = id => document.getElementById(id);
 const config = window.vid2gifConfig || {};
@@ -71,7 +71,7 @@ function statusClass(status) {
   if (status === 'success') return 'text-bg-success';
   if (status === 'failed') return 'text-bg-danger';
   if (status === 'partial') return 'text-bg-warning';
-  if (status === 'running') return 'text-bg-primary';
+  if (status === 'running' || status === 'cancelling') return 'text-bg-primary';
   return 'text-bg-secondary';
 }
 
@@ -248,6 +248,32 @@ function updateRunButton() {
   const label = button.querySelector('span');
   if (label) label.textContent = count === 1 ? 'Generate GIF' : `Generate ${count} GIFs`;
   button.disabled = state.hasActiveRun;
+  const cancel = byId('testLabCancelButton');
+  if (cancel) {
+    cancel.classList.toggle('d-none', !state.hasActiveRun);
+    cancel.disabled = Boolean(state.run?.cancel_requested);
+  }
+}
+
+async function cancelRun() {
+  const runId = state.run?.id || state.pendingRunId;
+  if (!runId) return;
+  const button = byId('testLabCancelButton');
+  if (button) button.disabled = true;
+  setMessage('Cancelling test run', 'The active FFmpeg process will stop before any output is installed.');
+  try {
+    const response = await fetch(`/api/test-lab/runs/${encodeURIComponent(runId)}/cancel`, {method: 'POST'});
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not cancel test run');
+    state.run = payload.run || state.run;
+    state.hasActiveRun = true;
+    renderRun(state.run);
+    updateRunButton();
+    scheduleRunPoll();
+  } catch (error) {
+    if (button) button.disabled = false;
+    setMessage('Could not cancel test run', error.message, true);
+  }
 }
 
 function addVariant() {
@@ -942,6 +968,7 @@ function bindEvents() {
     if (event.target.closest('#testLabRemoveVariant')) removeVariant();
   });
   byId('testLabRunButton')?.addEventListener('click', startRun);
+  byId('testLabCancelButton')?.addEventListener('click', cancelRun);
   byId('testLabPlayPause')?.addEventListener('click', () => {
     if (player.playing) {
       player.pause();

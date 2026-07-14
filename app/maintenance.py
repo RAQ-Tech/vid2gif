@@ -20,6 +20,7 @@ from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import atomic_quarantine_file
 from .file_safety import identity_matches as safe_identity_matches
 from .file_safety import regular_file_identity
+from .operation_gate import coordinated_library_operation, library_operation
 from .progress import format_size, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
 
@@ -846,6 +847,9 @@ def _active_duplicate_scan_locked():
     return max(active, key=lambda item: item.get("_created_ts") or 0)
 
 
+@coordinated_library_operation(
+    "Scan duplicate videos", kind="scan", href="/maintenance#duplicates"
+)
 def _run_scan(scan, lib_root):
     try:
         settings = scan.get("settings") or duplicate_settings()
@@ -1765,7 +1769,15 @@ def _execute_duplicate_apply(apply_id):
         run = duplicate_apply_runs.get(apply_id)
     if not run:
         return
-    result, err = apply_duplicate_cleanup_plan(run.get("plan_id"), apply_run=run)
+    with library_operation(
+        f"mutation:duplicates:{apply_id}",
+        label="Apply duplicate cleanup",
+        kind="mutation",
+        state=run,
+        href="/maintenance#duplicates",
+    ) as activity:
+        result, err = apply_duplicate_cleanup_plan(run.get("plan_id"), apply_run=run)
+        activity.set_outcome(run.get("status"))
     if err:
         finished = time.time()
         notification = emby_notifications.notify_maintenance(

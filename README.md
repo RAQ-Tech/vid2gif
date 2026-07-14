@@ -95,6 +95,7 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
 | `GIF_OPTIMIZE_LEVEL` | `2` | Gifsicle optimization level, clamped to `1`, `2`, or `3` |
 | `GIFSICLE_BIN` | `gifsicle` | Gifsicle executable path or command name |
 | `GIF_OPTIMIZE_TIMEOUT` | `600` | Maximum seconds allowed for one GIF optimization step |
+| `GIF_GENERATION_STALL_TIMEOUT` | `180` | Stop a GIF/Test Lab FFmpeg process that produces no progress for this many seconds |
 | `LANDSCAPE_POSTER_AUTO` | `0` | Enable automatic landscape poster maintenance at startup |
 | `LANDSCAPE_POSTER_INTERVAL_SECONDS` | `900` | Incremental landscape poster scan interval when automation is enabled |
 | `LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS` | `86400` | Maximum interval between full landscape poster reconciliation scans |
@@ -114,6 +115,16 @@ no-overwrite link-and-unlink operation; they refuse cross-filesystem fallback
 instead of risking a partial copy followed by deletion. Permanent-delete
 maintenance actions remain explicit and irreversible, so quarantine is the
 recommended operation for live libraries.
+
+The standard GIF queue is persisted under `/state/gif-jobs`. Queued work is
+restored after a container restart; work that was actively rendering is marked
+interrupted and its staging directory is removed without installing partial
+output. FFmpeg and Gifsicle output is drained continuously with bounded logs,
+and active GIF/Test Lab work can be cancelled from either its page or the global
+activity strip. Disk-heavy scans, maintenance writes, BIF generation, and GIF
+conversion share a FIFO coordinator so they do not compete for the same library
+disks. Waiting work remains visible and cancellable where the workflow supports
+cancellation.
 
 The Docker entrypoint always ensures `/state` is writable for logs and
 temporary files. It does not scan and chown `/library` by default, which avoids
@@ -179,4 +190,5 @@ increase processing time.
 - Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines.
 - Add tests under [`tests/`](tests/) and ensure they pass with `python -m pytest`.
 - Run `npm run test:frontend` and rebuild the checked-in frontend bundle after changing Test Lab source files.
+- Run `npm run test:browser` for Chromium interaction, responsive-layout, and accessibility checks.
 - Keep runtime dependencies in `requirements.txt` and development-only tools in `requirements-dev.txt`.

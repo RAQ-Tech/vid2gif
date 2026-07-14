@@ -9,6 +9,7 @@ from . import impact_metrics
 from . import maintenance
 from . import maintenance_scan_store
 from . import task_progress
+from .operation_gate import coordinated_library_operation
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import test_lab
@@ -545,11 +546,18 @@ def _scan_library_inventory(scan):
 
 
 def _run_library_scan(scan_id):
-    global library_scan
     with dashboard_lock:
         scan = library_scan if library_scan and library_scan.get("id") == scan_id else None
-        if not scan:
-            return
+    if not scan:
+        return
+    _run_library_scan_state(scan)
+
+
+@coordinated_library_operation(
+    "Scan library overview", kind="scan", href="/maintenance#overview"
+)
+def _run_library_scan_state(scan):
+    with dashboard_lock:
         started = time.time()
         task_progress.update_scan(
             scan,

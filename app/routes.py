@@ -23,6 +23,7 @@ from . import emby_notifications
 from . import maintenance
 from . import maintenance_scan_orchestrator
 from . import maintenance_scan_store
+from . import operation_gate
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import system_status
@@ -49,6 +50,8 @@ from .jobs import (
     public_job,
     prune_job_history,
     queue_status_payload,
+    cancel_job,
+    close_job_logger,
 )
 from .progress import format_duration, format_size, mark_job_finished
 
@@ -173,7 +176,9 @@ def _gifs_workspace_context(limit):
     prune_job_history()
     with lock:
         running_jobs = [
-            public_job(j) for j in jobs.values() if j.get("status") == "running"
+            public_job(j)
+            for j in jobs.values()
+            if j.get("status") in {"running", "cancelling"}
         ]
 
     with job_queue.mutex:
@@ -187,7 +192,7 @@ def _gifs_workspace_context(limit):
         completed_jobs = [
             public_job(j)
             for j in jobs.values()
-            if j.get("status") in ("success", "failed", "stopped")
+            if j.get("status") in ("success", "failed", "stopped", "interrupted", "cancelled")
         ]
         all_jobs = [public_job(j) for j in jobs.values()]
 
@@ -483,6 +488,11 @@ def api_system_status():
     return jsonify(system_status.status_payload())
 
 
+@app.route("/api/activity")
+def api_activity():
+    return jsonify(operation_gate.status_payload())
+
+
 @app.route("/healthz")
 def healthz():
     payload = system_status.status_payload()
@@ -618,18 +628,25 @@ def api_queue_control(action):
         with job_queue.mutex:
             ids = list(job_queue.queue)
             job_queue.queue.clear()
+            job_queue.unfinished_tasks = max(
+                0, job_queue.unfinished_tasks - len(ids)
+            )
+            if job_queue.unfinished_tasks == 0:
+                job_queue.all_tasks_done.notify_all()
         with lock:
             for jid in ids:
                 j = jobs.get(jid)
                 if j and j.get("status") == "queued":
                     mark_job_finished(j, "stopped")
+                    close_job_logger(j)
+    emit_queue_status()
     return _redirect_to_gifs("queue", limit=_queue_limit())
 
 
 @app.route("/api/queue/move/<job_id>/<direction>", methods=["POST"])
 def api_queue_move(job_id, direction):
     with lock:
-        if jobs.get(job_id, {}).get("status") == "running":
+        if jobs.get(job_id, {}).get("status") in {"running", "cancelling"}:
             return _redirect_to_gifs("queue", limit=_queue_limit())
     with job_queue.mutex:
         q = list(job_queue.queue)
@@ -644,12 +661,21 @@ def api_queue_move(job_id, direction):
                 q[idx + 1], q[idx] = q[idx], q[idx + 1]
             job_queue.queue.clear()
             job_queue.queue.extend(q)
+    emit_queue_status()
     return _redirect_to_gifs("queue", limit=_queue_limit())
 
 
 @app.route("/api/queue/status")
 def api_queue_status():
     return jsonify(queue_status_payload())
+
+
+@app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
+def api_job_cancel(job_id):
+    job, err = cancel_job(job_id)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"job": job})
 
 
 @app.route("/completed")
@@ -1132,6 +1158,17 @@ def api_maintenance_video_previews_generation_cancel():
     return jsonify({"run": run})
 
 
+@app.route(
+    "/api/maintenance/video-previews/generation/<run_id>/cancel",
+    methods=["POST"],
+)
+def api_maintenance_video_previews_generation_cancel_by_id(run_id):
+    run, err = video_preview_maintenance.cancel_generation(run_id)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"run": run})
+
+
 @app.route("/api/maintenance/video-previews/logs")
 def api_maintenance_video_previews_logs():
     return jsonify({"logs": video_preview_maintenance.list_recent_logs()})
@@ -1539,6 +1576,14 @@ def api_test_lab_status():
 @app.route("/api/test-lab/run-status")
 def api_test_lab_run_status():
     return jsonify(test_lab.run_status_payload())
+
+
+@app.route("/api/test-lab/runs/<run_id>/cancel", methods=["POST"])
+def api_test_lab_run_cancel(run_id):
+    run, err = test_lab.cancel_test_run(run_id)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"run": run})
 
 
 @app.route("/api/test-lab/files")

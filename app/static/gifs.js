@@ -78,7 +78,7 @@
   function statusBadgeClass(status) {
     if (status === 'success') return 'text-bg-success';
     if (status === 'failed') return 'text-bg-danger';
-    if (status === 'running') return 'text-bg-primary';
+    if (status === 'running' || status === 'cancelling') return 'text-bg-primary';
     if (status === 'partial') return 'text-bg-warning';
     return 'text-bg-secondary';
   }
@@ -97,6 +97,13 @@
 
   function queueMoveAction(id, direction) {
     return `/api/queue/move/${encodeURIComponent(id || '')}/${direction}?limit=${encodeURIComponent(limit)}`;
+  }
+
+  function cancelButton(job) {
+    if (!job?.id) return '';
+    return `<button type="button" class="btn btn-outline-danger btn-icon btn-sm" ` +
+      `data-job-cancel="${escapeHtml(job.id)}" title="Cancel job" aria-label="Cancel job ${escapeHtml(job.id)}">` +
+      `<i class="bi bi-x-lg" aria-hidden="true"></i></button>`;
   }
 
   function updateTopFromQueue(data) {
@@ -175,7 +182,7 @@
                 `<td><code>${escapeHtml(j.id)}</code></td>` +
                 `<td class="path-cell"><code title="${escapeHtml(j.video)}">${escapeHtml(j.video)}</code></td>` +
                 `<td>${statusBadge(j.status)}</td><td class="progress-cell">${progressCell(j)}</td>` +
-                `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${jobLogHref(j.id)}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td></tr>`;
+                `<td class="control-cell">${cancelButton(j)}<a class="btn btn-outline-secondary btn-icon btn-sm" href="${jobLogHref(j.id)}" title="Open raw log" aria-label="Open log for job ${escapeHtml(j.id)}"><i class="bi bi-file-text" aria-hidden="true"></i></a></td></tr>`;
       });
       const remaining = Math.max(0, limit - running.length);
       queued.slice(0, remaining).forEach(j => {
@@ -187,7 +194,7 @@
                 `<td><code>${escapeHtml(j.id)}</code></td>` +
                 `<td class="path-cell"><code title="${escapeHtml(j.video)}">${escapeHtml(j.video)}</code></td>` +
                 `<td>${statusBadge(j.status)}</td><td class="progress-cell">${progressCell(j)}</td>` +
-                `<td><a class="btn btn-outline-secondary btn-icon btn-sm" href="${jobLogHref(j.id)}" title="Open raw log"><i class="bi bi-file-text" aria-hidden="true"></i></a></td></tr>`;
+                `<td class="control-cell">${cancelButton(j)}<a class="btn btn-outline-secondary btn-icon btn-sm" href="${jobLogHref(j.id)}" title="Open raw log" aria-label="Open log for job ${escapeHtml(j.id)}"><i class="bi bi-file-text" aria-hidden="true"></i></a></td></tr>`;
       });
       if (!rows) {
         rows = '<tr><td colspan="6" class="text-muted text-center py-4">No queued jobs.</td></tr>';
@@ -237,7 +244,7 @@
       updateTopFromJobs(all);
       updateJobSelector(all);
       const completed = all
-        .filter(j => j.status === 'success' || j.status === 'failed' || j.status === 'stopped')
+        .filter(j => ['success', 'failed', 'stopped', 'interrupted', 'cancelled'].includes(j.status))
         .sort((a, b) => String(b.id || '').localeCompare(String(a.id || '')));
       const tbody = byId('completed-body');
       if (!tbody) return;
@@ -367,7 +374,7 @@
       updateTopFromJobs(all);
       updateJobSelector(all);
       if (autoMode) {
-        const running = all.find(x => x.status === 'running');
+        const running = all.find(x => x.status === 'running' || x.status === 'cancelling');
         if (running) {
           setCurrentJob(running.id);
           setJobMetrics(running);
@@ -733,6 +740,21 @@
     initLogs();
     refreshCompleted();
     refreshWorkspace();
+    document.addEventListener('click', async event => {
+      const button = event.target.closest('[data-job-cancel]');
+      if (!button) return;
+      const jobId = button.getAttribute('data-job-cancel');
+      if (!jobId) return;
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {method: 'POST'});
+        if (!response.ok) throw new Error('Cancellation request failed');
+        await refreshQueue();
+        await refreshCompleted();
+      } catch (error) {
+        button.disabled = false;
+      }
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         stopStream();

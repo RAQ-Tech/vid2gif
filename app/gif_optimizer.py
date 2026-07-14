@@ -1,6 +1,5 @@
 import os
 import shutil
-import subprocess
 import time
 
 from .config import (
@@ -10,6 +9,7 @@ from .config import (
     GIFSICLE_BIN,
 )
 from .progress import format_size
+from .process_runner import run_streaming_process
 
 
 def normalize_optimize_level(level):
@@ -39,6 +39,8 @@ def optimization_label(job):
         return "Timed out"
     if status == "failed":
         return "Failed"
+    if status == "cancelled":
+        return "Cancelled"
     return ""
 
 
@@ -109,19 +111,25 @@ def optimize_gif(gif_path, job, logger=None):
         gif_path,
     ]
 
-    try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=GIF_OPTIMIZE_TIMEOUT,
-        )
-    except FileNotFoundError:
+    result = run_streaming_process(
+        args,
+        cancel_requested=lambda: bool((job or {}).get("cancel_requested")),
+        timeout=GIF_OPTIMIZE_TIMEOUT,
+        tail_lines=20,
+    )
+    if result.launch_error:
         elapsed = time.monotonic() - started
         metrics = _base_metrics(before_size, "missing", elapsed)
         _log(logger, "GIF optimization skipped: gifsicle not found")
         return _record(job, metrics)
-    except subprocess.TimeoutExpired:
+    if result.cancelled:
+        if os.path.exists(optimized_path):
+            os.remove(optimized_path)
+        elapsed = time.monotonic() - started
+        metrics = _base_metrics(before_size, "cancelled", elapsed)
+        _log(logger, "GIF optimization cancelled; keeping original GIF")
+        return _record(job, metrics)
+    if result.timed_out:
         if os.path.exists(optimized_path):
             os.remove(optimized_path)
         elapsed = time.monotonic() - started
@@ -130,10 +138,10 @@ def optimize_gif(gif_path, job, logger=None):
         return _record(job, metrics)
 
     elapsed = time.monotonic() - started
-    if proc.returncode != 0:
+    if result.returncode != 0:
         if os.path.exists(optimized_path):
             os.remove(optimized_path)
-        detail = (proc.stderr or proc.stdout or "").strip()
+        detail = result.output_tail.strip()
         metrics = _base_metrics(before_size, "failed", elapsed)
         if detail:
             _log_error(

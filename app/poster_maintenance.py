@@ -22,6 +22,7 @@ from .config import (
     VIDEO_EXTS,
 )
 from .file_safety import atomic_install_file, regular_file_identity, target_state
+from .operation_gate import coordinated_library_operation
 from .progress import format_duration, utc_iso
 from .table_sort import sort_records
 from .utils import BACKGROUND_IMAGE_EXTS, path_is_under, resolve_case_insensitive
@@ -800,6 +801,9 @@ def _prune_poster_analysis_locked():
         poster_apply_runs.pop(apply_id, None)
 
 
+@coordinated_library_operation(
+    "Scan landscape posters", kind="scan", href="/maintenance#posters"
+)
 def _run_poster_scan(scan, lib_root):
     try:
         started = time.time()
@@ -1010,6 +1014,11 @@ def public_poster_apply(run):
     return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results", "emby_sync", "emby_notification")}
 
 
+@coordinated_library_operation(
+    "Apply landscape poster maintenance",
+    kind="mutation",
+    href="/maintenance#posters",
+)
 def _run_poster_apply(run, plan, lib_root):
     if not _poster_apply_execution_lock.acquire(blocking=False):
         run.update(status="failed", error="Another poster apply is already active", finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed")
@@ -1074,10 +1083,6 @@ def _run_poster_apply(run, plan, lib_root):
         run.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed", results=results, emby_notification=notification)
     finally:
         _poster_apply_execution_lock.release()
-        try:
-            start_poster_scan(plan["path"], synchronous=True, lib_root=lib_root)
-        except Exception:
-            pass
 
 
 def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
@@ -1090,10 +1095,19 @@ def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
         run_id = _now_id()
         run = {"id": run_id, "plan_id": plan["id"], "status": "queued", "created_at": utc_iso(), "started_at": None, "finished_at": None, "progress_percent": 0, "progress_label": "Queued", "error": "", "updated_count": 0, "failed_count": 0, "results": []}
         poster_apply_runs[run_id] = run
-    if synchronous:
+    def apply_and_refresh():
         _run_poster_apply(run, plan, lib_root)
+        try:
+            # The rescan deliberately starts after the apply releases the
+            # shared library-operation lease, avoiding a nested-gate deadlock.
+            start_poster_scan(plan["path"], synchronous=True, lib_root=lib_root)
+        except Exception:
+            pass
+
+    if synchronous:
+        apply_and_refresh()
     else:
-        threading.Thread(target=_run_poster_apply, args=(run, plan, lib_root), daemon=True, name=f"vid2gif-poster-apply-{run_id}").start()
+        threading.Thread(target=apply_and_refresh, daemon=True, name=f"vid2gif-poster-apply-{run_id}").start()
     return run, None
 
 
@@ -1354,6 +1368,11 @@ def test_emby_connection(updates=None, opener=None, persist=True):
     return result, None
 
 
+@coordinated_library_operation(
+    "Run landscape poster automation",
+    kind="mutation",
+    href="/maintenance#posters",
+)
 def _execute_run(run, lib_root, settings):
     global _current_run_id
     if not _run_execution_lock.acquire(blocking=False):

@@ -4,7 +4,7 @@ import os
 import time
 
 
-TERMINAL_STATUSES = {"success", "failed", "stopped"}
+TERMINAL_STATUSES = {"success", "failed", "stopped", "interrupted", "cancelled"}
 
 
 def utc_iso(ts=None):

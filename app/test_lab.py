@@ -5,7 +5,6 @@ import os
 import queue
 import re
 import shutil
-import subprocess
 import threading
 import time
 
@@ -21,7 +20,6 @@ from .config import (
     TEST_LAB_ROOT,
     VIDEO_EXTS,
 )
-from .conversion_gate import conversion_lock
 from .estimate_history import job_duration_estimate, record_successful_job, sample_count
 from .impact_metrics import record_creative_output
 from .ffmpeg_utils import (
@@ -33,6 +31,8 @@ from .ffmpeg_utils import (
 )
 from .gif_optimizer import normalize_optimize_level, optimize_gif
 from .jobs import create_logger
+from .operation_gate import OperationCancelled, library_operation
+from .process_runner import ProcessResult, run_streaming_process
 from .progress import (
     TERMINAL_STATUSES,
     clamp_percent,
@@ -589,29 +589,21 @@ def _preview_worker(file_id, target_height):
             tmp_path,
             source_path,
         ]
-        with conversion_lock:
-            proc = subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=GIF_OPTIMIZE_TIMEOUT,
-            )
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(detail or "Preview generation failed")
+        result = run_streaming_process(
+            args,
+            timeout=GIF_OPTIMIZE_TIMEOUT,
+            tail_lines=20,
+        )
+        if result.timed_out:
+            raise RuntimeError("Preview generation timed out")
+        if result.launch_error:
+            raise RuntimeError(f"Could not start Gifsicle: {result.launch_error}")
+        if result.returncode != 0:
+            raise RuntimeError(result.output_tail.strip() or "Preview generation failed")
         if not os.path.isfile(tmp_path):
             raise RuntimeError("Preview file was not created")
         os.replace(tmp_path, preview_path)
         _mark_preview(file_id, target_height, status="ready", error="")
-    except subprocess.TimeoutExpired:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        _mark_preview(
-            file_id,
-            target_height,
-            status="failed",
-            error="Preview generation timed out",
-        )
     except Exception as e:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -735,6 +727,8 @@ def _public_run(run):
         "created_at": run.get("created_at"),
         "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
+        "cancel_requested": bool(run.get("cancel_requested")),
+        "can_cancel": run.get("status") in {"queued", "running", "cancelling"},
         "variants": [_public_variant(v) for v in run.get("variants") or []],
     }
 
@@ -764,6 +758,7 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
         "created_at": utc_iso(created_ts),
         "started_at": None,
         "finished_at": None,
+        "cancel_requested": False,
         "variants": [],
     }
 
@@ -953,37 +948,46 @@ def _process_variant(run, variant):
     )
     tmp_gif = os.path.join(variant["tmp_dir"], "poster.gif")
 
-    with conversion_lock:
-        ok, err_msg = make_gif_multi_inputs(
-            run["video"],
-            segs,
-            tmp_gif,
-            variant["cfg"],
-            variant,
-            background_image=bg_image,
-        )
-        if not ok:
+    ok, err_msg = make_gif_multi_inputs(
+        run["video"],
+        segs,
+        tmp_gif,
+        variant["cfg"],
+        variant,
+        background_image=bg_image,
+    )
+    if not ok:
+        if variant.get("cancel_requested") or run.get("cancel_requested"):
+            mark_job_finished(variant, "stopped")
+            variant["error"] = "Test GIF generation cancelled"
+            logger.info(variant["error"])
+        else:
             mark_job_finished(variant, "failed")
             variant["error"] = err_msg
             if not variant.get("_ffmpeg_error_logged"):
                 logger.error(err_msg)
-            return
+        return
 
-        update_job_stage(
-            variant,
-            92 if variant["cfg"].get("optimize", True) else 97,
-            "Optimizing" if variant["cfg"].get("optimize", True) else "Finalizing",
-        )
-        optimize_gif(tmp_gif, variant, logger)
-        try:
-            update_job_stage(variant, 98, "Installing")
-            logger.info("Moving test GIF into place")
-            shutil.move(tmp_gif, variant["out_gif"])
-        except Exception as e:
-            mark_job_finished(variant, "failed")
-            variant["error"] = f"Failed to move GIF: {e}"
-            logger.error(variant["error"])
-            return
+    update_job_stage(
+        variant,
+        92 if variant["cfg"].get("optimize", True) else 97,
+        "Optimizing" if variant["cfg"].get("optimize", True) else "Finalizing",
+    )
+    optimize_gif(tmp_gif, variant, logger)
+    if variant.get("cancel_requested") or run.get("cancel_requested"):
+        mark_job_finished(variant, "stopped")
+        variant["error"] = "Test run cancelled before installation"
+        logger.info(variant["error"])
+        return
+    try:
+        update_job_stage(variant, 98, "Installing")
+        logger.info("Moving test GIF into place")
+        shutil.move(tmp_gif, variant["out_gif"])
+    except Exception as e:
+        mark_job_finished(variant, "failed")
+        variant["error"] = f"Failed to move GIF: {e}"
+        logger.error(variant["error"])
+        return
 
     if os.path.isfile(variant["out_gif"]):
         mark_job_finished(variant, "success", variant["out_gif"])
@@ -1006,7 +1010,9 @@ def _process_variant(run, variant):
 
 def _finish_run(run):
     statuses = [v.get("status") for v in run.get("variants") or []]
-    if statuses and all(status == "success" for status in statuses):
+    if run.get("cancel_requested"):
+        status = "stopped"
+    elif statuses and all(status == "success" for status in statuses):
         status = "success"
     elif statuses and any(status == "success" for status in statuses):
         status = "partial"
@@ -1030,43 +1036,101 @@ def worker():
 
         with test_lab_lock:
             run = test_lab_runs.get(run_id)
-            if run:
-                now = time.time()
-                run["status"] = "running"
-                run["_started_ts"] = now
-                run["started_at"] = utc_iso(now)
-                _run_progress(run, now=now)
         if not run:
             test_lab_queue.task_done()
             continue
 
         try:
-            for variant in run.get("variants") or []:
-                try:
-                    _process_variant(run, variant)
-                except Exception as e:
-                    mark_job_finished(variant, "failed")
-                    variant["error"] = str(e)
-                    if variant.get("logger"):
-                        variant["logger"].error(f"Exception: {e}")
-                finally:
-                    try:
-                        tmp_dir = variant.get("tmp_dir")
-                        if tmp_dir and os.path.isdir(tmp_dir):
-                            shutil.rmtree(tmp_dir, ignore_errors=False)
-                    except Exception as e:
-                        if variant.get("logger"):
-                            variant["logger"].error(f"Failed to remove tmp dir: {e}")
-                    _close_logger(variant.get("logger"))
-                    variant["logger"] = None
+            try:
+                with library_operation(
+                    f"test-lab:{run_id}",
+                    label="Generate Test Lab GIFs",
+                    kind="conversion",
+                    state=run,
+                    href="/gifs#test-lab",
+                    cancel_url=f"/api/test-lab/runs/{run_id}/cancel",
+                    cancel_requested=lambda: bool(run.get("cancel_requested")),
+                ) as activity:
                     with test_lab_lock:
-                        _run_progress(run)
+                        now = time.time()
+                        run["status"] = "running"
+                        run["_started_ts"] = now
+                        run["started_at"] = utc_iso(now)
+                        _run_progress(run, now=now)
                         _write_manifest(run)
-            with test_lab_lock:
-                _finish_run(run)
-                _write_manifest(run)
+                    for variant in run.get("variants") or []:
+                        if run.get("cancel_requested"):
+                            variant["cancel_requested"] = True
+                            if variant.get("status") == "queued":
+                                mark_job_finished(variant, "stopped")
+                            continue
+                        try:
+                            _process_variant(run, variant)
+                        except Exception as e:
+                            mark_job_finished(variant, "failed")
+                            variant["error"] = str(e)
+                            if variant.get("logger"):
+                                variant["logger"].error(f"Exception: {e}")
+                        finally:
+                            try:
+                                tmp_dir = variant.get("tmp_dir")
+                                if tmp_dir and os.path.isdir(tmp_dir):
+                                    shutil.rmtree(tmp_dir, ignore_errors=False)
+                            except Exception as e:
+                                if variant.get("logger"):
+                                    variant["logger"].error(f"Failed to remove tmp dir: {e}")
+                            _close_logger(variant.get("logger"))
+                            variant["logger"] = None
+                            with test_lab_lock:
+                                _run_progress(run)
+                                _write_manifest(run)
+                    with test_lab_lock:
+                        _finish_run(run)
+                        _write_manifest(run)
+                    activity.set_outcome(run.get("status"))
+            except OperationCancelled:
+                with test_lab_lock:
+                    run["cancel_requested"] = True
+                    for variant in run.get("variants") or []:
+                        if variant.get("status") == "queued":
+                            mark_job_finished(variant, "stopped")
+                    _finish_run(run)
+                    _write_manifest(run)
         finally:
             test_lab_queue.task_done()
+
+
+def cancel_test_run(run_id):
+    run_id = str(run_id or "")
+    with test_lab_lock:
+        run = test_lab_runs.get(run_id)
+        if not run:
+            return None, "Test run not found"
+        if run.get("status") in LAB_TERMINAL_STATUSES:
+            return _public_run(run), None
+        run["cancel_requested"] = True
+        removed = False
+        with test_lab_queue.mutex:
+            try:
+                test_lab_queue.queue.remove(run_id)
+                removed = True
+                if test_lab_queue.unfinished_tasks > 0:
+                    test_lab_queue.unfinished_tasks -= 1
+                if test_lab_queue.unfinished_tasks == 0:
+                    test_lab_queue.all_tasks_done.notify_all()
+            except ValueError:
+                pass
+        run["status"] = "stopped" if removed else "cancelling"
+        for variant in run.get("variants") or []:
+            if variant.get("status") in {"queued", "running"}:
+                variant["cancel_requested"] = True
+                if removed and variant.get("status") == "queued":
+                    mark_job_finished(variant, "stopped")
+        if removed:
+            _finish_run(run)
+        _run_progress(run)
+        _write_manifest(run)
+    return _public_run(run), None
 
 
 def start_test_lab_worker():
@@ -1179,7 +1243,11 @@ def _public_runs():
 def run_status_payload():
     runs = _public_runs()
     active = next(
-        (run for run in runs if run.get("status") in {"queued", "running"}),
+        (
+            run
+            for run in runs
+            if run.get("status") in {"queued", "running", "cancelling"}
+        ),
         None,
     )
     return {

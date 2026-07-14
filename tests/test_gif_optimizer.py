@@ -1,9 +1,9 @@
 import shutil
-import subprocess
 
 import pytest
 
 from app import gif_optimizer
+from app.process_runner import ProcessResult
 
 
 class DummyLogger:
@@ -41,9 +41,9 @@ def test_optimize_gif_replaces_original_when_smaller(monkeypatch, tmp_path):
     def fake_run(args, **kwargs):
         captured["args"] = args
         _write(tmp_path / "poster.gif.optimized", 60)
-        return subprocess.CompletedProcess(args, 0)
+        return ProcessResult(returncode=0)
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fake_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
 
@@ -68,9 +68,9 @@ def test_optimize_gif_keeps_original_when_candidate_is_larger(monkeypatch, tmp_p
 
     def fake_run(args, **kwargs):
         _write(tmp_path / "poster.gif.optimized", 120)
-        return subprocess.CompletedProcess(args, 0)
+        return ProcessResult(returncode=0)
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fake_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
 
@@ -91,7 +91,7 @@ def test_optimize_gif_skips_when_disabled(monkeypatch, tmp_path):
     def fail_run(*args, **kwargs):
         raise AssertionError("optimizer should not run")
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fail_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fail_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
 
@@ -110,7 +110,7 @@ def test_optimize_gif_skips_when_job_disables_optimization(monkeypatch, tmp_path
     def fail_run(*args, **kwargs):
         raise AssertionError("optimizer should not run")
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fail_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fail_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
 
@@ -133,9 +133,9 @@ def test_optimize_gif_job_can_enable_when_default_is_disabled(monkeypatch, tmp_p
     def fake_run(args, **kwargs):
         captured["args"] = args
         _write(tmp_path / "poster.gif.optimized", 80)
-        return subprocess.CompletedProcess(args, 0)
+        return ProcessResult(returncode=0)
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fake_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job)
 
@@ -169,9 +169,9 @@ def test_optimize_gif_keeps_original_on_command_failure(monkeypatch, tmp_path):
 
     def fake_run(args, **kwargs):
         _write(tmp_path / "poster.gif.optimized", 50)
-        return subprocess.CompletedProcess(args, 1, stderr="bad gif")
+        return ProcessResult(returncode=1, output_tail="bad gif")
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fake_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
 
@@ -191,9 +191,9 @@ def test_optimize_gif_keeps_original_on_timeout(monkeypatch, tmp_path):
 
     def fake_run(args, **kwargs):
         _write(tmp_path / "poster.gif.optimized", 50)
-        raise subprocess.TimeoutExpired(args, 1)
+        return ProcessResult(returncode=None, timed_out=True)
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fake_run)
 
     metrics = gif_optimizer.optimize_gif(str(gif), job, logger)
 
@@ -213,9 +213,9 @@ def test_optimize_gif_invalid_level_falls_back_to_o2(monkeypatch, tmp_path):
     def fake_run(args, **kwargs):
         captured["args"] = args
         _write(tmp_path / "poster.gif.optimized", 50)
-        return subprocess.CompletedProcess(args, 0)
+        return ProcessResult(returncode=0)
 
-    monkeypatch.setattr(gif_optimizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(gif_optimizer, "run_streaming_process", fake_run)
 
     gif_optimizer.optimize_gif(str(gif), job)
 

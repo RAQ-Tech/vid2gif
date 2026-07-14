@@ -32,6 +32,7 @@ from .file_safety import (
     target_state,
 )
 from .maintenance import QUARANTINE_DIRNAME
+from .operation_gate import coordinated_library_operation, library_operation
 from .progress import format_size, utc_iso
 from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
@@ -405,6 +406,11 @@ def _active_scan_locked():
     return max(active, key=lambda item: item.get("_created_ts") or 0)
 
 
+@coordinated_library_operation(
+    "Scan missing video previews",
+    kind="scan",
+    href="/maintenance#video-previews",
+)
 def _run_scan(scan, lib_root):
     try:
         started = time.time()
@@ -1490,6 +1496,11 @@ def _active_quality_scan_locked():
     return max(active, key=lambda item: item.get("_created_ts") or 0)
 
 
+@coordinated_library_operation(
+    "Scan video preview quality",
+    kind="scan",
+    href="/maintenance#video-previews",
+)
 def _run_quality_scan(scan, lib_root):
     try:
         started = time.time()
@@ -2224,7 +2235,15 @@ def _execute_quality_repair_apply(apply_id):
         run = quality_apply_runs.get(apply_id)
     if not run:
         return
-    result, err = apply_quality_repair_plan(run.get("plan_id"), apply_run=run)
+    with library_operation(
+        f"mutation:video-preview-quality:{apply_id}",
+        label="Apply video preview cleanup",
+        kind="mutation",
+        state=run,
+        href="/maintenance#video-previews",
+    ) as activity:
+        result, err = apply_quality_repair_plan(run.get("plan_id"), apply_run=run)
+        activity.set_outcome(run.get("status"))
     if err:
         finished = time.time()
         notification = emby_notifications.notify_maintenance(
@@ -3091,6 +3110,15 @@ def _load_persisted_generation_run():
     return run
 
 
+@coordinated_library_operation(
+    "Generate video preview thumbnails",
+    kind="conversion",
+    href="/maintenance#video-previews",
+    cancel_url=lambda run: (
+        f"/api/maintenance/video-previews/generation/{run.get('id')}/cancel"
+    ),
+    on_cancel=lambda run: _persist_generation_run(run, force=True),
+)
 def _execute_generation(run, plan):
     run.update(
         {

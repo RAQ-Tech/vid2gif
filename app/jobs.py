@@ -1,16 +1,18 @@
 import queue
 import threading
 import datetime
+import json
 import logging
 import os
+import re
 import time
 import shutil
 
 from .config import LOG_DIR, VIDEO_EXTS, LIB_ROOT, PROCESS_TMP_ROOT
-from .conversion_gate import conversion_lock
 from .estimate_history import job_duration_estimate, record_successful_job
 from .impact_metrics import record_creative_output
 from .gif_optimizer import optimize_gif
+from .operation_gate import OperationCancelled, library_operation
 from .file_safety import (
     FileSafetyError,
     atomic_install_file,
@@ -35,6 +37,7 @@ from .progress import (
     rounded_seconds,
     update_job_label,
     update_job_stage,
+    utc_iso,
 )
 from .utils import find_background_image
 
@@ -57,6 +60,10 @@ lock = threading.Lock()
 queue_paused = threading.Event()
 _worker_start_lock = threading.Lock()
 _worker_started = False
+_restore_lock = threading.Lock()
+_restore_complete = False
+_persist_lock = threading.Lock()
+JOB_STATE_SCHEMA_VERSION = 1
 
 
 def public_job(job):
@@ -88,6 +95,8 @@ def public_job(job):
         "gif_optimization_status": job.get("gif_optimization_status"),
         "gif_optimization_seconds": job.get("gif_optimization_seconds"),
         "gif_optimization_label": job.get("gif_optimization_label", ""),
+        "cancel_requested": bool(job.get("cancel_requested")),
+        "restored": bool(job.get("restored")),
     }
 
 
@@ -171,7 +180,7 @@ def _queue_summary(all_jobs):
     active_batch_ids = {
         j.get("batch_id")
         for j in all_jobs
-        if j.get("status") in ("queued", "running") and j.get("batch_id")
+        if j.get("status") in ("queued", "running", "cancelling") and j.get("batch_id")
     }
     if active_batch_ids:
         relevant = [j for j in all_jobs if j.get("batch_id") in active_batch_ids]
@@ -193,7 +202,7 @@ def _queue_summary(all_jobs):
 
     now = time.time()
     completed = [j for j in relevant if j.get("status") in TERMINAL_STATUSES]
-    running = [j for j in relevant if j.get("status") == "running"]
+    running = [j for j in relevant if j.get("status") in {"running", "cancelling"}]
     queued = [j for j in relevant if j.get("status") == "queued"]
     completed_units = float(len(completed))
     completed_units += sum(
@@ -247,7 +256,9 @@ def queue_status_payload():
     prune_job_history()
     with lock:
         running = [
-            public_job(j) for j in jobs.values() if j.get("status") == "running"
+            public_job(j)
+            for j in jobs.values()
+            if j.get("status") in {"running", "cancelling"}
         ]
         all_jobs = list(jobs.values())
     with job_queue.mutex:
@@ -262,6 +273,7 @@ def queue_status_payload():
 
 
 def emit_queue_status():
+    _persist_job_state()
     return queue_status_payload()
 
 
@@ -277,13 +289,185 @@ class JobFileHandler(logging.FileHandler):
 def create_logger(job_id, log_path):
     logger = logging.getLogger(job_id)
     logger.setLevel(logging.INFO)
-    logger.handlers.clear()
+    for existing in list(logger.handlers):
+        existing.close()
+        logger.removeHandler(existing)
     handler = JobFileHandler(log_path, encoding="utf-8")
     fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
     handler.setFormatter(fmt)
     logger.addHandler(handler)
     logger.propagate = False
     return logger
+
+
+def close_job_logger(job):
+    logger = job.get("logger") if isinstance(job, dict) else None
+    if not logger:
+        return
+    for handler in list(logger.handlers):
+        handler.close()
+        logger.removeHandler(handler)
+    job["logger"] = None
+
+
+def _job_state_path():
+    state_root = os.path.dirname(os.path.realpath(LOG_DIR))
+    return os.path.join(state_root, "gif-jobs", "queue.json")
+
+
+def _serializable_job(job):
+    keys = (
+        "id",
+        "batch_id",
+        "video",
+        "out_gif",
+        "tmp_dir",
+        "status",
+        "cfg",
+        "log_path",
+        "source_identity",
+        "output_state",
+        "progress_text",
+        "progress_label",
+        "progress_percent",
+        "progress_stage",
+        "progress_indeterminate",
+        "expected_duration_seconds",
+        "eta_seconds",
+        "eta_confidence",
+        "elapsed_seconds",
+        "output_size_bytes",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "gif_size_before_opt_bytes",
+        "gif_size_after_opt_bytes",
+        "gif_optimization_saved_bytes",
+        "gif_optimization_savings_percent",
+        "gif_optimization_status",
+        "gif_optimization_seconds",
+        "gif_optimization_label",
+        "cancel_requested",
+        "restored",
+        "_created_ts",
+        "_started_ts",
+        "_finished_ts",
+    )
+    return {key: job.get(key) for key in keys if key in job}
+
+
+def _persist_job_state():
+    try:
+        with _persist_lock:
+            with lock:
+                saved_jobs = [_serializable_job(job) for job in jobs.values()]
+            with job_queue.mutex:
+                order = [job_id for job_id in job_queue.queue if job_id is not None]
+            payload = {
+                "schema_version": JOB_STATE_SCHEMA_VERSION,
+                "saved_at": utc_iso(),
+                "paused": queue_paused.is_set(),
+                "queue": order,
+                "jobs": saved_jobs,
+            }
+            path = _job_state_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            temp = f"{path}.{os.getpid()}.tmp"
+            with open(temp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, path)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _cleanup_restored_tmp(job):
+    path = os.path.realpath(str(job.get("tmp_dir") or ""))
+    root = os.path.realpath(PROCESS_TMP_ROOT)
+    try:
+        safe = os.path.commonpath([path, root]) == root and path != root
+    except (OSError, ValueError):
+        safe = False
+    if safe and os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _restore_jobs_once():
+    global _restore_complete
+    with _restore_lock:
+        if _restore_complete:
+            return
+        _restore_complete = True
+        try:
+            with open(_job_state_path(), "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(payload, dict) or payload.get("schema_version") != JOB_STATE_SCHEMA_VERSION:
+            return
+
+        restored = {}
+        for raw in payload.get("jobs") or []:
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            job = dict(raw)
+            job_id = str(job.get("id") or "")
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", job_id):
+                continue
+            job["id"] = job_id
+            job["restored"] = True
+            status = str(job.get("status") or "").lower()
+            if status in {"running", "cancelling"}:
+                now = time.time()
+                job.update(
+                    {
+                        "status": "interrupted",
+                        "progress_label": "Interrupted by container restart",
+                        "progress_text": "No media output was installed from the interrupted job",
+                        "cancel_requested": False,
+                        "_finished_ts": now,
+                        "finished_at": utc_iso(now),
+                    }
+                )
+                _cleanup_restored_tmp(job)
+            elif status == "queued":
+                _cleanup_restored_tmp(job)
+                base = os.path.splitext(os.path.basename(str(job.get("video") or "video")))[0]
+                job["tmp_dir"] = os.path.join(PROCESS_TMP_ROOT, f"{base}_{job_id}")
+                job["log_path"] = os.path.join(LOG_DIR, f"{job_id}.txt")
+                job["cancel_requested"] = False
+                job["logger"] = create_logger(job_id, job["log_path"])
+                job["logger"].info("Queued job restored after container restart")
+            restored[job_id] = job
+
+        order = [
+            job_id
+            for job_id in payload.get("queue") or []
+            if job_id in restored and restored[job_id].get("status") == "queued"
+        ]
+        order.extend(
+            job_id
+            for job_id, job in sorted(
+                restored.items(), key=lambda item: item[1].get("_created_ts") or 0
+            )
+            if job.get("status") == "queued" and job_id not in order
+        )
+        with lock:
+            for job_id, job in restored.items():
+                jobs.setdefault(job_id, job)
+        with job_queue.mutex:
+            existing = set(job_queue.queue)
+            for job_id in order:
+                if job_id not in existing:
+                    job_queue.queue.append(job_id)
+                    job_queue.unfinished_tasks += 1
+            if order:
+                job_queue.not_empty.notify_all()
+        if payload.get("paused"):
+            queue_paused.set()
+        _persist_job_state()
 
 
 def new_queue_batch_id():
@@ -373,6 +557,179 @@ def find_videos(root_path):
     return vids
 
 
+def cancel_job(job_id):
+    job_id = str(job_id or "")
+    with lock:
+        job = jobs.get(job_id)
+    if not job:
+        return None, "Job not found"
+    status = str(job.get("status") or "").lower()
+    if status in TERMINAL_STATUSES:
+        return public_job(job), None
+
+    removed = False
+    with job_queue.mutex:
+        try:
+            job_queue.queue.remove(job_id)
+            removed = True
+            if job_queue.unfinished_tasks > 0:
+                job_queue.unfinished_tasks -= 1
+            if job_queue.unfinished_tasks == 0:
+                job_queue.all_tasks_done.notify_all()
+        except ValueError:
+            pass
+
+    job["cancel_requested"] = True
+    if removed:
+        mark_job_finished(job, "stopped")
+        job["logger"].info("Queued job cancelled")
+        close_job_logger(job)
+    else:
+        job["status"] = "cancelling"
+        job["progress_label"] = "Cancelling GIF generation"
+        job["logger"].info("Cancellation requested")
+    emit_queue_status()
+    return public_job(job), None
+
+
+def _process_job(job):
+    mark_job_started(job)
+    job["logger"].info("Job started")
+    emit_queue_status()
+    try:
+        source_identity, output_state = _ensure_job_safety_state(job)
+    except FileSafetyError as exc:
+        mark_job_finished(job, "failed")
+        job["logger"].error(str(exc))
+        return
+    if not identity_matches(
+        job["video"],
+        source_identity,
+        root=LIB_ROOT,
+        allowed_extensions=VIDEO_EXTS,
+    ):
+        mark_job_finished(job, "failed")
+        job["logger"].error("Source video changed while the job was queued")
+        return
+    if job.get("cancel_requested"):
+        mark_job_finished(job, "stopped")
+        job["logger"].info("Job cancelled before conversion started")
+        return
+    try:
+        os.makedirs(job["tmp_dir"], exist_ok=True)
+    except Exception as exc:
+        mark_job_finished(job, "failed")
+        job["logger"].error(f"Failed to create tmp dir: {exc}")
+        return
+
+    details, err = probe_video_details(job["video"])
+    if err:
+        job["logger"].info("Video details unavailable")
+    else:
+        job["logger"].info(f"Video details: {summarize_video_details(details)}")
+    cfg = job["cfg"]
+    fps_label = "original FPS" if cfg.get("fps") == "original" else f"{cfg.get('fps')} FPS"
+    optimize_label = "on" if cfg.get("optimize", True) else "off"
+    job["logger"].info(
+        "Settings: "
+        f"{cfg['height']}px high, {fps_label}, {cfg['clip_len']}s clips, "
+        f"optimization {optimize_label}"
+    )
+
+    dur, err = get_duration(job["video"])
+    if err:
+        mark_job_finished(job, "failed")
+        job["logger"].error(err)
+        return
+    if not dur or dur < 0.2:
+        mark_job_finished(job, "failed")
+        job["logger"].error("Could not read duration.")
+        return
+
+    job["logger"].info(f"Duration: {format_duration(dur)}")
+    segs = build_segments(dur, job["cfg"])
+    bg_image = find_background_image(job["video"])
+    job["logger"].info(
+        f"Background frame: {bg_image}" if bg_image else "Background frame: not found"
+    )
+    job["logger"].info(
+        f"Segments: {len(segs)} clips, about "
+        f"{format_duration(len(segs)*job['cfg']['clip_len'])}"
+    )
+    tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
+    ok, err_msg = make_gif_multi_inputs(
+        job["video"],
+        segs,
+        tmp_gif,
+        job["cfg"],
+        job,
+        background_image=bg_image,
+    )
+    if not ok:
+        if job.get("cancel_requested"):
+            mark_job_finished(job, "stopped")
+            job["logger"].info("GIF generation cancelled")
+        else:
+            mark_job_finished(job, "failed")
+            if not job.get("_ffmpeg_error_logged"):
+                job["logger"].error(err_msg)
+        return
+
+    update_job_stage(
+        job,
+        92 if job["cfg"].get("optimize", True) else 97,
+        "Optimizing" if job["cfg"].get("optimize", True) else "Finalizing",
+    )
+    optimize_gif(tmp_gif, job, job["logger"])
+    if job.get("cancel_requested"):
+        mark_job_finished(job, "stopped")
+        job["logger"].info("Job cancelled before installation")
+        return
+
+    try:
+        if not _valid_staged_gif(tmp_gif):
+            raise FileSafetyError("Generated GIF failed validation")
+        if not identity_matches(
+            job["video"],
+            source_identity,
+            root=LIB_ROOT,
+            allowed_extensions=VIDEO_EXTS,
+        ):
+            raise FileSafetyError("Source video changed during GIF generation")
+        staged_identity = regular_file_identity(tmp_gif)
+        update_job_stage(job, 98, "Installing")
+        job["logger"].info("Installing GIF atomically")
+        atomic_install_file(
+            tmp_gif,
+            job["out_gif"],
+            root=LIB_ROOT,
+            expected_source=staged_identity,
+            expected_target=output_state,
+        )
+    except Exception as exc:
+        mark_job_finished(job, "failed")
+        job["logger"].error(f"Failed to install GIF safely: {exc}")
+        return
+
+    if not os.path.isfile(job["out_gif"]):
+        mark_job_finished(job, "failed")
+        job["logger"].error("Installed GIF was not found")
+        return
+
+    mark_job_finished(job, "success", job["out_gif"])
+    record_successful_job(job)
+    record_creative_output(
+        job.get("id"),
+        "standard",
+        output_bytes=job.get("output_size_bytes") or 0,
+        saved_bytes=job.get("gif_optimization_saved_bytes") or 0,
+        timestamp=job.get("finished_at"),
+    )
+    size = format_size(job.get("output_size_bytes"))
+    elapsed = format_duration(job.get("elapsed_seconds"))
+    job["logger"].info(f"GIF ready: {job['out_gif']} ({size}, {elapsed})")
+
+
 def worker():
     while True:
         if queue_paused.is_set():
@@ -389,146 +746,35 @@ def worker():
             job_queue.task_done()
             continue
         try:
-            mark_job_started(job)
-            job["logger"].info("Job started")
-            emit_queue_status()
             try:
-                source_identity, output_state = _ensure_job_safety_state(job)
-            except FileSafetyError as exc:
-                mark_job_finished(job, "failed")
-                job["logger"].error(str(exc))
-                continue
-            if not identity_matches(
-                job["video"],
-                source_identity,
-                root=LIB_ROOT,
-                allowed_extensions=VIDEO_EXTS,
-            ):
-                mark_job_finished(job, "failed")
-                job["logger"].error("Source video changed while the job was queued")
-                continue
-            try:
-                os.makedirs(job["tmp_dir"], exist_ok=True)
-            except Exception as e:
-                mark_job_finished(job, "failed")
-                job["logger"].error(f"Failed to create tmp dir: {e}")
-                continue
-            details, err = probe_video_details(job["video"])
-            if err:
-                job["logger"].info("Video details unavailable")
-            else:
-                job["logger"].info(f"Video details: {summarize_video_details(details)}")
-            cfg = job["cfg"]
-            fps_label = "original FPS" if cfg.get("fps") == "original" else f"{cfg.get('fps')} FPS"
-            optimize_label = "on" if cfg.get("optimize", True) else "off"
-            job["logger"].info(
-                "Settings: "
-                f"{cfg['height']}px high, "
-                f"{fps_label}, "
-                f"{cfg['clip_len']}s clips, "
-                f"optimization {optimize_label}"
-            )
-
-            dur, err = get_duration(job["video"])
-            if err:
-                mark_job_finished(job, "failed")
-                job["logger"].error(err)
-            elif not dur or dur < 0.2:
-                mark_job_finished(job, "failed")
-                job["logger"].error("Could not read duration.")
-            else:
-                job["logger"].info(f"Duration: {format_duration(dur)}")
-                segs = build_segments(dur, job["cfg"])
-                bg_image = find_background_image(job["video"])
-                if bg_image:
-                    job["logger"].info(f"Background frame: {bg_image}")
-                else:
-                    job["logger"].info("Background frame: not found")
-                job["logger"].info(
-                    f"Segments: {len(segs)} clips, about {format_duration(len(segs)*job['cfg']['clip_len'])}"
-                )
-                tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
-                with conversion_lock:
-                    ok, err_msg = make_gif_multi_inputs(
-                        job["video"],
-                        segs,
-                        tmp_gif,
-                        job["cfg"],
-                        job,
-                        background_image=bg_image,
-                    )
-                    if ok:
-                        update_job_stage(
-                            job,
-                            92 if job["cfg"].get("optimize", True) else 97,
-                            "Optimizing" if job["cfg"].get("optimize", True) else "Finalizing",
-                        )
-                        optimize_gif(tmp_gif, job, job["logger"])
-                        try:
-                            if not _valid_staged_gif(tmp_gif):
-                                raise FileSafetyError("Generated GIF failed validation")
-                            if not identity_matches(
-                                job["video"],
-                                source_identity,
-                                root=LIB_ROOT,
-                                allowed_extensions=VIDEO_EXTS,
-                            ):
-                                raise FileSafetyError(
-                                    "Source video changed during GIF generation"
-                                )
-                            staged_identity = regular_file_identity(tmp_gif)
-                            update_job_stage(job, 98, "Installing")
-                            job["logger"].info("Installing GIF atomically")
-                            atomic_install_file(
-                                tmp_gif,
-                                job["out_gif"],
-                                root=LIB_ROOT,
-                                expected_source=staged_identity,
-                                expected_target=output_state,
-                            )
-                        except Exception as e:
-                            mark_job_finished(job, "failed")
-                            job["logger"].error(f"Failed to install GIF safely: {e}")
-                        else:
-                            if os.path.isfile(job["out_gif"]):
-                                mark_job_finished(job, "success", job["out_gif"])
-                                record_successful_job(job)
-                                record_creative_output(
-                                    job.get("id"),
-                                    "standard",
-                                    output_bytes=job.get("output_size_bytes") or 0,
-                                    saved_bytes=job.get("gif_optimization_saved_bytes") or 0,
-                                    timestamp=job.get("finished_at"),
-                                )
-                                size = format_size(job.get("output_size_bytes"))
-                                elapsed = format_duration(job.get("elapsed_seconds"))
-                                job["logger"].info(
-                                    f"GIF ready: {job['out_gif']} ({size}, {elapsed})"
-                                )
-                            else:
-                                mark_job_finished(job, "failed")
-                                job["logger"].error("Moved GIF not found.")
-                    else:
-                        mark_job_finished(job, "failed")
-                        if not job.get("_ffmpeg_error_logged"):
-                            job["logger"].error(err_msg)
-        except Exception as e:
+                with library_operation(
+                    f"gif:{job_id}",
+                    label="Generate GIF",
+                    kind="conversion",
+                    state=job,
+                    href="/gifs#logs",
+                    cancel_url=f"/api/jobs/{job_id}/cancel",
+                    cancel_requested=lambda: bool(job.get("cancel_requested")),
+                ) as activity:
+                    _process_job(job)
+                    activity.set_outcome(job.get("status"))
+            except OperationCancelled:
+                mark_job_finished(job, "stopped")
+                job["logger"].info("Job cancelled while waiting for library access")
+        except Exception as exc:
             mark_job_finished(job, "failed")
-            job["logger"].error(f"Exception: {e}")
+            job["logger"].error(f"Exception: {exc}")
         finally:
-            if job.get("status") == "running":
+            if job.get("status") in {"running", "cancelling", "queued"}:
                 mark_job_finished(job, "failed")
             try:
                 tmp_dir = job.get("tmp_dir")
                 if tmp_dir and os.path.isdir(tmp_dir):
                     shutil.rmtree(tmp_dir, ignore_errors=False)
-            except Exception as e:
-                job["logger"].error(f"Failed to remove tmp dir: {e}")
+            except Exception as exc:
+                job["logger"].error(f"Failed to remove tmp dir: {exc}")
             job_queue.task_done()
-            logger = job.get("logger")
-            if logger:
-                for h in logger.handlers:
-                    h.close()
+            close_job_logger(job)
             emit_queue_status()
 
 
@@ -537,5 +783,6 @@ def start_worker():
     with _worker_start_lock:
         if _worker_started:
             return
+        _restore_jobs_once()
         threading.Thread(target=worker, daemon=True, name="vid2gif-worker").start()
         _worker_started = True

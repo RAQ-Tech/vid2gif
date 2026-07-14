@@ -3,8 +3,9 @@ import shlex
 import json
 import os
 import time
-from collections import deque
 
+from .config import GIF_GENERATION_STALL_TIMEOUT
+from .process_runner import run_streaming_process
 from .progress import update_render_progress
 
 
@@ -373,6 +374,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
         "-hide_banner",
         "-v",
         "warning",
+        "-xerror",
         "-nostats",
         "-progress",
         "pipe:2",
@@ -457,21 +459,13 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     job["expected_duration_seconds"] = expected_seconds
     job["logger"].info("GIF generation started")
 
-    proc = subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-
-    last_error_lines = deque(maxlen=12)
     last_logged_percent = -5
     last_logged_at = 0
-    for raw in proc.stdout:
-        line = (raw or "").rstrip("\n")
+
+    def handle_line(line):
+        nonlocal last_logged_percent, last_logged_at
         if not line:
-            continue
+            return
         parsed = parse_ffmpeg_progress_line(line)
         if parsed:
             update_render_progress(
@@ -502,15 +496,33 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
                 job["logger"].info(f"Progress: {job.get('progress_label', '')}")
                 last_logged_percent = percent
                 last_logged_at = now
-        elif not is_ffmpeg_progress_line(line):
-            last_error_lines.append(line)
 
-    proc.wait()
-    if proc.returncode != 0:
-        tail = "\n".join(last_error_lines)
-        msg = f"ffmpeg exited with code {proc.returncode}"
-        if tail:
-            msg = f"{msg}\n{tail}"
+    result = run_streaming_process(
+        args,
+        on_line=handle_line,
+        cancel_requested=lambda: bool(job.get("cancel_requested")),
+        stall_timeout=GIF_GENERATION_STALL_TIMEOUT,
+        tail_lines=40,
+    )
+    if result.cancelled:
+        return False, "GIF generation cancelled"
+    if result.stalled:
+        return False, (
+            "GIF generation stopped because FFmpeg produced no progress for "
+            f"{GIF_GENERATION_STALL_TIMEOUT} seconds"
+        )
+    if result.launch_error:
+        return False, f"Could not start FFmpeg: {result.launch_error}"
+    if result.returncode != 0:
+        msg = f"ffmpeg exited with code {result.returncode}"
+        if result.output_tail:
+            diagnostic_lines = [
+                line
+                for line in result.output_tail.splitlines()
+                if not is_ffmpeg_progress_line(line)
+            ]
+            if diagnostic_lines:
+                msg = f"{msg}\n" + "\n".join(diagnostic_lines)
         job["logger"].error(msg)
         job["_ffmpeg_error_logged"] = True
         return False, msg

@@ -4,13 +4,16 @@
   "type": "module",
   "scripts": {
     "build:frontend": "esbuild frontend/test-lab/index.js --bundle --minify --legal-comments=linked --target=es2020 --outfile=app/static/test-lab.bundle.js && esbuild frontend/tables/index.js --bundle --minify --legal-comments=none --target=es2020 --outfile=app/static/workspace-tables.bundle.js",
-    "test:frontend": "node --test frontend/test-lab/*.test.js frontend/dashboard/*.test.js frontend/tables/*.test.js"
+    "test:frontend": "node --test frontend/test-lab/*.test.js frontend/dashboard/*.test.js frontend/tables/*.test.js",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "gifuct-js": "2.1.2",
     "sortablejs": "1.15.7"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
     "esbuild": "0.28.1"
   }
 }
