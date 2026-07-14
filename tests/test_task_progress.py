@@ -31,6 +31,30 @@ def test_history_produces_stable_countdown_instead_of_reprojecting(monkeypatch, 
     assert scan["progress_indeterminate"] is True
 
 
+def test_scan_can_disable_history_when_workload_duration_is_not_comparable(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path / "state"))
+    assert task_progress.record_duration("video-previews", 600)
+    scan = {"status": "running", "_started_ts": 100.0}
+
+    task_progress.update_scan(
+        scan,
+        "video-previews",
+        80,
+        "Matching results with Emby",
+        now=130.0,
+        use_history=False,
+        current_stage="Matching results with Emby",
+        progress_detail="120 videos found; loading the Emby catalog",
+    )
+
+    assert scan["progress_indeterminate"] is True
+    assert scan["eta_seconds"] is None
+    assert scan["eta_confidence"] == "none"
+    assert scan["progress_label"] == "Matching results with Emby"
+    assert scan["progress_detail"] == "120 videos found; loading the Emby catalog"
+    assert task_progress.public_fields(scan)["current_stage"] == "Matching results with Emby"
+
+
 def test_success_records_duration_for_future_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path / "state"))
     scan = {"status": "running", "_started_ts": 100.0}

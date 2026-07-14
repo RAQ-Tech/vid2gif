@@ -112,7 +112,16 @@ def _elapsed(task, now):
     return rounded_seconds(max(0, now - float(started)))
 
 
-def update_scan(task, workflow, percent, label, *, now=None, **values):
+def update_scan(
+    task,
+    workflow,
+    percent,
+    label,
+    *,
+    now=None,
+    use_history=True,
+    **values,
+):
     """Apply honest progress semantics to a scan whose total work is unknown."""
     now = time.time() if now is None else now
     task.update(values)
@@ -121,7 +130,7 @@ def update_scan(task, workflow, percent, label, *, now=None, **values):
     task["progress_label_base"] = str(label or status.title())
     task["elapsed_seconds"] = _elapsed(task, now)
 
-    if _active(status):
+    if _active(status) and use_history:
         estimate = duration_estimate(workflow)
         estimated_total = estimate.get("seconds")
         elapsed = task.get("elapsed_seconds") or 0
@@ -143,13 +152,28 @@ def update_scan(task, workflow, percent, label, *, now=None, **values):
         )
         return task
 
+    if _active(status):
+        detail = str(
+            task.get("progress_detail")
+            or "Remaining time varies with library and Emby response time"
+        )
+        task.update(
+            progress_percent=0,
+            progress_indeterminate=True,
+            eta_seconds=None,
+            eta_confidence="none",
+            progress_detail=detail,
+            progress_label=str(label or status.title()),
+        )
+        return task
+
     task["progress_indeterminate"] = False
     task["progress_percent"] = max(0, min(100, int(round(float(percent or 0)))))
     task["eta_seconds"] = 0 if status in {"success", "failed", "cancelled"} else None
     task["eta_confidence"] = "complete" if status == "success" else "none"
     task["progress_detail"] = ""
     task["progress_label"] = str(label or status.title())
-    if status == "success" and not task.get("_progress_history_recorded"):
+    if use_history and status == "success" and not task.get("_progress_history_recorded"):
         elapsed = task.get("elapsed_seconds")
         if elapsed and record_duration(workflow, elapsed):
             task["_progress_history_recorded"] = True
@@ -166,4 +190,5 @@ def public_fields(task):
         "elapsed_seconds": task.get("elapsed_seconds"),
         "eta_seconds": task.get("eta_seconds"),
         "eta_confidence": task.get("eta_confidence", "none"),
+        "current_stage": task.get("current_stage", ""),
     }

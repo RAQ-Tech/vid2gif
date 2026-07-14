@@ -33,6 +33,7 @@ def _reset_preview_state(monkeypatch, tmp_path):
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_ROOT", str(generation_root))
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_MANIFEST_PATH", str(generation_root / "manifest.json"))
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_RUN_PATH", str(generation_root / "latest-run.json"))
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_ISSUES_PATH", str(generation_root / "issues.json"))
     impact_root = tmp_path / "state" / "dashboard"
     monkeypatch.setattr(impact_metrics, "IMPACT_ROOT", str(impact_root))
     monkeypatch.setattr(impact_metrics, "IMPACT_PATH", str(impact_root / "impact-metrics.json"))
@@ -207,6 +208,107 @@ def test_video_preview_items_paging_caps_large_results(monkeypatch, tmp_path):
     assert page["total"] == 120
     assert page["large_result"] is True
     assert "items" not in video_preview_maintenance.public_scan(scan)
+
+
+def test_missing_bif_selection_spans_pages_and_holds_previous_failures(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    for index in range(30):
+        _write(lib / f"Movie {index:03d}" / f"Movie {index:03d}.mkv")
+
+    scan = _scan(lib, monkeypatch, tmp_path)
+    held_item = scan["items"][27]
+    video_preview_maintenance._write_json(
+        video_preview_maintenance.GENERATION_ISSUES_PATH,
+        {
+            "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+            "records": {
+                held_item["id"]: {
+                    "item_id": held_item["id"],
+                    "video_identity": held_item["video_identity"],
+                    "status": "refused",
+                    "reason": "decoder rejected this video",
+                    "run_id": "previous-run",
+                }
+            },
+        },
+    )
+
+    second_page, page_err = video_preview_maintenance.items_payload(
+        scan["id"], status="missing", offset=25, limit=25
+    )
+    default_plan, default_err = video_preview_maintenance.build_generation_plan(
+        {
+            "scan_id": scan["id"],
+            "selection": {
+                "mode": "all_eligible",
+                "excluded_item_ids": [],
+                "include_held_item_ids": [],
+            },
+        },
+        lib_root=str(lib),
+    )
+    included_plan, included_err = video_preview_maintenance.build_generation_plan(
+        {
+            "scan_id": scan["id"],
+            "selection": {
+                "mode": "all_eligible",
+                "excluded_item_ids": [scan["items"][0]["id"]],
+                "include_held_item_ids": [held_item["id"]],
+            },
+        },
+        lib_root=str(lib),
+    )
+
+    assert page_err is None
+    assert second_page["selection"] == {
+        "missing_total": 30,
+        "held_count": 1,
+        "default_selected_count": 29,
+    }
+    held_public = next(item for item in second_page["items"] if item["id"] == held_item["id"])
+    assert held_public["generation_held"] is True
+    assert held_public["previous_generation_issue"]["reason"] == "decoder rejected this video"
+    assert default_err is None
+    assert default_plan["file_count"] == 29
+    assert default_plan["held_back_count"] == 1
+    assert held_item["id"] not in {item["item_id"] for item in default_plan["files"]}
+    assert included_err is None
+    assert included_plan["file_count"] == 29
+    assert included_plan["held_override_count"] == 1
+    assert held_item["id"] in {item["item_id"] for item in included_plan["files"]}
+
+
+def test_recommended_bif_profile_opens_newest_valid_candidate_first(monkeypatch, tmp_path):
+    older = _write(tmp_path / "Older-320-10.bif", b"older")
+    newest = _write(tmp_path / "Newest-640-20.bif", b"newest")
+    os.utime(older, (100, 100))
+    os.utime(newest, (200, 200))
+    parsed = []
+    monkeypatch.setattr(video_preview_maintenance, "_generation_manifest", lambda: {"records": {}})
+    monkeypatch.setattr(
+        video_preview_maintenance,
+        "parse_bif",
+        lambda path, sample_limit=1: parsed.append(path) or {
+            "valid": True,
+            "samples": [{"bytes": _jpeg(b"frame")}],
+            "timestamp_multiplier_ms": 20_000,
+        },
+    )
+
+    profile = video_preview_maintenance._recommended_bif_profile(
+        [
+            {
+                "bifs": [
+                    {"path": str(older), "name": older.name, "interval_seconds": 10},
+                    {"path": str(newest), "name": newest.name, "interval_seconds": 20},
+                ]
+            }
+        ]
+    )
+
+    assert profile["width"] == 640
+    assert profile["interval_seconds"] == 20
+    assert parsed == [str(newest)]
 
 
 def test_video_preview_scan_reuses_active_scan_and_can_cancel(monkeypatch, tmp_path):
@@ -1147,6 +1249,10 @@ def test_bif_generation_continues_after_one_video_fails_and_persists_results(mon
     assert run["items"][0]["reason"] == "decoder rejected corrupt video"
     assert (healthy.parent / "B Healthy-320-10.bif").is_file()
     assert Path(video_preview_maintenance.GENERATION_RUN_PATH).is_file()
+    issues = video_preview_maintenance._generation_issues()["records"]
+    assert scan["items"][0]["id"] in issues
+    assert issues[scan["items"][0]["id"]]["reason"] == "decoder rejected corrupt video"
+    assert scan["items"][1]["id"] not in issues
 
     video_preview_maintenance.generation_runs.clear()
     restored, restored_err = video_preview_maintenance.generation_status(run["id"])
@@ -1442,6 +1548,9 @@ def test_video_preview_ui_assets_render():
     assert 'id="previewBrowserCollapse" class="collapse"' in html
     assert 'id="previewGenerationStatus"' in html
     assert 'id="previewGenerationCurrent"' in html
+    assert 'id="previewSelectionSummary"' in html
+    assert 'id="previewPageLimit"' in html
+    assert "Select eligible across all pages" in html
     assert 'id="qualityAction"' in html
     assert 'id="qualitySelectWarningButton"' in html
     assert "fetch('/api/maintenance/video-previews/scan'" in script
@@ -1455,6 +1564,8 @@ def test_video_preview_ui_assets_render():
     assert "fetch('/api/maintenance/video-previews/quality/apply'" in script
     assert "/api/maintenance/video-previews/quality/apply/status?apply_id=" in script
     assert "fetch('/api/maintenance/video-previews/generation/plan'" in script
+    assert "selection: previewSelectionPayload()" in script
+    assert "Page navigation does not change this selection." in script
     assert "fetch('/api/maintenance/video-previews/generation/start'" in script
     assert "/api/maintenance/video-previews/generation/status?run_id=" in script
     assert "fetch('/api/maintenance/video-previews/scan-path'" in script

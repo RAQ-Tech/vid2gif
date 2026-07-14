@@ -74,7 +74,9 @@ LOG_MAX_BYTES = 1024 * 1024
 GENERATION_ROOT = os.path.join(STATE_ROOT, "video-preview-generation")
 GENERATION_MANIFEST_PATH = os.path.join(GENERATION_ROOT, "manifest.json")
 GENERATION_RUN_PATH = os.path.join(GENERATION_ROOT, "latest-run.json")
+GENERATION_ISSUES_PATH = os.path.join(GENERATION_ROOT, "issues.json")
 GENERATION_RUN_SCHEMA_VERSION = 1
+GENERATION_ISSUES_SCHEMA_VERSION = 1
 GENERATION_STALL_TIMEOUT_SECONDS = max(
     30,
     _env_int("VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT", 120),
@@ -188,7 +190,12 @@ def _check_cancelled(scan):
 def _set_scan_progress(scan, percent, label, **values):
     with preview_lock:
         task_progress.update_scan(
-            scan, "video_preview_missing_scan", percent, label, **values
+            scan,
+            "video_preview_missing_scan",
+            percent,
+            label,
+            use_history=False,
+            **values,
         )
 
 
@@ -254,6 +261,7 @@ def _video_item(video_path, folder_files, lib_root):
         "size_bytes": stat.st_size if stat else 0,
         "size_label": format_size(stat.st_size if stat else 0),
         "modified_at": utc_iso(stat.st_mtime) if stat else None,
+        "video_identity": regular_file_identity(video_path) or {},
     }
 
 
@@ -299,8 +307,10 @@ def _scan_videos(scan, lib_root):
                 _set_scan_progress(
                     scan,
                     min(95, 5 + len(items) // 10),
-                    f"Scanned {len(items)} videos",
+                    "Scanning media folders",
                     scanned_video_count=len(items),
+                    current_stage="Scanning media folders",
+                    progress_detail=f"{len(items)} videos checked for matching BIF files",
                 )
     items.sort(key=lambda item: item["relative_path"].lower())
     return items
@@ -417,13 +427,25 @@ def _run_scan(scan, lib_root):
         _set_scan_progress(
             scan,
             1,
-            "Scanning video preview sidecars",
+            "Scanning media folders",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
+            current_stage="Scanning media folders",
+            progress_detail="Checking videos for matching BIF files",
         )
         items = _scan_videos(scan, lib_root)
         counts = _counts(items)
+        _set_scan_progress(
+            scan,
+            65,
+            "Matching results with Emby",
+            scanned_video_count=counts["scanned_video_count"],
+            current_stage="Matching results with Emby",
+            progress_detail=(
+                f"{counts['scanned_video_count']} videos found; loading the Emby catalog"
+            ),
+        )
         emby_mapping = emby_catalog.enrich_records(
             items,
             app_settings.load_settings(),
@@ -434,9 +456,28 @@ def _run_scan(scan, lib_root):
             for bif in item.get("bifs") or []:
                 bif["emby_parent_item_id"] = item.get("emby_item_id", "")
                 bif["emby_parent_item_type"] = item.get("emby_item_type", "")
+        _set_scan_progress(
+            scan,
+            85,
+            "Checking the BIF profile",
+            scanned_video_count=counts["scanned_video_count"],
+            current_stage="Checking the BIF profile",
+            progress_detail=(
+                f"{counts['missing_count']} missing and {counts['present_count']} present; "
+                "checking the latest external BIF settings"
+            ),
+        )
         recommendation = _recommended_bif_profile(items)
         finished = time.time()
         label = f"{counts['missing_count']} missing, {counts['present_count']} present"
+        _set_scan_progress(
+            scan,
+            95,
+            "Preparing results",
+            scanned_video_count=counts["scanned_video_count"],
+            current_stage="Preparing results",
+            progress_detail="Saving the scan and preparing the missing-video list",
+        )
         _set_scan_progress(
             scan,
             100,
@@ -447,6 +488,7 @@ def _run_scan(scan, lib_root):
             scanned_video_count=counts["scanned_video_count"],
             recommended_profile=recommendation,
             emby_mapping=emby_mapping,
+            current_stage="Complete",
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -625,7 +667,17 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, 
             return None, "Scan not found"
         if scan.get("status") != "success":
             return None, "Scan is not complete"
-        items = list(scan.get("items") or [])
+        all_items = list(scan.get("items") or [])
+    issues = _generation_issues()
+    issue_by_id = {
+        item.get("id"): issue
+        for item in all_items
+        if item.get("status") == "missing"
+        for issue in [_generation_issue_for_item(item, issues)]
+        if issue
+    }
+    missing_total = sum(1 for item in all_items if item.get("status") == "missing")
+    items = all_items
     if status != "all":
         if status == "present":
             items = [item for item in items if item.get("status") != "missing"]
@@ -643,7 +695,12 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, 
         "video",
     )
     total = len(items)
-    page = items[offset : offset + limit]
+    page = copy.deepcopy(items[offset : offset + limit])
+    for item in page:
+        issue = issue_by_id.get(item.get("id"))
+        if issue:
+            item["generation_held"] = True
+            item["previous_generation_issue"] = issue
     return {
         "scan": public_scan(scan),
         "status": status,
@@ -658,6 +715,11 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, 
         "next_offset": offset + limit if offset + limit < total else None,
         "previous_offset": max(0, offset - limit) if offset > 0 else None,
         "large_result": total >= LARGE_RESULT_COUNT,
+        "selection": {
+            "missing_total": missing_total,
+            "held_count": len(issue_by_id),
+            "default_selected_count": max(0, missing_total - len(issue_by_id)),
+        },
         "items": page,
     }, None
 
@@ -2728,6 +2790,63 @@ def _generation_manifest():
     return data
 
 
+def _generation_issues():
+    data = _read_json(
+        GENERATION_ISSUES_PATH,
+        {"schema_version": GENERATION_ISSUES_SCHEMA_VERSION, "records": {}},
+    )
+    if data.get("schema_version") != GENERATION_ISSUES_SCHEMA_VERSION:
+        return {"schema_version": GENERATION_ISSUES_SCHEMA_VERSION, "records": {}}
+    data.setdefault("records", {})
+    return data
+
+
+def _same_generation_identity(current, expected):
+    if not isinstance(current, dict) or not isinstance(expected, dict):
+        return False
+    keys = ("real_path", "size", "mtime_ns")
+    return all(key in current and key in expected and current[key] == expected[key] for key in keys)
+
+
+def _generation_issue_for_item(item, issues=None):
+    issues = issues or _generation_issues()
+    item_id = str((item or {}).get("id") or (item or {}).get("item_id") or "")
+    issue = (issues.get("records") or {}).get(item_id)
+    if not isinstance(issue, dict):
+        return None
+    identity = (item or {}).get("video_identity") or _stat_identity((item or {}).get("path") or "")
+    if not _same_generation_identity(identity, issue.get("video_identity")):
+        return None
+    return {
+        "status": issue.get("status") or "refused",
+        "reason": issue.get("reason") or "The previous generation attempt could not complete",
+        "run_id": issue.get("run_id") or "",
+        "updated_at": issue.get("updated_at"),
+    }
+
+
+def _record_generation_result(plan_item, result, run_id):
+    item_id = str((plan_item or {}).get("item_id") or "")
+    if not item_id:
+        return
+    with generation_persist_lock:
+        issues = _generation_issues()
+        records = issues.setdefault("records", {})
+        if (result or {}).get("status") == "generated":
+            records.pop(item_id, None)
+        else:
+            records[item_id] = {
+                "item_id": item_id,
+                "video_relative_path": (plan_item or {}).get("video_relative_path") or "",
+                "video_identity": (plan_item or {}).get("video_identity") or {},
+                "status": (result or {}).get("status") or "refused",
+                "reason": (result or {}).get("reason") or "Generation did not complete",
+                "run_id": str(run_id or ""),
+                "updated_at": utc_iso(),
+            }
+        _write_json(GENERATION_ISSUES_PATH, issues)
+
+
 def _manifest_generated_identity(path, manifest=None):
     manifest = manifest or _generation_manifest()
     key = os.path.normcase(os.path.realpath(path))
@@ -2757,27 +2876,27 @@ def _recommended_bif_profile(items):
             identity = _stat_identity(path)
             if not identity or identity == _manifest_generated_identity(path, manifest):
                 continue
-            parsed = parse_bif(path, sample_limit=1)
-            if not parsed.get("valid") or not parsed.get("samples"):
-                continue
-            interval = bif.get("interval_seconds") or max(
-                1, int(round((parsed.get("timestamp_multiplier_ms") or 0) / 1000))
-            )
-            width = _bif_width_from_name(bif.get("name"))
-            if not width:
-                width, _height = _jpeg_dimensions(parsed["samples"][0].get("bytes"))
             stat = _safe_stat(path)
-            if width and interval and stat:
-                candidates.append((stat.st_mtime_ns, path, int(width), int(interval)))
-    if not candidates:
-        return None
-    _mtime, path, width, interval = max(candidates, key=lambda value: value[0])
-    return {
-        "width": width,
-        "interval_seconds": interval,
-        "source_path": _relative_path(path, LIB_ROOT),
-        "source_name": os.path.basename(path),
-    }
+            if stat:
+                candidates.append((stat.st_mtime_ns, path, bif))
+    for _mtime, path, bif in sorted(candidates, key=lambda value: value[0], reverse=True):
+        parsed = parse_bif(path, sample_limit=1)
+        if not parsed.get("valid") or not parsed.get("samples"):
+            continue
+        interval = bif.get("interval_seconds") or max(
+            1, int(round((parsed.get("timestamp_multiplier_ms") or 0) / 1000))
+        )
+        width = _bif_width_from_name(bif.get("name"))
+        if not width:
+            width, _height = _jpeg_dimensions(parsed["samples"][0].get("bytes"))
+        if width and interval:
+            return {
+                "width": int(width),
+                "interval_seconds": int(interval),
+                "source_path": _relative_path(path, LIB_ROOT),
+                "source_name": os.path.basename(path),
+            }
+    return None
 
 
 def save_generation_settings(payload):
@@ -2813,18 +2932,58 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
     )
     if not allowed:
         return None, freshness_error
-    raw_ids = payload.get("item_ids")
-    if not isinstance(raw_ids, list) or not raw_ids:
-        return None, "Select at least one missing video"
-    item_ids = []
-    for value in raw_ids:
-        item_id = str(value or "")
-        if item_id and item_id not in item_ids:
-            item_ids.append(item_id)
     with preview_lock:
         scan = preview_scans.get(scan_id)
     if not scan or scan.get("status") != "success":
         return None, "Missing-BIF scan is not complete"
+    scan_items = list(scan.get("items") or [])
+    items_by_id = {item.get("id"): item for item in scan_items}
+    missing_items = [item for item in scan_items if item.get("status") == "missing"]
+    issues = _generation_issues()
+    issue_by_id = {
+        item.get("id"): issue
+        for item in missing_items
+        for issue in [_generation_issue_for_item(item, issues)]
+        if issue
+    }
+
+    def unique_ids(values):
+        result = []
+        for value in values if isinstance(values, list) else []:
+            item_id = str(value or "")
+            if item_id and item_id not in result:
+                result.append(item_id)
+        return result
+
+    selection = payload.get("selection")
+    selection_mode = "explicit"
+    held_override_count = 0
+    held_back_count = 0
+    if isinstance(selection, dict) and selection.get("mode") == "all_eligible":
+        selection_mode = "all_eligible"
+        excluded = set(unique_ids(selection.get("excluded_item_ids")))
+        included_held = set(unique_ids(selection.get("include_held_item_ids")))
+        item_ids = [
+            item["id"]
+            for item in missing_items
+            if (
+                (item["id"] in issue_by_id and item["id"] in included_held)
+                or (item["id"] not in issue_by_id and item["id"] not in excluded)
+            )
+        ]
+        held_override_count = sum(1 for item_id in item_ids if item_id in issue_by_id)
+        held_back_count = max(0, len(issue_by_id) - held_override_count)
+    else:
+        raw_ids = (
+            selection.get("item_ids")
+            if isinstance(selection, dict) and selection.get("mode") == "explicit"
+            else payload.get("item_ids")
+        )
+        item_ids = unique_ids(raw_ids)
+        held_override_count = sum(1 for item_id in item_ids if item_id in issue_by_id)
+        held_back_count = max(0, len(issue_by_id) - held_override_count)
+    if not item_ids:
+        return None, "Select at least one missing video"
     settings = app_settings.load_settings()
     width = int(settings.get("video_preview_bif_width") or 320)
     interval = int(settings.get("video_preview_bif_interval_seconds") or 10)
@@ -2835,7 +2994,6 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
     )
     if mismatch and not _truthy(payload.get("confirm_profile_mismatch"), default=False):
         return None, "BIF generation settings differ from the latest observed Emby BIF"
-    items_by_id = {item.get("id"): item for item in scan.get("items") or []}
     root = os.path.realpath(lib_root)
     files = []
     for item_id in item_ids:
@@ -2873,6 +3031,9 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
         "interval_seconds": interval,
         "profile_mismatch": mismatch,
         "recommended_profile": recommendation,
+        "selection_mode": selection_mode,
+        "held_override_count": held_override_count,
+        "held_back_count": held_back_count,
         "files": files,
         "file_count": len(files),
     }
@@ -3205,6 +3366,7 @@ def _execute_generation(run, plan):
             except Exception as exc:
                 result.update({"status": "refused", "reason": str(exc)})
                 refused += 1
+            _record_generation_result(item, result, run.get("id"))
             results.append(result)
             run.update({
                 "processed_count": index,

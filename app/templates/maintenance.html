@@ -370,7 +370,7 @@
         <div class="settings-panel">
           <div class="panel-subheading">
             <i class="bi bi-folder2-open" aria-hidden="true"></i>
-            <span>Scan Source</span>
+            <span>1. Scan for missing BIFs</span>
           </div>
           <label class="form-label" for="previewPath">Library path</label>
           <div class="input-group">
@@ -422,8 +422,9 @@
         <div class="settings-panel mt-3">
           <div class="panel-subheading">
             <i class="bi bi-film" aria-hidden="true"></i>
-            <span>Generate Missing BIFs</span>
+            <span>2. Choose videos and generation profile</span>
           </div>
+          <p class="small text-muted mb-3">New scan results select every eligible missing video across all result pages. Videos that failed previously stay unselected until you explicitly include them.</p>
           <div class="row g-3 align-items-end">
             <div class="col-sm-3">
               <label class="form-label" for="previewBifWidth">Thumbnail width</label>
@@ -440,13 +441,24 @@
           <div class="toolbar-row mt-3">
             <button id="previewUseRecommendationButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Use Recommendation</button>
             <button id="previewSaveBifSettingsButton" class="btn btn-outline-secondary btn-sm" type="button">Save Profile</button>
-            <button id="previewSelectMissingButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select visible missing</button>
-            <button id="previewDeselectMissingButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Deselect visible</button>
-            <button id="previewGenerationPlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>Review Generation</button>
-            <button id="previewGenerationStartButton" class="btn btn-primary btn-sm" type="button" disabled>Generate BIFs</button>
+          </div>
+          <div id="previewSelectionSummary" class="scan-estimate-detail mt-3">Run a scan to choose missing videos.</div>
+          <div class="toolbar-row mt-3">
+            <button id="previewSelectMissingButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select eligible across all pages</button>
+            <button id="previewDeselectMissingButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Clear selection</button>
+            <button id="previewGenerationPlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>Review Selection</button>
+          </div>
+          <div class="panel-subheading mt-4">
+            <i class="bi bi-list-check" aria-hidden="true"></i>
+            <span>3. Review and generate</span>
+          </div>
+          <div id="previewGenerationSummary" class="maintenance-plan-summary mt-2">
+            <div class="small text-muted">Review Selection builds the exact cross-page file plan. Generation starts only after that review.</div>
+          </div>
+          <div class="toolbar-row mt-3">
+            <button id="previewGenerationStartButton" class="btn btn-primary btn-sm" type="button" disabled>Generate Reviewed BIFs</button>
             <button id="previewGenerationCancelButton" class="btn btn-outline-danger btn-sm" type="button" disabled>Cancel</button>
           </div>
-          <div id="previewGenerationSummary" class="maintenance-plan-summary mt-3"></div>
           <div id="previewGenerationStatus" class="generation-status mt-3 d-none" aria-live="polite">
             <div class="generation-status-heading">
               <div>
@@ -478,6 +490,14 @@
               <option value="missing" selected>Missing BIFs</option>
               <option value="present">Present BIFs</option>
               <option value="all">All videos</option>
+            </select>
+          </label>
+          <label class="form-label mb-0 compact-control" for="previewPageLimit">
+            Per page
+            <select id="previewPageLimit" class="form-select form-select-sm">
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
             </select>
           </label>
         </div>

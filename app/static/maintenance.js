@@ -24,7 +24,17 @@
   let previewPageLimit = 25;
   let previewSort = {column: 'video', direction: 'asc'};
   let previewLastPath = config.previewScanPath || config.libRoot || '/library';
-  const previewSelectedMissing = new Set();
+  const PREVIEW_SELECTION_STORAGE_KEY = 'vid2gif_preview_generation_selection_v1';
+  const PREVIEW_PAGE_SIZE_STORAGE_KEY = 'vid2gif_preview_page_size';
+  let previewSelection = {
+    scanId: '',
+    mode: 'all_eligible',
+    excluded: new Set(),
+    includedHeld: new Set(),
+    selected: new Set(),
+    missingTotal: 0,
+    heldTotal: 0
+  };
   let previewGenerationPlan = null;
   let previewGenerationRun = null;
   let previewGenerationPollTimer = null;
@@ -1475,6 +1485,123 @@
     if (detailEl) detailEl.textContent = detail || '';
   }
 
+  function previewSelectionFromStorage(scanId, metadata) {
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(PREVIEW_SELECTION_STORAGE_KEY) || 'null');
+    } catch (_e) {
+      saved = null;
+    }
+    const sameScan = saved && saved.scanId === scanId;
+    const mode = sameScan && saved.mode === 'explicit' ? 'explicit' : 'all_eligible';
+    return {
+      scanId,
+      mode,
+      excluded: new Set(sameScan && Array.isArray(saved.excluded) ? saved.excluded : []),
+      includedHeld: new Set(sameScan && Array.isArray(saved.includedHeld) ? saved.includedHeld : []),
+      selected: new Set(sameScan && Array.isArray(saved.selected) ? saved.selected : []),
+      missingTotal: Number(metadata?.missing_total || 0),
+      heldTotal: Number(metadata?.held_count || 0)
+    };
+  }
+
+  function ensurePreviewSelection(scanId, metadata) {
+    if (previewSelection.scanId !== scanId) {
+      previewSelection = previewSelectionFromStorage(scanId, metadata);
+      previewGenerationPlan = null;
+      const planSummary = byId('previewGenerationSummary');
+      if (planSummary) planSummary.innerHTML = '';
+      const startButton = byId('previewGenerationStartButton');
+      if (startButton) startButton.disabled = true;
+    } else {
+      previewSelection.missingTotal = Number(metadata?.missing_total || previewSelection.missingTotal || 0);
+      previewSelection.heldTotal = Number(metadata?.held_count || 0);
+    }
+  }
+
+  function savePreviewSelection() {
+    try {
+      localStorage.setItem(PREVIEW_SELECTION_STORAGE_KEY, JSON.stringify({
+        scanId: previewSelection.scanId,
+        mode: previewSelection.mode,
+        excluded: Array.from(previewSelection.excluded),
+        includedHeld: Array.from(previewSelection.includedHeld),
+        selected: Array.from(previewSelection.selected)
+      }));
+    } catch (_e) {
+      // Selection still remains stable for this page session.
+    }
+  }
+
+  function previewItemIsSelected(item) {
+    if (!item || item.status !== 'missing') return false;
+    if (previewSelection.mode === 'explicit') return previewSelection.selected.has(item.id);
+    if (item.generation_held) return previewSelection.includedHeld.has(item.id);
+    return !previewSelection.excluded.has(item.id);
+  }
+
+  function previewSelectedCount() {
+    if (previewSelection.mode === 'explicit') return previewSelection.selected.size;
+    return Math.max(0, Math.min(
+      previewSelection.missingTotal,
+      previewSelection.missingTotal
+        - previewSelection.heldTotal
+        - previewSelection.excluded.size
+        + previewSelection.includedHeld.size
+    ));
+  }
+
+  function previewSelectionPayload() {
+    if (previewSelection.mode === 'explicit') {
+      return {mode: 'explicit', item_ids: Array.from(previewSelection.selected)};
+    }
+    return {
+      mode: 'all_eligible',
+      excluded_item_ids: Array.from(previewSelection.excluded),
+      include_held_item_ids: Array.from(previewSelection.includedHeld)
+    };
+  }
+
+  function renderPreviewSelectionSummary() {
+    const target = byId('previewSelectionSummary');
+    if (!target) return;
+    const selected = previewSelectedCount();
+    const held = Math.max(0, previewSelection.heldTotal - previewSelection.includedHeld.size);
+    const mode = previewSelection.mode === 'all_eligible' ? 'across all result pages' : 'chosen individually';
+    target.innerHTML = `<strong>${escapeHtml(selected)} selected</strong> ${escapeHtml(mode)}` +
+      (held ? ` <span class="text-warning-emphasis">- ${escapeHtml(held)} held back after previous generation issues</span>` : '') +
+      `<div class="small text-muted mt-1">Page navigation does not change this selection.</div>`;
+  }
+
+  function updatePreviewGenerationControls() {
+    const selected = previewSelectedCount();
+    const generationActive = ['queued', 'running', 'cancelling'].includes(previewGenerationRun?.status || '');
+    const generationMadeScanStale = previewGenerationRun?.status === 'success'
+      && previewGenerationRun?.scan_id === previewScan?.id
+      && Number(previewGenerationRun?.generated_count || 0) > 0;
+    const blocked = previewScan?.freshness?.status === 'changed' || generationActive || generationMadeScanStale;
+    const planButton = byId('previewGenerationPlanButton');
+    if (planButton) {
+      planButton.disabled = !selected || blocked;
+      planButton.textContent = selected ? `Review ${selected} Selected` : 'Review Selection';
+    }
+    const selectButton = byId('previewSelectMissingButton');
+    if (selectButton) selectButton.disabled = !previewSelection.missingTotal || generationActive;
+    const clearButton = byId('previewDeselectMissingButton');
+    if (clearButton) clearButton.disabled = !selected || generationActive;
+    renderPreviewSelectionSummary();
+  }
+
+  function previewSelectionChanged() {
+    previewGenerationPlan = null;
+    savePreviewSelection();
+    const summary = byId('previewGenerationSummary');
+    if (summary) summary.innerHTML = '';
+    const startButton = byId('previewGenerationStartButton');
+    if (startButton) startButton.disabled = true;
+    updatePreviewGenerationControls();
+  }
+
   function setPreviewProgress(scan) {
     const state = byId('previewScanState');
     const label = byId('previewProgressLabel');
@@ -1541,12 +1668,19 @@
         ? `${bif.name} (${bif.interval_seconds}s)`
         : bif.name
       ).join(', ');
+      const issue = item.previous_generation_issue;
+      const issueBadge = issue
+        ? '<span class="badge text-bg-warning ms-1">Previous issue</span>'
+        : '';
+      const detail = issue
+        ? `${item.detail || ''} Previous generation attempt: ${issue.reason || 'could not complete'}`
+        : (item.detail || '');
       return `<tr>` +
-        `<td>${item.status === 'missing' ? `<input class="form-check-input" type="checkbox" data-preview-generate="${escapeHtml(item.id)}" aria-label="Generate BIF for ${escapeHtml(item.name)}"${previewSelectedMissing.has(item.id) ? ' checked' : ''}>` : ''}</td>` +
-        `<td>${previewStatusBadge(item.status)}</td>` +
+        `<td>${item.status === 'missing' ? `<input class="form-check-input" type="checkbox" data-preview-generate="${escapeHtml(item.id)}" aria-label="Generate BIF for ${escapeHtml(item.name)}"${previewItemIsSelected(item) ? ' checked' : ''}>` : ''}</td>` +
+        `<td>${previewStatusBadge(item.status)}${issueBadge}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
         `<td>${escapeHtml(item.size_label || '')}</td>` +
-        `<td>${escapeHtml(item.detail || '')}</td>` +
+        `<td>${escapeHtml(detail)}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(bifNames)}">${escapeHtml(bifNames || 'none')}</code></td>` +
         `</tr>`;
     }).join('');
@@ -1574,26 +1708,9 @@
       previewItemsPage = data;
       previewSort = {column: data.sort || previewSort.column, direction: data.direction || previewSort.direction};
       previewPageOffset = Number(data.offset || 0);
-      previewSelectedMissing.clear();
-      (data.items || []).filter(item => item.status === 'missing').forEach(item => previewSelectedMissing.add(item.id));
-      previewGenerationPlan = null;
-      const generationActive = ['queued', 'running', 'cancelling'].includes(previewGenerationRun?.status || '');
-      const generationMadeScanStale = previewGenerationRun?.status === 'success'
-        && previewGenerationRun?.scan_id === previewScan?.id
-        && Number(previewGenerationRun?.generated_count || 0) > 0;
-      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size
-        || previewScan?.freshness?.status === 'changed'
-        || generationActive
-        || generationMadeScanStale;
-      byId('previewGenerationStartButton').disabled = true;
-      byId('previewSelectMissingButton').disabled = !(data.items || []).some(item => item.status === 'missing');
-      byId('previewDeselectMissingButton').disabled = !previewSelectedMissing.size;
-      const generationSummary = byId('previewGenerationSummary');
-      if (generationSummary) generationSummary.innerHTML = '';
+      ensurePreviewSelection(data.scan?.id || previewScan.id, data.selection || {});
+      updatePreviewGenerationControls();
       renderPreviewItems(data);
-      if (data.large_result) {
-        setPreviewMessage(`${data.total || 0} results in this view`, `Large result set loaded ${data.limit || previewPageLimit} items at a time.`);
-      }
     } catch (e) {
       setPreviewMessage('Video preview results unavailable', e.message || '');
     }
@@ -1630,7 +1747,10 @@
     } else if (scan.status === 'cancelled') {
       setPreviewMessage('Video preview scan cancelled', '');
     } else {
-      setPreviewMessage(scan.progress_label || 'Scanning video previews', 'Large libraries can take a while.');
+      setPreviewMessage(
+        scan.progress_label || 'Scanning video previews',
+        scan.progress_detail || (scan.scanned_video_count ? `${scan.scanned_video_count} videos checked` : 'Starting scan')
+      );
     }
     if (terminal) {
       stopPreviewPolling();
@@ -1760,7 +1880,8 @@
         {label: 'Videos', value: plan.file_count || 0},
         {label: 'Width', value: `${plan.width}px`},
         {label: 'Interval', value: `${plan.interval_seconds}s`},
-        {label: 'Current page', value: previewPageRangeText(previewItemsPage)}
+        {label: 'Selection', value: plan.selection_mode === 'all_eligible' ? 'Across all pages' : 'Individual items'},
+        {label: 'Previous issues included', value: plan.held_override_count || 0}
       ],
       note: 'Frames are generated and validated outside the media folder before atomic installation.',
       changeForFile: file => ({operation: 'generate', operationLabel: 'Generate', source: file.video_relative_path, target: file.output_relative_path, detail: `${plan.width}px every ${plan.interval_seconds}s`})
@@ -1768,12 +1889,16 @@
   }
 
   async function reviewGenerationPlan(confirmMismatch = false) {
-    if (!previewScan?.id || !previewSelectedMissing.size) return;
+    if (!previewScan?.id || !previewSelectedCount()) return;
     try {
       const res = await fetch('/api/maintenance/video-previews/generation/plan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({scan_id: previewScan.id, item_ids: Array.from(previewSelectedMissing), confirm_profile_mismatch: confirmMismatch})
+        body: JSON.stringify({
+          scan_id: previewScan.id,
+          selection: previewSelectionPayload(),
+          confirm_profile_mismatch: confirmMismatch
+        })
       });
       const data = await readJsonResponse(res);
       if (res.status === 409 && data.profile_mismatch && !confirmMismatch) {
@@ -1786,7 +1911,7 @@
       previewGenerationPlan = data.plan;
       renderGenerationPlan(data.plan);
       byId('previewGenerationStartButton').disabled = !data.plan.file_count;
-      setPreviewMessage('Review the missing BIF generation plan', `${data.plan.file_count} video(s)`);
+      setPreviewMessage('Generation plan ready for review', `${data.plan.file_count} video(s) selected across the scan results. Generate BIFs when the plan looks right.`);
     } catch (e) {
       setPreviewMessage('Generation plan could not be built', e.message || '');
     }
@@ -1904,10 +2029,13 @@
         appendEmbySyncNotice('previewMessageDetail', embySyncFrom(data.run));
         appendEmbyNotificationNotice('previewMessageDetail', notificationFrom(data.run));
         previewGenerationPlan = null;
-        previewSelectedMissing.clear();
         byId('previewGenerationStartButton').disabled = true;
-        byId('previewGenerationPlanButton').disabled = true;
-        renderPreviewItems(previewItemsPage);
+        updatePreviewGenerationControls();
+        if (Number(data.run.generated_count || 0) === 0 && previewItemsPage) {
+          loadPreviewItems(previewPageOffset);
+        } else {
+          renderPreviewItems(previewItemsPage);
+        }
       } else {
         const title = data.run?.status === 'cancelled'
           ? 'BIF generation cancelled'
@@ -3843,18 +3971,26 @@
     byId('previewGenerationStartButton')?.addEventListener('click', startGeneration);
     byId('previewGenerationCancelButton')?.addEventListener('click', cancelGeneration);
     byId('previewSelectMissingButton')?.addEventListener('click', () => {
-      (previewItemsPage?.items || []).filter(item => item.status === 'missing').forEach(item => previewSelectedMissing.add(item.id));
-      previewGenerationPlan = null;
-      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size;
-      byId('previewGenerationStartButton').disabled = true;
+      previewSelection.mode = 'all_eligible';
+      previewSelection.excluded.clear();
+      previewSelection.includedHeld.clear();
+      previewSelection.selected.clear();
+      previewSelectionChanged();
       renderPreviewItems(previewItemsPage);
     });
     byId('previewDeselectMissingButton')?.addEventListener('click', () => {
-      previewSelectedMissing.clear();
-      previewGenerationPlan = null;
-      byId('previewGenerationPlanButton').disabled = true;
-      byId('previewGenerationStartButton').disabled = true;
+      previewSelection.mode = 'explicit';
+      previewSelection.excluded.clear();
+      previewSelection.includedHeld.clear();
+      previewSelection.selected.clear();
+      previewSelectionChanged();
       renderPreviewItems(previewItemsPage);
+    });
+    byId('previewPageLimit')?.addEventListener('change', event => {
+      previewPageLimit = [25, 50, 100].includes(Number(event.target.value)) ? Number(event.target.value) : 25;
+      try { localStorage.setItem(PREVIEW_PAGE_SIZE_STORAGE_KEY, String(previewPageLimit)); } catch (_e) {}
+      previewPageOffset = 0;
+      loadPreviewItems(0);
     });
     byId('previewItemStatus')?.addEventListener('change', () => {
       previewPageOffset = 0;
@@ -4102,11 +4238,19 @@
       const checkbox = event.target.closest('[data-preview-generate]');
       if (!checkbox) return;
       const itemId = checkbox.getAttribute('data-preview-generate');
-      if (checkbox.checked) previewSelectedMissing.add(itemId);
-      else previewSelectedMissing.delete(itemId);
-      previewGenerationPlan = null;
-      byId('previewGenerationPlanButton').disabled = !previewSelectedMissing.size;
-      byId('previewGenerationStartButton').disabled = true;
+      const item = (previewItemsPage?.items || []).find(candidate => candidate.id === itemId);
+      if (previewSelection.mode === 'explicit') {
+        if (checkbox.checked) previewSelection.selected.add(itemId);
+        else previewSelection.selected.delete(itemId);
+      } else if (item?.generation_held) {
+        if (checkbox.checked) previewSelection.includedHeld.add(itemId);
+        else previewSelection.includedHeld.delete(itemId);
+      } else if (checkbox.checked) {
+        previewSelection.excluded.delete(itemId);
+      } else {
+        previewSelection.excluded.add(itemId);
+      }
+      previewSelectionChanged();
     });
 
     byId('subtitleItems')?.addEventListener('click', event => {
@@ -4273,12 +4417,18 @@
   document.addEventListener('DOMContentLoaded', () => {
     initMaintenanceTabs();
     initEvents();
+    try {
+      const savedPreviewPageLimit = Number(localStorage.getItem(PREVIEW_PAGE_SIZE_STORAGE_KEY) || 25);
+      previewPageLimit = [25, 50, 100].includes(savedPreviewPageLimit) ? savedPreviewPageLimit : 25;
+      if (byId('previewPageLimit')) byId('previewPageLimit').value = String(previewPageLimit);
+    } catch (_e) {
+      previewPageLimit = 25;
+    }
     document.addEventListener('vid2gif:table-sort', event => {
       const {tableId, column, direction} = event.detail || {};
       if (!column || !direction) return;
       if (tableId === 'maintenance-missing-bifs') {
         previewSort = {column, direction};
-        previewSelectedMissing.clear();
         loadPreviewItems(0);
       } else if (tableId === 'maintenance-quality-bifs') {
         qualitySort = {column, direction};
