@@ -668,7 +668,7 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, 
         if scan.get("status") != "success":
             return None, "Scan is not complete"
         all_items = list(scan.get("items") or [])
-    issues = _generation_issues()
+    issues = _generation_issues_for_items(all_items)
     issue_by_id = {
         item.get("id"): issue
         for item in all_items
@@ -2801,6 +2801,42 @@ def _generation_issues():
     return data
 
 
+def _generation_issues_for_items(items):
+    """Import refused items from the pre-registry latest run, then return issues."""
+    with generation_persist_lock:
+        issues = _generation_issues()
+        records = issues.setdefault("records", {})
+        payload = _read_json(GENERATION_RUN_PATH, {})
+        run = payload.get("run") if payload.get("schema_version") == GENERATION_RUN_SCHEMA_VERSION else None
+        run = run if isinstance(run, dict) else {}
+        latest_items = run.get("items") or (run.get("result") or {}).get("items") or []
+        current_by_id = {
+            item.get("id"): item
+            for item in items or []
+            if item.get("status") == "missing" and item.get("id")
+        }
+        changed = False
+        for result in latest_items if isinstance(latest_items, list) else []:
+            item_id = str((result or {}).get("item_id") or "")
+            current = current_by_id.get(item_id)
+            if not current or (result or {}).get("status") == "generated" or item_id in records:
+                continue
+            records[item_id] = {
+                "item_id": item_id,
+                "video_relative_path": current.get("relative_path") or (result or {}).get("video") or "",
+                "video_identity": current.get("video_identity") or _stat_identity(current.get("path") or "") or {},
+                "status": (result or {}).get("status") or "refused",
+                "reason": (result or {}).get("reason") or "Generation did not complete",
+                "run_id": str(run.get("id") or ""),
+                "updated_at": run.get("finished_at") or utc_iso(),
+                "migrated_from_latest_run": True,
+            }
+            changed = True
+        if changed:
+            _write_json(GENERATION_ISSUES_PATH, issues)
+        return issues
+
+
 def _same_generation_identity(current, expected):
     if not isinstance(current, dict) or not isinstance(expected, dict):
         return False
@@ -2939,7 +2975,7 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
     scan_items = list(scan.get("items") or [])
     items_by_id = {item.get("id"): item for item in scan_items}
     missing_items = [item for item in scan_items if item.get("status") == "missing"]
-    issues = _generation_issues()
+    issues = _generation_issues_for_items(missing_items)
     issue_by_id = {
         item.get("id"): issue
         for item in missing_items

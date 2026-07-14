@@ -218,17 +218,19 @@ def test_missing_bif_selection_spans_pages_and_holds_previous_failures(monkeypat
     scan = _scan(lib, monkeypatch, tmp_path)
     held_item = scan["items"][27]
     video_preview_maintenance._write_json(
-        video_preview_maintenance.GENERATION_ISSUES_PATH,
+        video_preview_maintenance.GENERATION_RUN_PATH,
         {
-            "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
-            "records": {
-                held_item["id"]: {
+            "schema_version": video_preview_maintenance.GENERATION_RUN_SCHEMA_VERSION,
+            "run": {
+                "id": "previous-run",
+                "status": "success",
+                "finished_at": "2026-07-14T12:00:00Z",
+                "items": [{
                     "item_id": held_item["id"],
-                    "video_identity": held_item["video_identity"],
                     "status": "refused",
                     "reason": "decoder rejected this video",
-                    "run_id": "previous-run",
-                }
+                    "video": held_item["relative_path"],
+                }],
             },
         },
     )
@@ -268,6 +270,8 @@ def test_missing_bif_selection_spans_pages_and_holds_previous_failures(monkeypat
     held_public = next(item for item in second_page["items"] if item["id"] == held_item["id"])
     assert held_public["generation_held"] is True
     assert held_public["previous_generation_issue"]["reason"] == "decoder rejected this video"
+    migrated = video_preview_maintenance._generation_issues()["records"][held_item["id"]]
+    assert migrated["migrated_from_latest_run"] is True
     assert default_err is None
     assert default_plan["file_count"] == 29
     assert default_plan["held_back_count"] == 1
