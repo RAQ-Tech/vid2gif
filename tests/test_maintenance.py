@@ -199,6 +199,97 @@ def test_group_projection_reselects_copy_when_keeper_changes(monkeypatch, tmp_pa
     assert projected_srt["default_selected"] is True
 
 
+def test_duplicate_cleanup_preserves_best_srt_renames_it_and_removes_resolved_group(
+    monkeypatch, tmp_path
+):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    keep = _write(movie / "Movie [WEBDL-2160p].mkv", b"4k video")
+    remove = _write(movie / "Movie [WEBDL-1080p].mkv", b"1080 video")
+    incomplete = _write(
+        movie / "Movie [WEBDL-2160p].eng.srt",
+        b"1\n00:27:14,220 --> 00:27:14,540\nOh my god\n",
+    )
+    complete_content = b"1\n00:41:18,160 --> 00:41:20,560\nFinal line\n"
+    complete = _write(movie / "Movie [WEBDL-1080p].eng.srt", complete_content)
+    monkeypatch.setattr(
+        maintenance.maintenance_scan_store,
+        "persist_success",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        maintenance.maintenance_scan_store,
+        "public_cache_metadata",
+        lambda *args, **kwargs: {"freshness": {"status": "unchanged"}},
+    )
+    monkeypatch.setattr(
+        maintenance.emby_playback,
+        "check_targets",
+        lambda targets, **kwargs: {
+            "status": "clear",
+            "deferred_count": 0,
+            "_target_statuses": {target["id"]: "clear" for target in targets},
+        },
+    )
+    monkeypatch.setattr(
+        maintenance.emby_sync,
+        "sync_changes",
+        lambda *args, **kwargs: {"id": "sync", "status": "success"},
+    )
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            keep.name: {"width": 3840, "height": 2160, "duration_seconds": 41.5 * 60},
+            remove.name: {"width": 1920, "height": 1080, "duration_seconds": 41.5 * 60},
+        },
+    )
+    group = scan["groups"][0]
+    public_group = maintenance.group_payload(scan["id"], group["id"])[0]["group"]
+    by_path = {
+        accessory["path"]: accessory
+        for video in group["videos"]
+        for accessory in video.get("accessories") or []
+    }
+
+    assert by_path[str(incomplete)]["default_operation"] == "move"
+    assert by_path[str(complete)]["default_operation"] == "rename"
+    assert by_path[str(complete)]["default_destination_path"] == str(incomplete)
+    assert public_group["needs_review"] is False
+    assert public_group["subtitle_signals"][0]["kind"] == "subtitle_quality_choice"
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+            "groups": [],
+        },
+        lib_root=str(lib),
+    )
+    operations = {item["source_path"]: item["operation"] for item in plan["files"]}
+
+    assert err is None
+    assert operations[str(incomplete)] == "move"
+    assert operations[str(complete)] == "rename"
+    assert operations[str(remove)] == "move"
+
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+    page, page_err = maintenance.groups_payload(scan["id"])
+
+    assert apply_err is None
+    assert result["refused_count"] == 0
+    assert result["resolved_group_ids"] == [group["id"]]
+    assert result["scan_reconciled"] is True
+    assert result["scan"]["duplicate_group_count"] == 0
+    assert page_err is None
+    assert page["total"] == 0
+    assert not complete.exists()
+    assert incomplete.read_bytes() == complete_content
+    assert (lib / ".vid2gif-duplicates" / "Movie" / incomplete.name).exists()
+
+
 def test_duplicate_scan_groups_by_nfo_provider_id(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"

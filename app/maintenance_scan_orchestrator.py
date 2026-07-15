@@ -61,7 +61,11 @@ STEP_STAGE_WORKFLOWS = {
         "video_preview_quality_scan.analysis",
         "video_preview_quality_scan.emby",
     ),
-    "subtitles": ("subtitle_scan.filesystem", "subtitle_scan.emby"),
+    "subtitles": (
+        "subtitle_scan.filesystem",
+        "subtitle_scan.emby",
+        "subtitle_scan.quality",
+    ),
     "posters": ("poster_scan.filesystem", "poster_scan.emby"),
     "actor_images": (
         "actor_image_scan.people",

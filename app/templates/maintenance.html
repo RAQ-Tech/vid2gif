@@ -686,6 +686,7 @@
             <div id="subtitleMessageDetail" class="scan-estimate-detail"></div>
           </div>
         </div>
+        <div class="small text-muted mt-2">SRT coverage compares the final subtitle timestamp with the video runtime. A file is marked likely incomplete only when it ends before 80% and leaves at least five minutes uncovered.</div>
 
         <div class="settings-panel mt-3">
           <div class="panel-subheading">
@@ -696,7 +697,9 @@
             <label class="form-label mb-0 compact-control" for="subtitleItemStatus">
               Show
               <select id="subtitleItemStatus" class="form-select form-select-sm">
-                <option value="language_review" selected>Language Review</option>
+                <option value="review" selected>All Review Items</option>
+                <option value="incomplete">Likely Incomplete</option>
+                <option value="language_review">Language Review</option>
                 <option value="missing">Missing SRTs</option>
                 <option value="unknown">Unknown Language</option>
                 <option value="ok">OK</option>

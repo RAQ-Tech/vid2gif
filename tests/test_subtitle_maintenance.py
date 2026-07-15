@@ -27,6 +27,11 @@ def _reset_subtitles(monkeypatch, settings=None):
         "load_settings",
         lambda: dict(settings or _settings()),
     )
+    monkeypatch.setattr(
+        subtitle_maintenance.subtitle_quality,
+        "probe_media_duration",
+        lambda _path: None,
+    )
 
 
 def test_subtitle_plan_quarantines_only_flagged_visible_srt(monkeypatch, tmp_path):
@@ -166,6 +171,42 @@ def test_subtitle_scan_flags_missing_non_english_and_unknown(monkeypatch, tmp_pa
     assert page["items"][0]["srt_files"][0]["path"] == str(bad)
     assert page["items"][0]["srt_files"][0]["language_code"] == "nno"
     assert "items" not in subtitle_maintenance.public_scan(scan)
+
+
+def test_subtitle_scan_flags_only_the_likely_incomplete_srt(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = _write(lib / "Movie" / "Movie.mkv")
+    incomplete = _write(
+        lib / "Movie" / "Movie.eng.srt",
+        b"1\n00:27:14,220 --> 00:27:14,540\nOh my god\n",
+    )
+    complete = _write(
+        lib / "Movie" / "Movie.subgen.large-v3.eng.srt",
+        b"1\n00:41:18,160 --> 00:41:20,560\nFinal line\n",
+    )
+    _reset_subtitles(monkeypatch)
+    monkeypatch.setattr(
+        subtitle_maintenance.subtitle_quality,
+        "probe_media_duration",
+        lambda path: 41.5 * 60 if path == str(movie) else None,
+    )
+
+    scan, err = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+    page, page_err = subtitle_maintenance.items_payload(
+        scan["id"], status="incomplete"
+    )
+
+    assert err is None
+    assert page_err is None
+    assert scan["counts"]["incomplete_count"] == 1
+    assert page["total"] == 1
+    by_path = {item["path"]: item for item in page["items"][0]["srt_files"]}
+    assert by_path[str(incomplete)]["actionable"] is True
+    assert by_path[str(incomplete)]["subtitle_quality"]["status"] == "likely_incomplete"
+    assert by_path[str(complete)]["actionable"] is False
+    assert by_path[str(complete)]["subtitle_quality"]["status"] == "complete"
 
 
 def test_subtitle_scan_tracks_each_release_in_shared_folder_by_exact_stem(monkeypatch, tmp_path):
@@ -377,6 +418,8 @@ def test_subtitle_ui_assets_render():
     assert 'id="pane-subtitles"' in html
     assert 'id="subtitleScanButton"' in html
     assert 'id="subtitleItemStatus"' in html
+    assert 'value="review" selected' in html
+    assert 'value="incomplete"' in html
     assert 'value="index_mismatch"' in html
     assert 'id="subtitleSearch"' in html
     assert 'id="subtitleAction"' in html
@@ -390,6 +433,7 @@ def test_subtitle_ui_assets_render():
     assert "/api/maintenance/subtitles/apply/status?apply_id=" in script
     assert "escapeHtml(item.detail || '')" in script
     assert "subtitleStreamsCell" in script
+    assert "subtitle_quality" in script
     assert "Playback deferred" in script
 
 

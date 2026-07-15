@@ -15,6 +15,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import subtitle_quality
 from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import atomic_quarantine_file
@@ -724,6 +725,52 @@ def _annotate_group_defaults(videos, recommended, settings, lib_root, action="mo
             accessory["default_reason"] = reason
             accessory["default_selected"] = operation != "keep"
 
+    _apply_subtitle_quality_defaults(videos, recommended, action, lib_root)
+
+
+def _subtitle_accessory_buckets(videos):
+    buckets = {}
+    for video in videos:
+        for accessory in video.get("accessories") or []:
+            if accessory.get("role") != "subtitle" or accessory.get("ext") != ".srt":
+                continue
+            key = accessory.get("equivalence_key") or str(accessory.get("suffix") or "").lower()
+            buckets.setdefault(key, []).append((video, accessory))
+    return buckets
+
+
+def _apply_subtitle_quality_defaults(videos, recommended, action, lib_root):
+    for entries in _subtitle_accessory_buckets(videos).values():
+        if len(entries) < 2:
+            continue
+        winner = subtitle_quality.clear_quality_winner([accessory for _video, accessory in entries])
+        if not winner:
+            continue
+        winner_parent = next(
+            (video for video, accessory in entries if accessory.get("id") == winner.get("id")),
+            None,
+        )
+        if not winner_parent or winner_parent.get("id") == recommended.get("id"):
+            continue
+        target = _accessory_destination(winner, recommended)
+        if not target or not path_is_under(target, lib_root):
+            continue
+        for video, accessory in entries:
+            if accessory.get("id") == winner.get("id"):
+                accessory.update(
+                    default_operation="rename",
+                    default_destination_path=target,
+                    default_reason="Best subtitle coverage will be preserved under the keeper stem",
+                    default_selected=True,
+                )
+            else:
+                accessory.update(
+                    default_operation=action,
+                    default_destination_path="",
+                    default_reason="A more complete matching subtitle will replace this file",
+                    default_selected=True,
+                )
+
 
 def _group_default_action_counts(group):
     counts = {"keep": 0, "cleanup": 0, "rename": 0}
@@ -758,6 +805,8 @@ def _group_review_flags(group):
         if len(accessories) < 2 or len(sizes) < 2:
             continue
         role = str(accessories[0].get("role") or "accessory")
+        if role == "subtitle" and subtitle_quality.clear_quality_winner(accessories):
+            continue
         flags.append(
             {
                 "kind": "different_size_accessories",
@@ -785,6 +834,48 @@ def _group_review_flags(group):
             }
         )
     return flags
+
+
+def _group_subtitle_signals(group):
+    signals = []
+    for entries in _subtitle_accessory_buckets(group.get("videos") or []).values():
+        accessories = [accessory for _video, accessory in entries]
+        if len(accessories) < 2:
+            continue
+        winner = subtitle_quality.clear_quality_winner(accessories)
+        incomplete = [
+            item for item in accessories
+            if (item.get("subtitle_quality") or {}).get("status") == "likely_incomplete"
+        ]
+        if winner:
+            quality = winner.get("subtitle_quality") or {}
+            coverage = quality.get("coverage_percent")
+            coverage_label = f" · {coverage:.1f}% coverage" if coverage is not None else ""
+            replacement_label = (
+                f"; {len(incomplete)} likely incomplete replacement"
+                f"{'s' if len(incomplete) != 1 else ''}"
+                if incomplete
+                else "; automatic coverage choice"
+            )
+            signals.append(
+                {
+                    "kind": "subtitle_quality_choice",
+                    "severity": "success",
+                    "label": (
+                        f"Best SRT: {winner.get('name', 'subtitle')}{coverage_label}"
+                        f"{replacement_label}"
+                    ),
+                }
+            )
+        elif incomplete:
+            signals.append(
+                {
+                    "kind": "subtitle_quality_review",
+                    "severity": "warning",
+                    "label": f"{len(incomplete)} SRT file{'s' if len(incomplete) != 1 else ''} likely incomplete",
+                }
+            )
+    return signals
 
 
 def _duration_clusters(videos):
@@ -849,6 +940,10 @@ def _build_groups(paths, group_index, lib_root, settings):
         item["accessories"] = find_accessory_files(path, lib_root)
         for accessory in item["accessories"]:
             accessory["parent_video_id"] = item["id"]
+            if accessory.get("role") == "subtitle" and accessory.get("ext") == ".srt":
+                accessory["subtitle_quality"] = subtitle_quality.analyze_srt(
+                    accessory.get("path"), metadata.get("duration_seconds")
+                )
         videos.append(item)
 
     if len(videos) < 2:
@@ -904,6 +999,8 @@ def _public_file(item):
         "emby_parent_item_id": item.get("emby_parent_item_id", ""),
         "emby_parent_item_type": item.get("emby_parent_item_type", ""),
     }
+    if item.get("subtitle_quality") is not None:
+        public["subtitle_quality"] = dict(item.get("subtitle_quality") or {})
     if item.get("metadata") is not None:
         public["metadata"] = item.get("metadata") or {}
         public["metadata_label"] = item.get("metadata_label", "")
@@ -927,6 +1024,7 @@ def _public_group(group):
         "default_action_counts": _group_default_action_counts(group),
         "needs_review": bool(review_flags),
         "review_flags": review_flags,
+        "subtitle_signals": _group_subtitle_signals(group),
     }
 
 
@@ -948,6 +1046,7 @@ def _public_group_summary(group):
         "default_action_counts": _group_default_action_counts(group),
         "needs_review": bool(review_flags),
         "review_flags": review_flags,
+        "subtitle_signals": _group_subtitle_signals(group),
     }
 
 
@@ -1527,13 +1626,27 @@ def _planned_operation(item, keep_video, action, settings, lib_root, override_op
         if override_operation in {"move", "delete"}:
             return override_operation, "", ""
         return action, "", ""
-    default_operation, default_target, reason = _default_accessory_operation(
-        item,
-        keep_video,
-        action,
-        settings,
-        lib_root,
-    )
+    annotated_operation = str(item.get("default_operation") or "")
+    if annotated_operation == "rename":
+        default_operation = "rename"
+        default_target = item.get("default_destination_path") or _accessory_destination(
+            item, keep_video
+        )
+        reason = item.get("default_reason") or "Sidecar will be renamed to the keeper stem"
+    elif annotated_operation == "keep":
+        default_operation, default_target = "keep", ""
+        reason = item.get("default_reason") or "Kept by the scan recommendation"
+    elif annotated_operation in {"move", "delete", "cleanup"}:
+        default_operation, default_target = action, ""
+        reason = item.get("default_reason") or "Cleanup recommended by the scan"
+    else:
+        default_operation, default_target, reason = _default_accessory_operation(
+            item,
+            keep_video,
+            action,
+            settings,
+            lib_root,
+        )
     if override_operation in {"move", "delete"}:
         return override_operation, "", "Manual cleanup override"
     if override_operation == "cleanup":
@@ -1662,6 +1775,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
             ]
         operation_overrides = _file_operation_overrides(override)
 
+        planned_items = []
         for file_id in selected_ids:
             item = candidate_files[file_id]
             source = item.get("path", "")
@@ -1676,6 +1790,15 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
                 lib_real,
                 operation_overrides.get(file_id, ""),
             )
+            planned_items.append((file_id, item, operation, destination_path, reason))
+
+        scheduled_cleanup_paths = {
+            os.path.normcase(os.path.realpath(item.get("path", "")))
+            for _file_id, item, operation, _destination_path, _reason in planned_items
+            if operation in {"move", "delete"} and item.get("path")
+        }
+        for file_id, item, operation, destination_path, reason in planned_items:
+            source = item.get("path", "")
             if operation == "keep":
                 manual_review.append(
                     {
@@ -1697,7 +1820,10 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
                         }
                     )
                     continue
-                if os.path.exists(destination_path):
+                destination_is_scheduled_for_cleanup = (
+                    os.path.normcase(os.path.realpath(destination_path)) in scheduled_cleanup_paths
+                )
+                if os.path.exists(destination_path) and not destination_is_scheduled_for_cleanup:
                     manual_review.append(
                         {
                             "file_id": file_id,
@@ -1720,6 +1846,14 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
                     destination_path=destination_path,
                 )
             )
+
+    files.sort(
+        key=lambda item: (
+            str(item.get("group_id") or ""),
+            1 if item.get("operation") == "rename" else 0,
+            str(item.get("source_path") or "").lower(),
+        )
+    )
 
     total_size = sum(
         item.get("size_bytes") or 0
@@ -1990,6 +2124,10 @@ def _public_apply_result(result):
         "deferred_bytes": result.get("deferred_bytes", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "total_applied_label": result.get("total_applied_label", "0 B"),
+        "resolved_group_ids": list(result.get("resolved_group_ids") or []),
+        "resolved_group_count": result.get("resolved_group_count", 0),
+        "scan_reconciled": bool(result.get("scan_reconciled")),
+        "scan": result.get("scan"),
         "emby_sync": result.get("emby_sync"),
         "emby_playback": emby_playback.public_result(result.get("emby_playback")),
         "emby_notification": emby_notifications.public_result(result.get("emby_notification")),
@@ -2385,6 +2523,9 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         workflow="duplicates",
         run_id=(apply_run or {}).get("id") or plan.get("id"),
     ) if sync_changes else None
+    reconciled_scan, resolved_group_ids, scan_reconciled = _reconcile_duplicate_scan_after_apply(
+        plan, applied
+    )
     result = {
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
@@ -2402,6 +2543,10 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         "total_applied_label": format_size(total),
         "emby_sync": emby_sync_result,
         "emby_playback": playback,
+        "resolved_group_ids": resolved_group_ids,
+        "resolved_group_count": len(resolved_group_ids),
+        "scan_reconciled": scan_reconciled,
+        "scan": reconciled_scan,
     }
     log_entry = _write_cleanup_log(plan, result, log_records)
     result["log"] = {key: value for key, value in log_entry.items() if key != "path"}
@@ -2479,3 +2624,64 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             finished_at=utc_iso(finished),
         )
     return result, None
+
+
+def _reconcile_duplicate_scan_after_apply(plan, applied):
+    affected_group_ids = {
+        item.get("group_id")
+        for item in applied or []
+        if item.get("group_id")
+    }
+    scan_id = str((plan or {}).get("scan_id") or "")
+    if not affected_group_ids or not scan_id:
+        return None, [], False
+    with maintenance_lock:
+        scan = duplicate_scans.get(scan_id)
+        if not scan or scan.get("status") != "success":
+            return None, [], False
+        original_groups = copy.deepcopy(scan.get("groups") or [])
+        settings = copy.deepcopy(scan.get("settings") or duplicate_settings())
+        lib_root = os.path.realpath(scan.get("lib_root") or plan.get("lib_root") or LIB_ROOT)
+
+    updated_groups = []
+    resolved_group_ids = []
+    for group in original_groups:
+        group_id = group.get("id")
+        if group_id not in affected_group_ids:
+            updated_groups.append(group)
+            continue
+        existing_video_paths = [
+            video.get("path")
+            for video in group.get("videos") or []
+            if video.get("path")
+            and path_is_under(video.get("path"), lib_root)
+            and os.path.isfile(video.get("path"))
+            and not os.path.islink(video.get("path"))
+        ]
+        if len(existing_video_paths) < 2:
+            resolved_group_ids.append(group_id)
+            continue
+        rebuilt, _protected = _build_groups(existing_video_paths, 0, lib_root, settings)
+        if not rebuilt:
+            resolved_group_ids.append(group_id)
+            continue
+        replacement = rebuilt[0]
+        replacement["id"] = group_id
+        replacement["impact_issue_id"] = group.get("impact_issue_id") or replacement.get(
+            "impact_issue_id", ""
+        )
+        updated_groups.append(replacement)
+
+    with maintenance_lock:
+        live_scan = duplicate_scans.get(scan_id)
+        if not live_scan:
+            return None, resolved_group_ids, False
+        live_scan["groups"] = updated_groups
+        live_scan["reclaimable_bytes"] = sum(
+            int(group.get("reclaimable_bytes") or 0) for group in updated_groups
+        )
+        scan_for_persistence = live_scan
+    persisted = maintenance_scan_store.persist_success(
+        "duplicates", "duplicates", scan_for_persistence, lib_root
+    )
+    return public_scan(scan_for_persistence), resolved_group_ids, bool(persisted)

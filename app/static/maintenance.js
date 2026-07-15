@@ -625,13 +625,17 @@
     if (locked) return '<span class="badge text-bg-success">Keep selected video</span>';
     const selected = effectiveFileAction(file, state);
     const parent = fileParentVideo(group, file);
-    const options = [
-      ['keep', 'Keep in library'],
-      ['cleanup', cleanupActionLabel()]
-    ];
-    if (file.kind !== 'video' && file.renameable && parent?.id !== state.keepId) {
-      options.push(['rename', 'Rename to match keeper']);
-    }
+    const canPreserveWithKeeper = file.kind !== 'video' && file.renameable && parent?.id !== state.keepId;
+    const options = canPreserveWithKeeper
+      ? [
+          ['rename', 'Keep with selected video (rename)'],
+          ['cleanup', cleanupActionLabel()],
+          ['keep', 'Leave unchanged']
+        ]
+      : [
+          ['keep', file.kind === 'video' ? 'Keep in library' : 'Keep with selected video'],
+          ['cleanup', cleanupActionLabel()]
+        ];
     return `<select class="form-select form-select-sm" data-maint-operation="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>` +
       options.map(([value, label]) => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('') +
       `</select>`;
@@ -640,13 +644,15 @@
   function fileActionHelp(file, state, locked = false) {
     if (locked) return 'This is the selected keeper video.';
     const action = effectiveFileAction(file, state);
-    if (action === 'rename') return 'Preserves this sidecar by renaming it to the keeper video stem.';
+    if (action === 'rename') return 'Preserves this sidecar and renames it to the selected video stem.';
     if (action === 'cleanup') {
       return byId('maintenanceAction')?.value === 'delete'
         ? 'This file will be permanently deleted.'
         : 'This file will be moved to the configured quarantine folder.';
     }
-    return 'This file stays where it is.';
+    return file.kind !== 'video' && file.renameable
+      ? 'This sidecar stays under its current filename and may become orphaned.'
+      : 'This file stays where it is.';
   }
 
   function groupCandidateFiles(group, state) {
@@ -1012,10 +1018,18 @@
       ? '<span class="badge text-bg-info ms-1">Keeper sidecar</span>'
       : '';
     const action = locked ? 'keep' : effectiveFileAction(file, state);
+    const quality = file.subtitle_quality || {};
+    const qualityClass = quality.status === 'complete'
+      ? 'text-bg-success'
+      : (quality.status === 'likely_incomplete' ? 'text-bg-danger' : 'text-bg-warning');
+    const qualityDetail = file.role === 'subtitle' && quality.status
+      ? `<div class="mt-1"><span class="badge ${qualityClass}">${escapeHtml(quality.status === 'likely_incomplete' ? 'Likely incomplete' : (quality.status === 'complete' ? 'Coverage good' : 'Coverage review'))}</span>` +
+        `<span class="small text-muted ms-1">${escapeHtml(quality.coverage_percent != null ? `${quality.coverage_percent}% · ends ${quality.last_timestamp_label || '?'} of ${quality.video_duration_label || '?'} · ${quality.cue_count || 0} cues` : (quality.label || 'Runtime unavailable'))}</span></div>`
+      : '';
     return `<tr>` +
       `<td data-sort-value="${escapeHtml(kind)}"><span class="fw-semibold">${escapeHtml(kind)}</span>${locked ? '<span class="badge text-bg-success ms-1">Keeper</span>' : ''}</td>` +
       `<td class="duplicate-file-cell" data-sort-value="${escapeHtml(file.name)}"><code class="duplicate-file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
-      `<td class="duplicate-file-context" data-sort-value="${escapeHtml(fileDetails(group, file, state))}">${escapeHtml(association)}${associationBadge}</td>` +
+      `<td class="duplicate-file-context" data-sort-value="${escapeHtml(fileDetails(group, file, state))}">${escapeHtml(association)}${associationBadge}${qualityDetail}</td>` +
       `<td data-sort-value="${Number(file.size_bytes || 0)}">${escapeHtml(file.size_label || formatSize(file.size_bytes))}</td>` +
       `<td class="duplicate-file-action" data-sort-value="${escapeHtml(action)}">${fileActionOptions(group, file, state, locked)}<div class="small text-muted mt-1">${escapeHtml(fileActionHelp(file, state, locked))}</div></td>` +
       `</tr>`;
@@ -1125,6 +1139,13 @@
     ).join('');
   }
 
+  function renderGroupSubtitleSignals(group) {
+    return (group.subtitle_signals || []).map(signal => {
+      const klass = signal.severity === 'success' ? 'text-bg-success' : 'text-bg-warning';
+      return `<span class="badge ${klass}" title="Subtitle timestamps were compared with video runtime">${escapeHtml(signal.label || 'Subtitle coverage checked')}</span>`;
+    }).join('');
+  }
+
   function renderGroup(group) {
     const state = ensureGroupState(group);
     const expanded = Boolean(state.expanded);
@@ -1182,7 +1203,7 @@
       `<span>Default reclaimable: ${escapeHtml(group.reclaimable_label || '')}</span>` +
       `</div>` +
       `${renderGroupReviewStats(group, state)}` +
-      `<div class="duplicate-review-flags">${renderGroupReviewFlags(group)}</div>` +
+      `<div class="duplicate-review-flags">${renderGroupSubtitleSignals(group)}${renderGroupReviewFlags(group)}</div>` +
       `${detail}` +
       `</section>`;
   }
@@ -1752,6 +1773,35 @@
     }
   }
 
+  function reconcileDuplicateResults(result) {
+    if (!result?.scan_reconciled || !result.scan) return false;
+    const resolved = new Set(result.resolved_group_ids || []);
+    resolved.forEach(groupId => {
+      groupState.delete(groupId);
+      groupSummaries.delete(groupId);
+      groupDetailGenerations.delete(groupId);
+      duplicateSelection.excluded.delete(groupId);
+      duplicateSelection.selected.delete(groupId);
+      duplicateSelection.reclaimableById.delete(groupId);
+      duplicateSelection.actionCountsById.delete(groupId);
+    });
+    currentScan = result.scan;
+    duplicateSelection.total = Number(currentScan.duplicate_group_count || 0);
+    saveDuplicateSelection();
+    const oldPageTotal = Number(currentGroupsPage?.total || 0);
+    const remainingPageTotal = Math.max(0, oldPageTotal - resolved.size);
+    const refreshOffset = remainingPageTotal
+      ? Math.min(groupPageOffset, Math.floor((remainingPageTotal - 1) / groupPageLimit) * groupPageLimit)
+      : 0;
+    currentGroupsPage = null;
+    setProgress(currentScan);
+    renderGroups();
+    updateDuplicateControls();
+    updateSelectedSize();
+    if (currentScan.duplicate_group_count) loadGroupsPage(refreshOffset);
+    return true;
+  }
+
   function handleApply(apply) {
     currentApply = apply;
     renderDuplicateApplyStatus(apply);
@@ -1775,12 +1825,13 @@
       );
       refreshMaintenanceLogs();
       currentPlan = null;
-      if (currentScan?.id && currentScan.id === apply.scan_id && Number(result.applied_count || apply.applied_count || 0) > 0) {
+      const reconciled = reconcileDuplicateResults(result);
+      if (!reconciled && currentScan?.id && currentScan.id === apply.scan_id && Number(result.applied_count || apply.applied_count || 0) > 0) {
         currentScan.freshness = {status: 'changed'};
       }
       updateDuplicateControls();
       if (button) button.disabled = true;
-      checkMaintenanceFreshness();
+      if (!reconciled) checkMaintenanceFreshness();
       return;
     }
     if (apply.status === 'failed') {
@@ -3142,6 +3193,7 @@
       missing: ['Missing', 'text-bg-warning'],
       language_review: ['Language Review', 'text-bg-danger'],
       unknown: ['Unknown', 'text-bg-info'],
+      incomplete: ['Likely Incomplete', 'text-bg-danger'],
       ok: ['OK', 'text-bg-success']
     };
     const [label, klass] = labels[status] || [status || 'Unknown', 'text-bg-secondary'];
@@ -3155,11 +3207,18 @@
       const code = file.language_code || 'unknown';
       const selectable = Boolean(file.actionable);
       const checked = selectable && subtitleSelected.has(file.id) ? ' checked' : '';
+      const quality = file.subtitle_quality || {};
+      const qualityClass = quality.status === 'complete'
+        ? 'text-success'
+        : (quality.status === 'likely_incomplete' ? 'text-danger fw-semibold' : 'text-warning');
+      const qualityDetail = quality.status
+        ? `<div class="small ${qualityClass}">${escapeHtml(quality.coverage_percent != null ? `${quality.coverage_percent}% coverage · ends ${quality.last_timestamp_label || '?'} of ${quality.video_duration_label || '?'} · ${quality.cue_count || 0} cues` : (quality.label || 'Coverage unavailable'))}</div>`
+        : '';
       return `<div class="mb-2 d-flex gap-2 align-items-start">` +
         (selectable ? `<input class="form-check-input mt-1" type="checkbox" data-subtitle-file="${escapeHtml(file.id)}" aria-label="Select ${escapeHtml(file.name || 'subtitle')}"${checked}>` : '<span class="form-check-input border-0 mt-1"></span>') +
         `<div>` +
         `<code class="path-cell" title="${escapeHtml(file.path || '')}">${escapeHtml(file.relative_path || file.name || '')}</code>` +
-        `<div class="text-muted small">${escapeHtml(code)} · ${escapeHtml(file.size_label || '')}${file.action_reason ? ` · ${escapeHtml(file.action_reason)}` : ''}</div>` +
+        `<div class="text-muted small">${escapeHtml(code)} · ${escapeHtml(file.size_label || '')}${file.action_reason ? ` · ${escapeHtml(file.action_reason)}` : ''}</div>${qualityDetail}` +
         `</div></div>`;
     }).join('') + (files.length > 3 ? `<div class="text-muted small">${files.length - 3} more subtitle file(s)</div>` : '');
   }
@@ -3216,7 +3275,7 @@
 
   async function loadSubtitleItems(offset = subtitlePageOffset) {
     if (!subtitleScan?.id || subtitleScan.status !== 'success') return;
-    const status = byId('subtitleItemStatus')?.value || 'language_review';
+    const status = byId('subtitleItemStatus')?.value || 'review';
     const query = byId('subtitleSearch')?.value || '';
     const target = byId('subtitleItems');
     if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading subtitle results...</div>';

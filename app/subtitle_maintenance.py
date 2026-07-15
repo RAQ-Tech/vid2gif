@@ -13,6 +13,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import subtitle_quality
 from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
 from .file_safety import atomic_quarantine_file
@@ -54,6 +55,7 @@ LANGUAGE_MODIFIER_TOKENS = {
 }
 SUBTITLE_FILESYSTEM_WORKFLOW = "subtitle_scan.filesystem"
 SUBTITLE_EMBY_WORKFLOW = "subtitle_scan.emby"
+SUBTITLE_QUALITY_WORKFLOW = "subtitle_scan.quality"
 __test__ = False
 
 subtitle_scans = {}
@@ -358,6 +360,7 @@ def _counts(items):
         "missing_count": 0,
         "language_review_count": 0,
         "unknown_count": 0,
+        "incomplete_count": 0,
         "ok_count": 0,
         "subtitle_file_count": 0,
         "review_count": 0,
@@ -372,8 +375,56 @@ def _counts(items):
         counts["missing_count"]
         + counts["language_review_count"]
         + counts["unknown_count"]
+        + counts["incomplete_count"]
     )
     return counts
+
+
+def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progress=None):
+    mappings = settings.get("emby_path_mappings") or []
+    total = len(items)
+    for index, item in enumerate(items, start=1):
+        if before_item:
+            before_item()
+        subtitles = item.get("srt_files") or []
+        if not subtitles:
+            if progress and (index == total or index % 25 == 0):
+                progress(index, total)
+            continue
+        duration = emby_catalog.duration_seconds_for_path(
+            catalog, item.get("path"), mappings
+        ) if catalog else None
+        duration_source = "emby" if duration else ""
+        if not duration:
+            duration = subtitle_quality.probe_media_duration(item.get("path"))
+            duration_source = "ffprobe" if duration else "unavailable"
+        item["video_duration_seconds"] = duration
+        item["video_duration_source"] = duration_source
+        incomplete = []
+        for subtitle in subtitles:
+            quality = subtitle_quality.analyze_srt(subtitle.get("path"), duration)
+            subtitle["subtitle_quality"] = quality
+            if quality.get("status") == "likely_incomplete":
+                previous_reason = str(subtitle.get("action_reason") or "").strip()
+                subtitle["actionable"] = True
+                subtitle["action_reason"] = "; ".join(
+                    value for value in (
+                        quality.get("label") or "Likely incomplete subtitle",
+                        previous_reason,
+                    ) if value
+                )
+                incomplete.append(subtitle)
+        if incomplete:
+            item.update(
+                status="incomplete",
+                detail=(
+                    f"{len(incomplete)} subtitle file{'s are' if len(incomplete) != 1 else ' is'} "
+                    "likely incomplete based on timestamp coverage"
+                ),
+            )
+        if progress and (index == total or index % 25 == 0):
+            progress(index, total)
+    return items
 
 
 def _stream_summary(status="not_checked", message="Emby subtitle streams were not checked; rescan to add stream details.", settings=None):
@@ -666,7 +717,10 @@ def _run_scan(scan, settings, lib_root):
             "Scanning subtitle sidecars",
             stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
             completed_units=0,
-            remaining_stages=[{"workflow": SUBTITLE_EMBY_WORKFLOW}],
+            remaining_stages=[
+                {"workflow": SUBTITLE_EMBY_WORKFLOW},
+                {"workflow": SUBTITLE_QUALITY_WORKFLOW},
+            ],
             unit_label="videos",
             status="running",
             _started_ts=started,
@@ -680,7 +734,10 @@ def _run_scan(scan, settings, lib_root):
             stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
             completed_units=len(items),
             total_units=len(items),
-            remaining_stages=[{"workflow": SUBTITLE_EMBY_WORKFLOW}],
+            remaining_stages=[
+                {"workflow": SUBTITLE_EMBY_WORKFLOW},
+                {"workflow": SUBTITLE_QUALITY_WORKFLOW},
+            ],
             unit_label="videos",
             scanned_video_count=len(items),
         )
@@ -691,7 +748,7 @@ def _run_scan(scan, settings, lib_root):
             stage_workflow=SUBTITLE_EMBY_WORKFLOW,
             completed_units=0,
             total_units=len(items),
-            remaining_stages=[],
+            remaining_stages=[{"workflow": SUBTITLE_QUALITY_WORKFLOW}],
             unit_label="videos",
             scanned_video_count=len(items),
         )
@@ -711,6 +768,34 @@ def _run_scan(scan, settings, lib_root):
             catalog,
             catalog_summary,
         )
+        _set_scan_progress(
+            scan,
+            85,
+            f"Checking timestamp coverage for {len(items)} videos",
+            stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
+            completed_units=0,
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="videos",
+            scanned_video_count=len(items),
+        )
+        _enrich_subtitle_quality(
+            items,
+            catalog,
+            settings,
+            before_item=lambda: _check_cancelled(scan),
+            progress=lambda completed, total: _set_scan_progress(
+                scan,
+                85 + int(14 * completed / max(total, 1)),
+                f"Checked subtitle coverage for {completed} of {total} videos",
+                stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
+                completed_units=completed,
+                total_units=total,
+                remaining_stages=[],
+                unit_label="videos",
+                scanned_video_count=len(items),
+            ),
+        )
         counts = _counts(items)
         for item in items:
             for subtitle in item.get("srt_files") or []:
@@ -727,7 +812,7 @@ def _run_scan(scan, settings, lib_root):
             scanned_video_count=counts["scanned_video_count"],
             emby_mapping=emby_mapping,
             emby_streams=emby_streams,
-            stage_workflow=SUBTITLE_EMBY_WORKFLOW,
+            stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
             completed_units=len(items),
             total_units=len(items),
             remaining_stages=[],
@@ -887,11 +972,16 @@ def _coerce_page(offset, limit):
 
 
 def _filter_items(items, status, query):
-    status = str(status or "language_review").lower()
-    if status not in {"missing", "language_review", "unknown", "ok", "index_mismatch", "all"}:
-        status = "language_review"
+    status = str(status or "review").lower()
+    if status not in {"review", "missing", "language_review", "unknown", "incomplete", "ok", "index_mismatch", "all"}:
+        status = "review"
     filtered = list(items)
-    if status == "index_mismatch":
+    if status == "review":
+        filtered = [
+            item for item in filtered
+            if item.get("status") != "ok" or item.get("emby_index_status") == "mismatch"
+        ]
+    elif status == "index_mismatch":
         filtered = [item for item in filtered if item.get("emby_index_status") == "mismatch"]
     elif status != "all":
         filtered = [item for item in filtered if item.get("status") == status]
@@ -915,7 +1005,7 @@ def _filter_items(items, status, query):
     return status, filtered
 
 
-def items_payload(scan_id, status="language_review", offset=0, limit=ITEM_PAGE_DEFAULT, q="", sort="video", direction="asc"):
+def items_payload(scan_id, status="review", offset=0, limit=ITEM_PAGE_DEFAULT, q="", sort="video", direction="asc"):
     _ensure_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     with subtitle_lock:

@@ -386,3 +386,138 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
     { file_id: 'srt-1080', operation: 'cleanup' },
   ]));
 });
+
+test('subtitle coverage recommendation is visible and a resolved group leaves the current list', async ({ page }) => {
+  let applied = false;
+  const qualityScan = {
+    ...scan,
+    id: 'duplicate-scan-subtitle-quality',
+    duplicate_group_count: 1,
+    default_action_counts: {keep: 1, cleanup: 2, rename: 1},
+    review_group_count: 0,
+  };
+  const resolvedScan = {
+    ...qualityScan,
+    duplicate_group_count: 0,
+    reclaimable_bytes: 0,
+    reclaimable_label: '0 B',
+    default_action_counts: {keep: 0, cleanup: 0, rename: 0},
+  };
+  const summary = {
+    id: 'group-subtitle-quality',
+    folder: '/library/Movie',
+    normalized_name: 'Movie',
+    recommended_keep_id: 'video-2160',
+    recommended_keep_name: 'Movie.2160p.mkv',
+    video_count: 2,
+    accessory_count: 2,
+    reclaimable_bytes: 1200,
+    reclaimable_label: '1.2 KB',
+    default_action_counts: {keep: 1, cleanup: 2, rename: 1},
+    needs_review: false,
+    review_flags: [],
+    subtitle_signals: [{
+      kind: 'subtitle_quality_choice',
+      severity: 'success',
+      label: 'Best SRT: Movie.1080p.eng.srt · 99.6% coverage; 1 likely incomplete replacement',
+    }],
+  };
+  const detail = {
+    ...summary,
+    videos: [
+      {
+        id: 'video-2160', kind: 'video', path: '/library/Movie/Movie.2160p.mkv', name: 'Movie.2160p.mkv',
+        size_bytes: 2000, size_label: '2 KB', metadata_label: '3840x2160', default_operation: 'keep', default_selected: false,
+        accessories: [{
+          id: 'srt-2160', kind: 'accessory', path: '/library/Movie/Movie.2160p.eng.srt', name: 'Movie.2160p.eng.srt',
+          size_bytes: 100, size_label: '100 B', parent_video_id: 'video-2160', role: 'subtitle', renameable: true,
+          default_operation: 'move', default_selected: true,
+          subtitle_quality: {status: 'likely_incomplete', coverage_percent: 65.6, last_timestamp_label: '27:15', video_duration_label: '41:30', cue_count: 373},
+        }],
+      },
+      {
+        id: 'video-1080', kind: 'video', path: '/library/Movie/Movie.1080p.mkv', name: 'Movie.1080p.mkv',
+        size_bytes: 1000, size_label: '1 KB', metadata_label: '1920x1080', default_operation: 'move', default_selected: true,
+        accessories: [{
+          id: 'srt-1080', kind: 'accessory', path: '/library/Movie/Movie.1080p.eng.srt', name: 'Movie.1080p.eng.srt',
+          size_bytes: 200, size_label: '200 B', parent_video_id: 'video-1080', role: 'subtitle', renameable: true,
+          default_operation: 'rename', default_selected: true, default_destination_path: '/library/Movie/Movie.2160p.eng.srt',
+          subtitle_quality: {status: 'complete', coverage_percent: 99.6, last_timestamp_label: '41:21', video_duration_label: '41:30', cue_count: 593},
+        }],
+      },
+    ],
+  };
+  const applyResult = {
+    applied_count: 3,
+    missing_count: 0,
+    refused_count: 0,
+    deferred_count: 0,
+    total_applied_label: '1.1 KB',
+    resolved_group_ids: [summary.id],
+    resolved_group_count: 1,
+    scan_reconciled: true,
+    scan: resolvedScan,
+  };
+
+  await page.route('**/api/maintenance/duplicates/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({scan: qualityScan}),
+  }));
+  await page.route('**/api/maintenance/duplicates/groups?*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      scan: applied ? resolvedScan : qualityScan,
+      offset: 0, limit: 25, total: applied ? 0 : 1, count: applied ? 0 : 1,
+      has_previous: false, has_next: false, next_offset: null, previous_offset: null,
+      large_result: false, review: 'all', groups: applied ? [] : [summary],
+    }),
+  }));
+  await page.route('**/api/maintenance/duplicates/groups/group-subtitle-quality?*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({group: detail}),
+  }));
+  await page.route('**/api/maintenance/duplicates/plan', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({plan: {
+      id: 'plan-subtitle-quality', scan_id: qualityScan.id, action: 'move', status: 'ready',
+      move_root: '/library/.vid2gif-duplicates', selection_mode: 'all_eligible', selected_group_count: 1,
+      total_group_count: 1, file_count: 3, total_size_label: '1.1 KB', skipped_groups: [], manual_review: [], files: [],
+    }}),
+  }));
+  await page.route('**/api/maintenance/duplicates/apply', route => {
+    applied = true;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({apply: {
+        id: 'apply-subtitle-quality', scan_id: qualityScan.id, action: 'move', status: 'success',
+        file_count: 3, processed_count: 3, applied_count: 3, result: applyResult,
+      }}),
+    });
+  });
+  await page.route('**/api/maintenance/duplicates/apply/status*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({apply: applied ? {
+      id: 'apply-subtitle-quality', scan_id: qualityScan.id, action: 'move', status: 'success',
+      file_count: 3, processed_count: 3, applied_count: 3, result: applyResult,
+    } : null}),
+  }));
+
+  page.on('dialog', dialog => dialog.accept());
+  await page.goto('/maintenance#duplicates');
+  const card = page.locator('[data-maint-group-card="group-subtitle-quality"]');
+  await expect(card).toContainText('99.6% coverage');
+  await card.locator('[data-maint-expand]').click();
+  await expect(page.locator('[data-maint-operation="srt-1080"]')).toHaveValue('rename');
+  await expect(page.locator('[data-maint-operation="srt-1080"]')).toContainText('Keep with selected video (rename)');
+  await expect(card).toContainText('65.6% · ends 27:15 of 41:30');
+  await expect(card).toContainText('99.6% · ends 41:21 of 41:30');
+
+  await page.locator('#maintenancePlanButton').click();
+  await page.locator('#maintenanceApplyButton').click();
+
+  await expect(page.locator('[data-maint-group-card="group-subtitle-quality"]')).toHaveCount(0);
+  await expect(page.locator('#maintenanceGroupCount')).toHaveText('0');
+  await expect(page.locator('#maintenanceGroups')).toContainText('No duplicate groups found');
+});
