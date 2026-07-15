@@ -40,7 +40,7 @@ MAINTENANCE_LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "duplicates")
 MAINTENANCE_LOG_INDEX = os.path.join(MAINTENANCE_LOG_DIR, "index.json")
 MAINTENANCE_LOG_RETENTION_COUNT = 25
 MAINTENANCE_LOG_MAX_BYTES = 5 * 1024 * 1024
-DUPLICATE_GROUP_PAGE_DEFAULT = 10
+DUPLICATE_GROUP_PAGE_DEFAULT = 25
 DUPLICATE_GROUP_PAGE_MAX = 100
 DUPLICATE_GROUP_LARGE_RESULT_COUNT = 100
 DUPLICATE_SCAN_RETENTION_COUNT = 10
@@ -1264,16 +1264,6 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     overrides = _group_overrides(payload)
     if overrides is None:
         return None, "Group overrides are invalid"
-    raw_visible_ids = payload.get("visible_group_ids")
-    if not isinstance(raw_visible_ids, list) or not raw_visible_ids:
-        return None, "Visible duplicate groups are required"
-    visible_group_ids = []
-    visible_seen = set()
-    for value in raw_visible_ids:
-        group_id = str(value or "")
-        if group_id and group_id not in visible_seen:
-            visible_seen.add(group_id)
-            visible_group_ids.append(group_id)
 
     with maintenance_lock:
         _prune_duplicate_scans_locked()
@@ -1283,11 +1273,36 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     if scan.get("status") != "success":
         return None, "Scan is not complete"
     groups_by_id = {group.get("id"): group for group in scan.get("groups") or []}
-    unknown_ids = [group_id for group_id in visible_group_ids if group_id not in groups_by_id]
+
+    def unique_group_ids(values):
+        result = []
+        for value in values if isinstance(values, list) else []:
+            group_id = str(value or "")
+            if group_id and group_id not in result:
+                result.append(group_id)
+        return result
+
+    selection = payload.get("selection")
+    selection_mode = "visible_page"
+    if isinstance(selection, dict) and selection.get("mode") == "all_eligible":
+        selection_mode = "all_eligible"
+        excluded_group_ids = set(unique_group_ids(selection.get("excluded_group_ids")))
+        selected_group_ids = [
+            group_id for group_id in groups_by_id if group_id not in excluded_group_ids
+        ]
+    elif isinstance(selection, dict) and selection.get("mode") == "explicit":
+        selection_mode = "explicit"
+        selected_group_ids = unique_group_ids(selection.get("group_ids"))
+    else:
+        selected_group_ids = unique_group_ids(payload.get("visible_group_ids"))
+    if not selected_group_ids:
+        return None, "Select at least one duplicate group"
+
+    unknown_ids = [group_id for group_id in selected_group_ids if group_id not in groups_by_id]
     if unknown_ids:
-        return None, "Visible duplicate groups are stale"
-    if any(group_id not in visible_seen for group_id in overrides):
-        return None, "Group overrides must be limited to the visible page"
+        return None, "Selected duplicate groups are stale"
+    if any(group_id not in groups_by_id for group_id in overrides):
+        return None, "Group overrides are stale"
 
     settings = scan.get("settings") or duplicate_settings()
     move_root, move_err = _validate_move_root(_effective_move_root(settings, lib_root), lib_root)
@@ -1297,12 +1312,13 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     plan_id = _now_id()
     used_destinations = set()
     files = []
-    skipped_groups = []
+    selected_group_set = set(selected_group_ids)
+    skipped_groups = [group_id for group_id in groups_by_id if group_id not in selected_group_set]
     manual_review = []
     impact_groups = []
     lib_real = os.path.realpath(lib_root)
 
-    for group_id in visible_group_ids:
+    for group_id in selected_group_ids:
         group = groups_by_id[group_id]
         override = overrides.get(group["id"], {})
         if not _truthy(override.get("enabled"), default=True):
@@ -1407,9 +1423,9 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         for item in files
         if item.get("operation") in {"move", "delete"}
     )
-    selected_group_ids = {item.get("group_id") for item in files}
+    playback_group_ids = {item.get("group_id") for item in files}
     playback_targets = []
-    for group_id in selected_group_ids:
+    for group_id in playback_group_ids:
         group = groups_by_id.get(group_id) or {}
         for video in group.get("videos") or []:
             playback_targets.append(
@@ -1435,8 +1451,12 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "lib_root": lib_real,
         "move_root": move_root if action == "move" else "",
         "configured_move_root": move_root,
-        "visible_group_ids": visible_group_ids,
-        "visible_group_count": len(visible_group_ids),
+        "visible_group_ids": selected_group_ids,
+        "visible_group_count": len(selected_group_ids),
+        "selection_mode": selection_mode,
+        "selected_group_ids": selected_group_ids,
+        "selected_group_count": len(selected_group_ids),
+        "total_group_count": len(groups_by_id),
         "files": files,
         "file_count": len(files),
         "total_size_bytes": total_size,
@@ -1466,6 +1486,10 @@ def public_plan(plan):
         "configured_move_root": plan.get("configured_move_root", ""),
         "visible_group_ids": list(plan.get("visible_group_ids") or []),
         "visible_group_count": plan.get("visible_group_count", 0),
+        "selection_mode": plan.get("selection_mode", "visible_page"),
+        "selected_group_ids": list(plan.get("selected_group_ids") or []),
+        "selected_group_count": plan.get("selected_group_count", plan.get("visible_group_count", 0)),
+        "total_group_count": plan.get("total_group_count", plan.get("visible_group_count", 0)),
         "file_count": plan.get("file_count", 0),
         "total_size_bytes": plan.get("total_size_bytes", 0),
         "total_size_label": plan.get("total_size_label", ""),

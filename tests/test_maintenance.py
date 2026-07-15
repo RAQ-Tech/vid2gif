@@ -685,6 +685,54 @@ def test_duplicate_groups_payload_caps_large_result_pages(monkeypatch, tmp_path)
     assert "videos" not in payload["groups"][0]
 
 
+def test_duplicate_cleanup_selection_spans_result_pages(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    for index in range(30):
+        _write_duplicate_pair(lib, f"Movie {index:03d}", f"Movie {index:03d}")
+    scan = _scan(lib, lib, monkeypatch)
+    excluded_id = scan["groups"][0]["id"]
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {
+                "mode": "all_eligible",
+                "excluded_group_ids": [excluded_id],
+            },
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    assert plan["selection_mode"] == "all_eligible"
+    assert plan["selected_group_count"] == 29
+    assert plan["total_group_count"] == 30
+    assert plan["file_count"] == 29
+    assert excluded_id not in plan["selected_group_ids"]
+    assert excluded_id in plan["skipped_groups"]
+
+
+def test_duplicate_cleanup_explicit_selection_rejects_unknown_groups(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write_duplicate_pair(lib, "Movie")
+    scan = _scan(lib, lib, monkeypatch)
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {"mode": "explicit", "group_ids": ["missing-group"]},
+        },
+        lib_root=str(lib),
+    )
+
+    assert plan is None
+    assert err == "Selected duplicate groups are stale"
+
+
 def test_duplicate_groups_payload_reports_missing_and_retains_latest_scan(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     _write_duplicate_pair(lib, "Movie")
@@ -899,9 +947,12 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="subtitleItemStatus"' in html
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
-    assert "visible_group_ids" in script
+    assert "selection: duplicateSelectionPayload()" in script
     assert "data-maint-bulk=\"select\"" in script
-    assert "const pageSizes = [10, 25, 50]" in script
+    assert 'id="duplicateSelectionSummary"' in html
+    assert 'id="duplicatePageLimit"' in html
+    assert 'id="maintenanceApplyStatus"' in html
+    assert "Page navigation does not change this selection." in script
     assert 'id="maintenanceRefreshLogsButton"' in html
     assert 'src="/static/maintenance.js"' in html
     assert "fetch('/api/dashboard/library-scan/status')" in script

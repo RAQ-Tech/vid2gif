@@ -14,9 +14,19 @@
   let currentApply = null;
   let currentGroupsPage = null;
   let groupPageOffset = 0;
-  let groupPageLimit = 10;
+  let groupPageLimit = 25;
   let pollTimer = null;
   let applyPollTimer = null;
+  const DUPLICATE_SELECTION_STORAGE_KEY = 'vid2gif_duplicate_cleanup_selection_v1';
+  const DUPLICATE_PAGE_SIZE_STORAGE_KEY = 'vid2gif_duplicate_page_size';
+  let duplicateSelection = {
+    scanId: '',
+    mode: 'all_eligible',
+    excluded: new Set(),
+    selected: new Set(),
+    total: 0,
+    reclaimableById: new Map()
+  };
   let previewScan = null;
   let previewPollTimer = null;
   let previewItemsPage = null;
@@ -618,10 +628,121 @@
     return file.kind === 'video' ? file.id === keeperId : file.parent_video_id === keeperId;
   }
 
+  function duplicateSelectionFromStorage(scanId, total) {
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(DUPLICATE_SELECTION_STORAGE_KEY) || 'null');
+    } catch (_e) {
+      saved = null;
+    }
+    const sameScan = saved && saved.scanId === scanId;
+    const mode = sameScan && saved.mode === 'explicit' ? 'explicit' : 'all_eligible';
+    return {
+      scanId,
+      mode,
+      excluded: new Set(sameScan && Array.isArray(saved.excluded) ? saved.excluded : []),
+      selected: new Set(sameScan && Array.isArray(saved.selected) ? saved.selected : []),
+      total: Number(total || 0),
+      reclaimableById: new Map(sameScan && Array.isArray(saved.reclaimableById) ? saved.reclaimableById : [])
+    };
+  }
+
+  function ensureDuplicateSelection(scanId, total) {
+    if (duplicateSelection.scanId !== scanId) {
+      duplicateSelection = duplicateSelectionFromStorage(scanId, total);
+      groupState.clear();
+      groupSummaries.clear();
+      currentGroupsPage = null;
+      groupPageOffset = 0;
+      invalidatePlan();
+    } else {
+      duplicateSelection.total = Number(total || duplicateSelection.total || 0);
+    }
+  }
+
+  function saveDuplicateSelection() {
+    try {
+      localStorage.setItem(DUPLICATE_SELECTION_STORAGE_KEY, JSON.stringify({
+        scanId: duplicateSelection.scanId,
+        mode: duplicateSelection.mode,
+        excluded: Array.from(duplicateSelection.excluded),
+        selected: Array.from(duplicateSelection.selected),
+        reclaimableById: Array.from(duplicateSelection.reclaimableById.entries())
+      }));
+    } catch (_e) {
+      // Selection still remains stable for this page session.
+    }
+  }
+
+  function duplicateGroupIsSelected(groupId) {
+    if (!groupId) return false;
+    if (duplicateSelection.mode === 'explicit') return duplicateSelection.selected.has(groupId);
+    return !duplicateSelection.excluded.has(groupId);
+  }
+
+  function duplicateSelectedCount() {
+    if (duplicateSelection.mode === 'explicit') return duplicateSelection.selected.size;
+    return Math.max(0, duplicateSelection.total - duplicateSelection.excluded.size);
+  }
+
+  function duplicateSelectionPayload() {
+    if (duplicateSelection.mode === 'explicit') {
+      return {mode: 'explicit', group_ids: Array.from(duplicateSelection.selected)};
+    }
+    return {mode: 'all_eligible', excluded_group_ids: Array.from(duplicateSelection.excluded)};
+  }
+
+  function setDuplicateGroupSelected(groupId, selected) {
+    if (!groupId) return;
+    if (duplicateSelection.mode === 'explicit') {
+      if (selected) duplicateSelection.selected.add(groupId);
+      else duplicateSelection.selected.delete(groupId);
+    } else if (selected) {
+      duplicateSelection.excluded.delete(groupId);
+    } else {
+      duplicateSelection.excluded.add(groupId);
+    }
+    const state = groupState.get(groupId);
+    if (state) state.enabled = selected;
+  }
+
+  function renderDuplicateSelectionSummary() {
+    const target = byId('duplicateSelectionSummary');
+    if (!target) return;
+    const selected = duplicateSelectedCount();
+    const mode = duplicateSelection.mode === 'all_eligible' ? 'across all result pages' : 'chosen individually';
+    target.innerHTML = `<strong>${escapeHtml(selected)} selected</strong> ${escapeHtml(mode)}` +
+      '<div class="small text-muted mt-1">Page navigation does not change this selection.</div>';
+  }
+
+  function updateDuplicateControls() {
+    const selected = duplicateSelectedCount();
+    const stale = currentScan?.freshness?.status === 'changed';
+    const applyActive = ['queued', 'running'].includes(currentApply?.status || '');
+    const planButton = byId('maintenancePlanButton');
+    if (planButton) {
+      planButton.disabled = !currentScan || currentScan.status !== 'success' || !selected || stale || applyActive;
+      const label = planButton.querySelector('span');
+      if (label) label.textContent = selected ? `Review ${selected} Selected` : 'Review Selection';
+    }
+    const selectButton = byId('duplicateSelectAllButton');
+    if (selectButton) selectButton.disabled = !duplicateSelection.total || applyActive;
+    const clearButton = byId('duplicateClearSelectionButton');
+    if (clearButton) clearButton.disabled = !selected || applyActive;
+    renderDuplicateSelectionSummary();
+  }
+
+  function duplicateSelectionChanged() {
+    invalidatePlan();
+    saveDuplicateSelection();
+    updateDuplicateControls();
+    updateSelectedSize();
+  }
+
   function ensureGroupState(group) {
     if (!group?.id) {
       return {
-        enabled: true,
+        enabled: duplicateGroupIsSelected(group?.id),
         keepId: '',
         includedFileIds: new Set(),
         fileOperations: new Map(),
@@ -635,7 +756,7 @@
     }
     if (!groupState.has(group.id)) {
       groupState.set(group.id, {
-        enabled: true,
+        enabled: duplicateGroupIsSelected(group.id),
         keepId: group.recommended_keep_id,
         includedFileIds: new Set(),
         fileOperations: new Map(),
@@ -670,20 +791,22 @@
 
   function updateSelectedSize() {
     let total = 0;
-    currentPageGroups().forEach(summary => {
-      const state = ensureGroupState(summary);
-      if (!state.enabled) return;
-      if (!(summary.videos || []).length) {
-        total += Number(summary.reclaimable_bytes || 0);
-        return;
-      }
-      groupCandidateFiles(summary, state).forEach(file => {
-        if (state.includedFileIds.has(file.id)) total += Number(file.size_bytes || 0);
+    if (duplicateSelection.mode === 'all_eligible') {
+      total = Number(currentScan?.reclaimable_bytes || 0);
+      duplicateSelection.excluded.forEach(groupId => {
+        total -= Number(duplicateSelection.reclaimableById.get(groupId) || 0);
       });
-    });
+    } else {
+      duplicateSelection.selected.forEach(groupId => {
+        total += Number(duplicateSelection.reclaimableById.get(groupId) || 0);
+      });
+    }
     total = Math.max(0, total);
     const selected = byId('maintenanceSelectedSize');
-    if (selected) selected.textContent = currentPlan?.total_size_label || formatSize(total);
+    if (selected) {
+      selected.textContent = currentPlan?.total_size_label || (duplicateSelectedCount() ? `about ${formatSize(total)}` : '0 B');
+      selected.title = currentPlan ? 'Reviewed cleanup size' : 'Estimated from the scan defaults; Review Selection shows the exact plan.';
+    }
   }
 
   function markGroupDirty(groupId) {
@@ -719,20 +842,13 @@
 
   function renderPager(page) {
     if (!page) return '';
-    const pageSizes = [10, 25, 50].map(size =>
-      `<option value="${size}"${Number(page.limit) === size ? ' selected' : ''}>${size}</option>`
-    ).join('');
     return `<div class="maintenance-pager">` +
       `<div class="text-muted small">${escapeHtml(pageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
       `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="select">Select all candidates</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="deselect">Deselect all candidates</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="select">Select this page</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="deselect">Clear this page</button>` +
       `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="expand">Expand all</button>` +
       `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="collapse">Collapse all</button>` +
-      `<label class="form-label mb-0 compact-control">Show` +
-      `<select class="form-select form-select-sm" data-maint-page-limit>` +
-      `${pageSizes}` +
-      `</select></label>` +
       `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
       `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
       `</div>` +
@@ -818,16 +934,17 @@
         setMessage(data.error || 'Duplicate groups unavailable', '');
         return;
       }
-      groupState.clear();
-      groupSummaries.clear();
       currentGroupsPage = data;
       groupPageOffset = Number(data.offset || 0);
       groupPageLimit = Number(data.limit || groupPageLimit);
       (data.groups || []).forEach(group => {
         const existing = groupSummaries.get(group.id) || {};
         groupSummaries.set(group.id, {...existing, ...group});
+        duplicateSelection.reclaimableById.set(group.id, Number(group.reclaimable_bytes || 0));
       });
+      saveDuplicateSelection();
       renderGroups();
+      updateDuplicateControls();
       updateSelectedSize();
       if (data.large_result) {
         setMessage(
@@ -1121,11 +1238,11 @@
 
   function handleScan(scan) {
     currentScan = scan;
+    if (scan?.id) ensureDuplicateSelection(scan.id, scan.duplicate_group_count || 0);
     setProgress(scan);
     renderGroups();
-    const planButton = byId('maintenancePlanButton');
     const stale = scan?.freshness?.status === 'changed';
-    if (planButton) planButton.disabled = !scan || scan.status !== 'success' || !(scan.duplicate_group_count || 0) || stale;
+    updateDuplicateControls();
     if (!scan) {
       setMessage('No scan results yet.', '');
     } else if (scan.status === 'success') {
@@ -1135,8 +1252,8 @@
           ? withEmbyCoverage(`Large result set. Loading ${groupPageLimit} groups at a time.`, scan)
           : withEmbyCoverage(scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '', scan)
       );
-      appendEmbySyncNotice('maintenanceMessageDetail', embySyncFrom(apply));
-      appendEmbyNotificationNotice('maintenanceMessageDetail', notificationFrom(apply));
+      appendEmbySyncNotice('maintenanceMessageDetail', embySyncFrom(currentApply));
+      appendEmbyNotificationNotice('maintenanceMessageDetail', notificationFrom(currentApply));
       if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
         loadGroupsPage(0);
       }
@@ -1146,7 +1263,10 @@
     } else if (scan.status === 'cancelled') {
       setMessage('Scan cancelled', '');
     } else {
-      setMessage(scan.progress_label || 'Scanning', '');
+      setMessage(
+        scan.progress_label || 'Scanning',
+        scan.progress_detail || (scan.scanned_video_count ? `${scan.scanned_video_count} videos checked` : 'Starting scan')
+      );
     }
     if (scan && ['success', 'failed', 'cancelled'].includes(scan.status)) {
       stopPolling();
@@ -1214,7 +1334,7 @@
         return;
       }
       handleScan(data.scan);
-      pollTimer = setInterval(() => pollScan(data.scan.id), 1000);
+      if (data.scan?.active) pollTimer = setInterval(() => pollScan(data.scan.id), 1000);
     } catch (e) {
       setMessage('Scan could not start', e.message || '');
     } finally {
@@ -1246,9 +1366,8 @@
 
   function collectOverrides() {
     const overrides = [];
-    currentPageGroups().forEach(pageGroup => {
-      const groupId = pageGroup.id;
-      const state = ensureGroupState(pageGroup);
+    groupState.forEach((state, groupId) => {
+      if (!state.dirty) return;
       const group = groupSummaries.get(groupId) || {id: groupId, videos: [], recommended_keep_id: state.keepId};
       const keepId = state.keepId || group.recommended_keep_id;
       const candidates = groupCandidateFiles(group, state);
@@ -1282,6 +1401,7 @@
       title: 'Cleanup Plan',
       files: plan.files || [],
       metrics: [
+        {label: 'Selection', value: plan.selection_mode === 'all_eligible' ? 'Across all pages' : 'Individual groups', detail: `${plan.selected_group_count || 0} of ${plan.total_group_count || 0} groups`},
         {label: 'Files affected', value: plan.file_count || 0},
         {label: 'Disk data', value: plan.total_size_label || '0 B'},
         {label: 'Operations', value: operationSummary(plan.files)},
@@ -1318,7 +1438,7 @@
           scan_id: currentScan.id,
           action,
           groups: collectOverrides(),
-          visible_group_ids: currentPageGroups().map(group => group.id)
+          selection: duplicateSelectionPayload()
         })
       });
       const data = await readJsonResponse(res);
@@ -1331,7 +1451,7 @@
       byId('maintenanceApplyButton').disabled = !currentPlan.file_count;
       setMessage(
         'Review the cleanup plan before applying',
-        `${pageRangeText(currentGroupsPage)}; ${currentPlan.visible_group_count || 0} visible groups. ` + (Number(currentPlan.file_count || 0) >= 100
+        `${currentPlan.selected_group_count || 0} groups selected across the scan results. ` + (Number(currentPlan.file_count || 0) >= 100
           ? `${currentPlan.file_count} files selected. This can take a while and will continue in the background.`
           : (currentPlan.total_size_label || ''))
       );
@@ -1340,11 +1460,54 @@
     }
   }
 
+  function duplicateApplyBadgeClass(status) {
+    if (status === 'success') return 'text-bg-success';
+    if (status === 'failed') return 'text-bg-danger';
+    if (['queued', 'running'].includes(status || '')) return 'text-bg-primary';
+    return 'text-bg-secondary';
+  }
+
+  function renderDuplicateApplyStatus(apply) {
+    const panel = byId('maintenanceApplyStatus');
+    if (!panel) return;
+    if (!apply) {
+      panel.classList.add('d-none');
+      return;
+    }
+    panel.classList.remove('d-none');
+    const title = byId('maintenanceApplyTitle');
+    const label = byId('maintenanceApplyProgressLabel');
+    const badge = byId('maintenanceApplyBadge');
+    const bar = byId('maintenanceApplyProgressBar');
+    const counts = byId('maintenanceApplyCounts');
+    const percent = byId('maintenanceApplyProgressPercent');
+    const current = byId('maintenanceApplyCurrent');
+    const results = byId('maintenanceApplyResults');
+    if (title) title.textContent = apply.action === 'delete' ? 'Duplicate deletion' : 'Duplicate quarantine';
+    if (label) label.textContent = apply.progress_label || apply.status || 'Waiting to start';
+    if (badge) {
+      badge.className = `badge ${duplicateApplyBadgeClass(apply.status)}`;
+      badge.textContent = apply.status || 'Idle';
+    }
+    window.vid2gifProgress.apply(bar, apply);
+    if (counts) counts.textContent = `${apply.processed_count || 0} of ${apply.file_count || 0} processed`;
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(apply);
+    if (current) current.textContent = apply.current_path || apply.current_name || 'Nothing is running.';
+    if (results) {
+      const result = apply.result || {};
+      results.textContent = apply.status === 'success'
+        ? `${result.applied_count || apply.applied_count || 0} applied, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
+        : (apply.status === 'failed' ? (apply.error || 'Cleanup failed') : 'Progress updates automatically while cleanup runs.');
+    }
+  }
+
   function handleApply(apply) {
     currentApply = apply;
+    renderDuplicateApplyStatus(apply);
     const button = byId('maintenanceApplyButton');
     const running = apply && ['queued', 'running'].includes(apply.status || '');
     if (button) button.disabled = running || !currentPlan;
+    updateDuplicateControls();
     if (!apply) return;
     if (running) {
       const counts = `${apply.processed_count || 0} of ${apply.file_count || 0} files`;
@@ -1361,7 +1524,12 @@
       );
       refreshMaintenanceLogs();
       currentPlan = null;
+      if (currentScan?.id && currentScan.id === apply.scan_id && Number(result.applied_count || apply.applied_count || 0) > 0) {
+        currentScan.freshness = {status: 'changed'};
+      }
+      updateDuplicateControls();
       if (button) button.disabled = true;
+      checkMaintenanceFreshness();
       return;
     }
     if (apply.status === 'failed') {
@@ -1384,6 +1552,23 @@
     } catch (e) {
       setMessage('Cleanup status unavailable', e.message || '');
       stopApplyPolling();
+    }
+  }
+
+  async function refreshDuplicateApplyStatus() {
+    try {
+      const res = await fetch('/api/maintenance/duplicates/apply/status');
+      const data = await readJsonResponse(res);
+      if (!res.ok || !data.apply) return;
+      currentApply = data.apply;
+      renderDuplicateApplyStatus(data.apply);
+      if (['queued', 'running'].includes(data.apply.status || '')) {
+        handleApply(data.apply);
+        stopApplyPolling();
+        applyPollTimer = setInterval(() => pollApply(data.apply.id), 1000);
+      }
+    } catch (_e) {
+      // Latest cleanup hydration is best effort.
     }
   }
 
@@ -3945,6 +4130,28 @@
     byId('maintenanceCancelScanButton')?.addEventListener('click', cancelScan);
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
+    byId('duplicateSelectAllButton')?.addEventListener('click', () => {
+      duplicateSelection.mode = 'all_eligible';
+      duplicateSelection.excluded.clear();
+      duplicateSelection.selected.clear();
+      groupState.forEach(state => { state.enabled = true; });
+      duplicateSelectionChanged();
+      renderGroups();
+    });
+    byId('duplicateClearSelectionButton')?.addEventListener('click', () => {
+      duplicateSelection.mode = 'explicit';
+      duplicateSelection.excluded.clear();
+      duplicateSelection.selected.clear();
+      groupState.forEach(state => { state.enabled = false; });
+      duplicateSelectionChanged();
+      renderGroups();
+    });
+    byId('duplicatePageLimit')?.addEventListener('change', event => {
+      groupPageLimit = [25, 50, 100].includes(Number(event.target.value)) ? Number(event.target.value) : 25;
+      try { localStorage.setItem(DUPLICATE_PAGE_SIZE_STORAGE_KEY, String(groupPageLimit)); } catch (_e) {}
+      groupPageOffset = 0;
+      loadGroupsPage(0);
+    });
     byId('previewBrowseButton')?.addEventListener('click', () => {
       if (previewBrowserIsOpen()) {
         setPreviewBrowserOpen(false);
@@ -4139,17 +4346,16 @@
         }
         currentPageGroups().forEach(group => {
           const state = ensureGroupState(group);
-          state.enabled = action === 'select';
+          setDuplicateGroupSelected(group.id, action === 'select');
           if ((group.videos || []).length) {
             state.includedFileIds = action === 'select'
               ? new Set(groupCandidateFiles(group, state).map(file => file.id))
               : new Set();
+            state.dirty = true;
           }
-          state.dirty = true;
         });
-        invalidatePlan();
+        duplicateSelectionChanged();
         renderGroups();
-        updateSelectedSize();
         return;
       }
       if (page) {
@@ -4345,19 +4551,13 @@
       const keep = event.target.closest('[data-maint-keep]');
       const file = event.target.closest('[data-maint-file]');
       const operation = event.target.closest('[data-maint-operation]');
-      const pageLimit = event.target.closest('[data-maint-page-limit]');
-      if (pageLimit) {
-        groupPageLimit = Number(pageLimit.value || 10);
-        groupPageOffset = 0;
-        loadGroupsPage(0);
-        return;
-      }
       if (enabled) {
         const groupId = enabled.getAttribute('data-maint-group-enabled');
         const state = ensureGroupState(groupSummaries.get(groupId) || {id: groupId});
+        setDuplicateGroupSelected(groupId, enabled.checked);
         if (state) state.enabled = enabled.checked;
-        markGroupDirty(groupId);
-        renderGroups(currentScan);
+        duplicateSelectionChanged();
+        renderGroups();
         return;
       }
       if (keep) {
@@ -4418,6 +4618,13 @@
     initMaintenanceTabs();
     initEvents();
     try {
+      const savedDuplicatePageLimit = Number(localStorage.getItem(DUPLICATE_PAGE_SIZE_STORAGE_KEY) || 25);
+      groupPageLimit = [25, 50, 100].includes(savedDuplicatePageLimit) ? savedDuplicatePageLimit : 25;
+      if (byId('duplicatePageLimit')) byId('duplicatePageLimit').value = String(groupPageLimit);
+    } catch (_e) {
+      groupPageLimit = 25;
+    }
+    try {
       const savedPreviewPageLimit = Number(localStorage.getItem(PREVIEW_PAGE_SIZE_STORAGE_KEY) || 25);
       previewPageLimit = [25, 50, 100].includes(savedPreviewPageLimit) ? savedPreviewPageLimit : 25;
       if (byId('previewPageLimit')) byId('previewPageLimit').value = String(previewPageLimit);
@@ -4465,6 +4672,7 @@
     refreshMaintenanceLogs();
     refreshOverviewStatus();
     refreshDuplicateStatus();
+    refreshDuplicateApplyStatus();
     refreshPreviewStatus();
     refreshGenerationStatus();
     refreshQualityStatus();

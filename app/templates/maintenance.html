@@ -964,6 +964,27 @@
           </div>
         </div>
 
+        <div class="settings-panel">
+          <div class="panel-subheading">
+            <i class="bi bi-check2-square" aria-hidden="true"></i>
+            <span>Choose duplicate groups</span>
+          </div>
+          <p class="small text-muted mb-2">New scan results select every duplicate group across all result pages. Expand a group to review its keeper and file-level actions before quarantine.</p>
+          <div id="duplicateSelectionSummary" class="scan-estimate-detail">Run a scan to choose duplicate groups.</div>
+          <div class="toolbar-row mt-3">
+            <button id="duplicateSelectAllButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select groups across all pages</button>
+            <button id="duplicateClearSelectionButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Clear selection</button>
+            <label class="form-label mb-0 compact-control" for="duplicatePageLimit">
+              Per page
+              <select id="duplicatePageLimit" class="form-select form-select-sm">
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
         <div id="maintenanceMessage" class="scan-estimate" aria-live="polite">
           <i class="bi bi-info-circle" aria-hidden="true"></i>
           <div>
@@ -977,6 +998,28 @@
         </div>
 
         <div id="maintenancePlanSummary" class="maintenance-plan-summary mt-3"></div>
+
+        <div id="maintenanceApplyStatus" class="generation-status mt-3 d-none" aria-live="polite">
+          <div class="generation-status-heading">
+            <div>
+              <div id="maintenanceApplyTitle" class="fw-semibold">Duplicate quarantine</div>
+              <div id="maintenanceApplyProgressLabel" class="small text-muted">Waiting to start</div>
+            </div>
+            <span id="maintenanceApplyBadge" class="badge text-bg-secondary">Idle</span>
+          </div>
+          <div class="progress mt-3" role="progressbar" aria-label="Duplicate cleanup progress" aria-valuemin="0" aria-valuemax="100">
+            <div id="maintenanceApplyProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+          <div class="generation-status-meta mt-2">
+            <span id="maintenanceApplyCounts">0 of 0 processed</span>
+            <span id="maintenanceApplyProgressPercent">0%</span>
+          </div>
+          <div class="generation-current mt-3">
+            <div class="metric-label">Current file</div>
+            <code id="maintenanceApplyCurrent">Nothing is running.</code>
+          </div>
+          <div id="maintenanceApplyResults" class="generation-results mt-3"></div>
+        </div>
       </section>
 
       <section class="workspace-panel maintenance-panel mt-3">
