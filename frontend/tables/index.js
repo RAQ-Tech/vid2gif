@@ -67,7 +67,14 @@ function applyWidths(table) {
   const cols = Array.from(ensureColgroup(table).children);
   headers(table).forEach((header, index) => {
     const width = pref.widths[header.dataset.columnId];
-    if (width) cols[index].style.width = `${width}px`;
+    if (width) {
+      cols[index].style.width = `${width}px`;
+      const handle = header.querySelector('.table-resize-handle');
+      if (handle) {
+        handle.setAttribute('aria-valuenow', String(Math.round(width)));
+        handle.setAttribute('aria-valuetext', `${Math.round(width)} pixels`);
+      }
+    }
   });
   table.classList.add('workspace-table-sized');
   table.style.width = `${headers(table).reduce((sum, header) => sum + Number(pref.widths[header.dataset.columnId] || header.getBoundingClientRect().width || 80), 0)}px`;
@@ -76,7 +83,13 @@ function applyWidths(table) {
 function setWidth(table, header, width, save = true) {
   establishWidths(table);
   const pref = preferenceFor(table);
-  pref.widths[header.dataset.columnId] = Math.max(48, Math.min(4096, Math.round(width)));
+  const appliedWidth = Math.max(48, Math.min(4096, Math.round(width)));
+  pref.widths[header.dataset.columnId] = appliedWidth;
+  const handle = header.querySelector('.table-resize-handle');
+  if (handle) {
+    handle.setAttribute('aria-valuenow', String(appliedWidth));
+    handle.setAttribute('aria-valuetext', `${appliedWidth} pixels`);
+  }
   applyWidths(table);
   if (save) persist(table);
 }
@@ -167,6 +180,11 @@ function decorateHeader(table, header) {
   handle.setAttribute('role', 'separator');
   handle.setAttribute('aria-orientation', 'vertical');
   handle.setAttribute('aria-label', `Resize ${header.textContent.trim()} column`);
+  handle.setAttribute('aria-valuemin', '48');
+  handle.setAttribute('aria-valuemax', '4096');
+  const currentWidth = Math.max(48, Math.round(header.getBoundingClientRect().width));
+  handle.setAttribute('aria-valuenow', String(currentWidth));
+  handle.setAttribute('aria-valuetext', `${currentWidth} pixels`);
   handle.tabIndex = 0;
   let startX = 0;
   let startWidth = 0;

@@ -218,6 +218,33 @@
     </section>
 
     <section class="tab-pane fade" id="pane-posters" role="tabpanel" aria-labelledby="tab-posters" tabindex="0">
+      <section class="status-strip maintenance-status-strip" aria-label="Landscape poster scan status">
+        <div class="status-tile">
+          <div class="metric-label">Scan</div>
+          <div id="posterScanState" class="metric-value">Idle</div>
+        </div>
+        <div class="status-tile status-tile-wide">
+          <div class="d-flex justify-content-between gap-3">
+            <div>
+              <div class="metric-label">Progress</div>
+              <div id="posterProgressLabel" class="metric-value">Choose a folder</div>
+            </div>
+            <span id="posterProgressPercent" class="small text-muted">0%</span>
+          </div>
+          <div class="progress progress-thin mt-2" role="progressbar" aria-label="Landscape poster scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="posterProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Ready</div>
+          <div id="posterReadyCount" class="metric-value">0</div>
+        </div>
+        <div class="status-tile">
+          <div class="metric-label">Needs Review</div>
+          <div id="posterIssueCount" class="metric-value">0</div>
+        </div>
+      </section>
+
       <div class="workspace-panel maintenance-panel">
         <div class="panel-heading">
           <div>
@@ -225,16 +252,6 @@
             <div class="text-muted small">Artwork is matched per video stem, including folders with multiple distinct releases. Analyze first, then review and apply selected safe updates.</div>
           </div>
           <div class="toolbar-row mb-0">
-            <button id="posterRunButton" class="btn btn-primary btn-sm" type="button">
-              <i class="bi bi-search" aria-hidden="true"></i>
-              <span>Scan Posters</span>
-            </button>
-            <button id="posterPlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
-              <i class="bi bi-clipboard-check" aria-hidden="true"></i><span>Review Selected</span>
-            </button>
-            <button id="posterApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
-              <i class="bi bi-check2" aria-hidden="true"></i><span>Apply Updates</span>
-            </button>
             <button id="posterRefreshButton" class="btn btn-outline-secondary btn-sm" type="button">
               <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
               <span>Refresh</span>
@@ -242,6 +259,40 @@
           </div>
         </div>
 
+        <div class="settings-panel">
+          <div class="panel-subheading">
+            <i class="bi bi-folder2-open" aria-hidden="true"></i>
+            <span>Scan Source</span>
+          </div>
+          <label class="form-label" for="posterPath">Library path</label>
+          <div class="input-group">
+            <input id="posterPath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
+            <button id="posterBrowseButton" class="btn btn-outline-secondary" type="button" aria-expanded="false" aria-controls="posterBrowserCollapse">
+              <i class="bi bi-folder2-open" aria-hidden="true"></i>
+              <span>Choose folder</span>
+            </button>
+            <button id="posterRunButton" class="btn btn-primary" type="button">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <span>Scan</span>
+            </button>
+            <button id="posterCancelScanButton" class="btn btn-outline-danger" type="button" disabled>
+              <i class="bi bi-x-circle" aria-hidden="true"></i>
+              <span>Cancel</span>
+            </button>
+          </div>
+          <div id="posterBrowserCollapse" class="collapse">
+            <div id="posterBrowser" class="media-browser compact-folder-picker mt-3"></div>
+          </div>
+        </div>
+
+        <div class="toolbar-row mt-3">
+          <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#posterAutomationCollapse" aria-expanded="false" aria-controls="posterAutomationCollapse">
+            <i class="bi bi-sliders" aria-hidden="true"></i>
+            <span>Optional automation settings</span>
+          </button>
+        </div>
+
+        <div id="posterAutomationCollapse" class="collapse">
         <div class="metric-band">
           <div>
             <div class="metric-label">Automation</div>
@@ -260,7 +311,7 @@
           <div class="settings-panel">
             <div class="panel-subheading">
               <i class="bi bi-sliders" aria-hidden="true"></i>
-              <span>Automation Settings</span>
+              <span>Optional Automation</span>
             </div>
             <div class="toolbar-row">
               <div class="form-check form-switch">
@@ -302,6 +353,7 @@
             <span>All changes saved</span>
           </div>
         </div>
+        </div>
 
         <div class="scan-estimate mt-3" aria-live="polite">
           <i class="bi bi-info-circle" aria-hidden="true"></i>
@@ -311,24 +363,54 @@
           </div>
         </div>
 
-        <div id="posterPlanSummary" class="mt-3"></div>
-
-        <div class="toolbar-row mt-3">
-          <label class="form-label mb-0 compact-control" for="posterPageLimit">
-            Per page
-            <select id="posterPageLimit" class="form-select form-select-sm">
-              <option value="5">5</option>
-              <option value="10" selected>10</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-            </select>
-          </label>
-          <label class="form-check mb-0" for="posterSelectAllCheckbox">
-            <input id="posterSelectAllCheckbox" class="form-check-input" type="checkbox" disabled>
-            <span class="form-check-label">Select all safe updates</span>
-          </label>
-          <span id="posterSelectionSummary" class="small text-muted">0 safe updates selected</span>
+        <div class="settings-panel mt-3">
+          <div class="panel-subheading">
+            <i class="bi bi-list-check" aria-hidden="true"></i>
+            <span>Review and Apply</span>
+          </div>
+          <p id="posterBackupNote" class="small text-muted mb-3">Ready updates rename each portrait poster to its matching <code>-poster-backup</code> filename, then install the landscape background as the poster. They are not quarantined or deleted.</p>
+          <div class="toolbar-row">
+            <label class="form-label mb-0 compact-control" for="posterItemStatus">
+              Show
+              <select id="posterItemStatus" class="form-select form-select-sm">
+                <option value="all" selected>All results</option>
+                <option value="eligible">Ready</option>
+                <option value="unreadable">Unreadable</option>
+                <option value="missing">Missing poster</option>
+                <option value="ambiguous">Ambiguous</option>
+                <option value="unsafe">Unsafe</option>
+                <option value="already_landscape">Already landscape</option>
+              </select>
+            </label>
+            <label class="form-label mb-0 compact-control" for="posterSearch">
+              Search
+              <input id="posterSearch" class="form-control form-control-sm" type="search" placeholder="Artwork path or detail">
+            </label>
+            <label class="form-label mb-0 compact-control" for="posterPageLimit">
+              Per page
+              <select id="posterPageLimit" class="form-select form-select-sm">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <label class="form-check mb-0" for="posterSelectAllCheckbox">
+              <input id="posterSelectAllCheckbox" class="form-check-input" type="checkbox" disabled>
+              <span class="form-check-label">Select all ready</span>
+            </label>
+            <span id="posterSelectionSummary" class="small text-muted">0 ready updates selected</span>
+          </div>
+          <div class="toolbar-row mt-3">
+            <button id="posterPlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
+              <i class="bi bi-clipboard-check" aria-hidden="true"></i><span>Preview Selected Changes</span>
+            </button>
+            <button id="posterApplyButton" class="btn btn-outline-danger btn-sm" type="button" disabled>
+              <i class="bi bi-check2" aria-hidden="true"></i><span>Apply Selected Changes</span>
+            </button>
+          </div>
+          <div id="posterPlanSummary" class="mt-3"></div>
         </div>
 
         <div id="posterRecentItems" class="table-responsive workspace-table-wrap mt-3">

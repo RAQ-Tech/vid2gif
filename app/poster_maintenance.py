@@ -22,7 +22,12 @@ from .config import (
     LIB_ROOT,
     VIDEO_EXTS,
 )
-from .file_safety import atomic_install_file, regular_file_identity, target_state
+from .file_safety import (
+    atomic_install_file,
+    atomic_move_file_no_overwrite,
+    regular_file_identity,
+    target_state,
+)
 from .operation_gate import coordinated_library_operation
 from .progress import format_duration, utc_iso
 from .table_sort import sort_records
@@ -572,48 +577,71 @@ def _process_candidate(candidate, root):
             return "error", "Existing backup is unreadable"
         if backup_dimensions["landscape"]:
             return "error", "Existing backup is landscape; poster was not changed"
+        if not _same_file_bytes(poster, backup):
+            return "skipped", "Existing poster backup differs; current portrait was left unchanged"
         backup_identity = _file_identity(backup)
     else:
         backup_identity = None
     if _file_identity(background) != background_identity or _file_identity(poster) != poster_identity:
         return "error", "Artwork changed during preflight"
+    backup_created = False
     try:
         if not backup_exists:
-            _copy_file_atomic(
+            atomic_move_file_no_overwrite(
                 poster,
                 backup,
                 root=root,
-                expected_target={"exists": False, "identity": None},
+                expected_source=poster_identity,
             )
             backup_created = True
-            if _file_identity(backup).get("size") != poster_identity.get("size") or not _probe_image_dimensions(backup):
+            installed_backup = _file_identity(backup)
+            if (
+                not installed_backup
+                or installed_backup.get("size") != poster_identity.get("size")
+                or not _probe_image_dimensions(backup)
+            ):
                 raise RuntimeError("Backup verification failed")
         else:
-            backup_created = False
             if _file_identity(backup) != backup_identity:
                 raise RuntimeError("Backup changed during preflight")
-        if _file_identity(background) != background_identity or _file_identity(poster) != poster_identity:
+        expected_poster = None if backup_created else poster_identity
+        if (
+            _file_identity(background) != background_identity
+            or _file_identity(poster) != expected_poster
+        ):
             raise RuntimeError("Artwork changed before replacement")
         _copy_file_atomic(
             background,
             poster,
             root=root,
-            expected_target=target_state(poster, root=root),
+            expected_target=(
+                {"exists": False, "identity": None}
+                if backup_created
+                else target_state(poster, root=root)
+            ),
         )
         installed = _probe_image_dimensions(poster)
         if not installed or not installed["landscape"] or installed["width"] != background_dimensions["width"] or installed["height"] != background_dimensions["height"]:
-            _copy_file_atomic(
-                backup,
-                poster,
-                root=root,
-                expected_target=target_state(poster, root=root),
-            )
             raise RuntimeError("Poster verification failed; original was restored")
     except Exception as exc:
+        if backup_created and os.path.isfile(backup):
+            try:
+                _copy_file_atomic(
+                    backup,
+                    poster,
+                    root=root,
+                    expected_target=target_state(poster, root=root),
+                )
+            except Exception as restore_exc:
+                return "error", f"{exc}; original restore failed: {restore_exc}"
         return "error", str(exc)
     return (
         "updated",
-        "Poster replaced; backup created" if backup_created else "Poster replaced",
+        (
+            f"Portrait renamed to {os.path.basename(backup)}; landscape poster installed"
+            if backup_created
+            else f"Landscape poster installed; existing {os.path.basename(backup)} retained"
+        ),
     )
 
 
@@ -750,7 +778,12 @@ def _analyze_candidate(candidate, root):
             return "unreadable", "Existing backup is unreadable"
         if backup_dimensions["landscape"]:
             return "unsafe", "Existing backup is landscape"
-    return "eligible", "Portrait poster can be replaced safely"
+        if not _same_file_bytes(poster, backup):
+            return "unsafe", "Existing poster backup differs; current portrait will not be overwritten"
+    return (
+        "eligible",
+        f"Ready: rename portrait to {os.path.basename(backup)}, then install the landscape background",
+    )
 
 
 def _poster_counts(items):
@@ -997,7 +1030,15 @@ def poster_scan_status(scan_id=None):
     return {"scan": public_poster_scan(scan)}, None
 
 
-def poster_items_payload(scan_id, offset=0, limit=10, status="all", sort="background", direction="asc"):
+def poster_items_payload(
+    scan_id,
+    offset=0,
+    limit=10,
+    status="all",
+    search="",
+    sort="background",
+    direction="asc",
+):
     _ensure_poster_cache_loaded()
     try:
         offset = max(0, int(offset or 0)); limit = max(1, min(100, int(limit or 10)))
@@ -1012,6 +1053,17 @@ def poster_items_payload(scan_id, offset=0, limit=10, status="all", sort="backgr
         items = list(scan.get("items") or [])
     if status != "all":
         items = [item for item in items if item.get("status") == status]
+    search = str(search or "").strip().casefold()
+    if search:
+        items = [
+            item
+            for item in items
+            if search
+            in " ".join(
+                str(item.get(key) or "")
+                for key in ("source", "poster", "backup", "message")
+            ).casefold()
+        ]
     items, sort, direction = sort_records(
         items, sort, direction,
         {

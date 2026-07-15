@@ -133,14 +133,16 @@ slow startup on large mounted media libraries.
 GIF optimization is lossless and keeps the original ffmpeg output if Gifsicle is
 missing, fails, times out, or produces a larger file.
 
-Landscape poster automation is disabled by default. When enabled from the
-Library Maintenance page or environment variables, it uses FFprobe to require a
-valid landscape `*-background.*` image and skips posters that are already
-landscape. Eligible portrait posters are backed up once as
-`*-poster-backup.*`, verified, and replaced atomically. Ambiguous, unreadable,
-or mismatched artwork is left unchanged. It stores run state under `/state` and
-does not use `.posters_done` marker files. Optional Emby refresh settings can be
-tested from the same page before automatic refresh is enabled.
+Landscape poster automation is disabled by default. The Library Maintenance
+page provides a review-first manual workflow with a shared scan-source picker,
+cancelable progress, category/search filters, scan-wide selection, plan preview,
+and explicit apply. It uses FFprobe to require a valid landscape
+`*-background.*` image and skips posters that are already landscape. An eligible
+portrait poster is renamed without overwrite to `*-poster-backup.*`, verified,
+and then replaced atomically. If an existing backup differs from the current
+portrait, the item is marked unsafe and left unchanged. Ambiguous, unreadable,
+or mismatched artwork is also left unchanged. Optional automatic runs store
+state under `/state` and do not use `.posters_done` marker files.
 
 Duplicate cleanup settings live on the Settings page. Duplicate move
 destinations default to `/library/.vid2gif-duplicates`, can be changed to another

@@ -7,6 +7,7 @@
   let previewFolderPicker = null;
   let subtitleFolderPicker = null;
   let actorFolderPicker = null;
+  let posterFolderPicker = null;
   const overviewExpandedFolders = new Set();
   let overviewFolderPage = null;
   let overviewPageOffset = 0;
@@ -111,7 +112,9 @@
   const posterSettingInputTimers = new Map();
   let posterScan = null;
   let posterItemsPage = null;
+  let posterPageOffset = 0;
   let posterPageLimit = PAGE_SIZE_DEFAULT;
+  let posterSearchTimer = null;
   let posterSort = {column: 'background', direction: 'asc'};
   let posterPlan = null;
   let posterApply = null;
@@ -1464,6 +1467,12 @@
       inputId: 'actorPath', buttonId: 'actorBrowseButton',
       panelId: 'actorBrowserCollapse', containerId: 'actorBrowser',
       defaultPath: config.libRoot || '/library', storageKey: 'vid2gif_actor_scan_source',
+      bindButton: false,
+    });
+    posterFolderPicker = create({
+      inputId: 'posterPath', buttonId: 'posterBrowseButton',
+      panelId: 'posterBrowserCollapse', containerId: 'posterBrowser',
+      defaultPath: config.libRoot || '/library', storageKey: 'vid2gif_poster_scan_source',
       bindButton: false,
     });
   }
@@ -4296,7 +4305,7 @@
     if (status === 'eligible') return '<span class="badge text-bg-primary">Ready</span>';
     if (status === 'already_landscape') return '<span class="badge text-bg-success">Already landscape</span>';
     if (status === 'missing') return '<span class="badge text-bg-warning">Missing poster</span>';
-    if (status === 'ambiguous' || status === 'unreadable' || status === 'unsafe') return `<span class="badge text-bg-warning">${escapeHtml(status)}</span>`;
+    if (status === 'ambiguous' || status === 'unreadable' || status === 'unsafe') return `<span class="badge text-bg-warning">${escapeHtml(status.charAt(0).toUpperCase() + status.slice(1))}</span>`;
     if (status === 'updated') return '<span class="badge text-bg-success">Updated</span>';
     if (status === 'already_matching') return '<span class="badge text-bg-secondary">Matched</span>';
     if (status === 'missing_poster') return '<span class="badge text-bg-warning">Missing poster</span>';
@@ -4365,6 +4374,37 @@
     updatePosterSelectionControls();
   }
 
+  function setPosterProgress(scan) {
+    const state = byId('posterScanState');
+    const label = byId('posterProgressLabel');
+    const percent = byId('posterProgressPercent');
+    const bar = byId('posterProgressBar');
+    const ready = byId('posterReadyCount');
+    const issues = byId('posterIssueCount');
+    const pct = Math.max(0, Math.min(100, Math.round(Number(scan?.progress_percent || 0))));
+    if (state) state.textContent = scan?.status || 'Idle';
+    if (label) label.textContent = scan?.progress_label || 'Choose a folder';
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(scan);
+    window.vid2gifProgress.apply(bar, scan || {progress_percent: pct});
+    if (ready) ready.textContent = String(scan?.eligible_count || 0);
+    if (issues) {
+      issues.textContent = String(
+        Number(scan?.missing_count || 0)
+        + Number(scan?.ambiguous_count || 0)
+        + Number(scan?.unreadable_count || 0)
+        + Number(scan?.unsafe_count || 0)
+      );
+    }
+    const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
+    if (byId('posterRunButton')) byId('posterRunButton').disabled = active;
+    if (byId('posterCancelScanButton')) {
+      byId('posterCancelScanButton').disabled = !active || scan?.status === 'cancelling';
+    }
+    if (byId('posterPlanButton') && scan?.freshness?.status === 'changed') {
+      byId('posterPlanButton').disabled = true;
+    }
+  }
+
   function renderPosterItems(page) {
     const wrap = byId('posterRecentItems');
     if (!wrap) return;
@@ -4391,9 +4431,13 @@
   async function loadPosterItems(offset = 0) {
     if (!posterScan?.id || posterScan.status !== 'success') return;
     try {
-      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(posterPageLimit)}&sort=${encodeURIComponent(posterSort.column)}&direction=${encodeURIComponent(posterSort.direction)}`);
+      const status = byId('posterItemStatus')?.value || 'all';
+      const search = byId('posterSearch')?.value.trim() || '';
+      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(posterPageLimit)}&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}&sort=${encodeURIComponent(posterSort.column)}&direction=${encodeURIComponent(posterSort.direction)}`);
       const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Poster results unavailable');
       posterItemsPage = data;
+      posterPageOffset = Number(data.offset || 0);
       posterSort = {column: data.sort || posterSort.column, direction: data.direction || posterSort.direction};
       posterPlan = null;
       if (byId('posterApplyButton')) byId('posterApplyButton').disabled = true;
@@ -4411,6 +4455,7 @@
     const counters = last?.counters || {};
     const analysis = data?.analysis_scan || null;
     posterScan = analysis;
+    setPosterProgress(analysis);
     const automation = byId('posterAutomationState');
     const lastRun = byId('posterLastRun');
     const nextRun = byId('posterNextRun');
@@ -4437,6 +4482,10 @@
       const stale = analysis.freshness?.status === 'changed';
       setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, stale ? 'Library artwork changed after this scan. Rescan before applying updates.' : withEmbyCoverage(`${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous`, analysis));
       if (posterItemsPage?.scan?.id !== analysis.id) loadPosterItems(0);
+    } else if (analysis?.status === 'cancelled') {
+      setPosterMessage('Landscape poster scan cancelled', analysis.path || '');
+    } else if (analysis?.status === 'failed') {
+      setPosterMessage('Landscape poster scan failed', analysis.error || '');
     } else if (!current && settings.enabled) {
       setPosterMessage('Landscape poster automation is enabled', `Incremental interval: ${settings.scan_interval_label || ''}`);
     } else if (current) {
@@ -4445,7 +4494,7 @@
       const emby = last.emby_refresh || {};
       setPosterMessage(last.progress_label || 'Latest landscape poster run complete', emby.message || '');
     } else {
-      setPosterMessage('Landscape poster automation is disabled', 'Run manually or enable automatic scans.');
+      setPosterMessage('No landscape poster scan yet', 'Choose a scan source, then run a manual scan.');
     }
     renderEmbyStatus(data?.emby_status);
     appendEmbySyncNotice('posterMessageDetail', last?.emby_sync || null);
@@ -4528,13 +4577,23 @@
 
   async function runLandscapePosters() {
     const button = byId('posterRunButton');
+    const path = (byId('posterPath')?.value || '').trim();
+    if (!path) {
+      setPosterMessage('Choose a folder under the library', '');
+      return;
+    }
+    rememberScanSource(path, 'vid2gif_poster_scan_source');
     if (button) button.disabled = true;
-    setPosterMessage('Starting poster analysis', '');
+    posterItemsPage = null;
+    posterPageOffset = 0;
+    posterPlan = null;
+    setPosterMessage('Starting poster analysis', path);
+    setPosterProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued', active: true});
     try {
       const res = await fetch('/api/maintenance/landscape-posters/scan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path: config.libRoot || '/library'})
+        body: JSON.stringify({path})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -4542,13 +4601,37 @@
         return;
       }
       posterScan = data.scan;
+      if (byId('posterPath') && data.scan?.path) byId('posterPath').value = data.scan.path;
+      setPosterProgress(data.scan);
       setPosterMessage(data.scan?.progress_label || 'Poster analysis queued', data.scan?.path || '');
       clearTimeout(posterPollTimer);
       posterPollTimer = setTimeout(refreshPosterStatus, 500);
     } catch (e) {
       setPosterMessage('Poster analysis could not start', e.message || '');
     } finally {
-      if (button) button.disabled = false;
+      if (button && !posterScan?.active) button.disabled = false;
+    }
+  }
+
+  async function cancelLandscapePosterScan() {
+    if (!posterScan?.id || !posterScan?.active) return;
+    if (byId('posterCancelScanButton')) byId('posterCancelScanButton').disabled = true;
+    setPosterMessage('Cancelling poster analysis', posterScan.path || '');
+    try {
+      const res = await fetch('/api/maintenance/landscape-posters/scan/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: posterScan.id})
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Poster scan could not be cancelled');
+      posterScan = data.scan;
+      setPosterProgress(posterScan);
+      clearTimeout(posterPollTimer);
+      posterPollTimer = setTimeout(refreshPosterStatus, 250);
+    } catch (e) {
+      setPosterMessage('Poster scan could not be cancelled', e.message || '');
+      setPosterProgress(posterScan);
     }
   }
 
@@ -4562,7 +4645,7 @@
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || 'Poster update plan could not be built');
       posterPlan = data.plan;
-      byId('posterPlanSummary').innerHTML = `<div class="scan-estimate"><i class="bi bi-clipboard-check" aria-hidden="true"></i><div><strong>${escapeHtml(posterPlan.file_count)} poster update${posterPlan.file_count === 1 ? '' : 's'} reviewed</strong><div class="scan-estimate-detail">The preview includes the selection across all result pages.</div></div></div>`;
+      byId('posterPlanSummary').innerHTML = `<div class="scan-estimate"><i class="bi bi-clipboard-check" aria-hidden="true"></i><div><strong>${escapeHtml(posterPlan.file_count)} poster update${posterPlan.file_count === 1 ? '' : 's'} ready to apply</strong><div class="scan-estimate-detail">Across all result pages, each portrait will be renamed to its <code>-poster-backup</code> filename before the landscape poster is installed.</div></div></div>`;
       byId('posterApplyButton').disabled = false;
     } catch (e) {
       setPosterMessage('Poster update review failed', e.message || '');
@@ -4577,6 +4660,7 @@
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plan_id: posterPlan.id})
       });
       const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Poster updates could not start');
       posterApply = data.apply;
       setPosterMessage(posterApply.progress_label || 'Applying poster updates', 'Verified backups and rollback protection remain active.');
       const poll = async () => {
@@ -4923,6 +5007,8 @@
       }
     });
     byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
+    byId('posterCancelScanButton')?.addEventListener('click', cancelLandscapePosterScan);
+    byId('posterBrowseButton')?.addEventListener('click', () => posterFolderPicker?.toggle());
     byId('posterPlanButton')?.addEventListener('click', reviewPosterPlan);
     byId('posterApplyButton')?.addEventListener('click', applyPosterPlan);
     byId('posterRefreshButton')?.addEventListener('click', refreshPosterStatus);
@@ -4930,6 +5016,11 @@
       posterPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
       try { localStorage.setItem(POSTER_PAGE_SIZE_STORAGE_KEY, String(posterPageLimit)); } catch (_e) {}
       loadPosterItems(0);
+    });
+    byId('posterItemStatus')?.addEventListener('change', () => loadPosterItems(0));
+    byId('posterSearch')?.addEventListener('input', () => {
+      clearTimeout(posterSearchTimer);
+      posterSearchTimer = setTimeout(() => loadPosterItems(0), 250);
     });
     byId('posterSelectAllCheckbox')?.addEventListener('change', event => {
       posterSelection = {
@@ -5285,6 +5376,7 @@
     setQualityProgress(null);
     setSubtitleProgress(null);
     setActorProgress(null);
+    setPosterProgress(null);
     refreshMaintenanceLogs();
     refreshOverviewStatus();
     refreshDuplicateStatus();
@@ -5318,6 +5410,7 @@
       stopSubtitleApplyPolling();
       stopGenerationPolling();
       clearTimeout(posterPollTimer);
+      clearTimeout(posterSearchTimer);
       clearTimeout(maintenanceFreshnessTimer);
       clearTimeout(embyOperationsTimer);
       if (posterSettingsPending || posterSettingsFailures.size) {

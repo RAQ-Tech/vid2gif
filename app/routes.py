@@ -998,6 +998,7 @@ def api_maintenance_landscape_posters_items():
         request.args.get("offset"),
         request.args.get("limit"),
         request.args.get("status") or "all",
+        search=request.args.get("search") or "",
         sort=request.args.get("sort"),
         direction=request.args.get("direction"),
     )

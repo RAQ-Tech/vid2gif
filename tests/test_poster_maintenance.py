@@ -92,6 +92,7 @@ def test_landscape_poster_run_replaces_existing_poster_and_preserves_backup(monk
     movie = lib / "Movie"
     background = _write(movie / "Movie-background.jpg", b"landscape")
     poster = _write(movie / "Movie-poster.jpg", b"portrait")
+    original_identity = poster_maintenance._file_identity(str(poster))
     marker = _write(movie / ".posters_done", b"old marker")
 
     notification_calls = []
@@ -105,7 +106,11 @@ def test_landscape_poster_run_replaces_existing_poster_and_preserves_backup(monk
 
     assert run["counters"]["updated"] == 1
     assert poster.read_bytes() == background.read_bytes()
-    assert (movie / "Movie-poster-backup.jpg").read_bytes() == b"portrait"
+    backup = movie / "Movie-poster-backup.jpg"
+    assert backup.read_bytes() == b"portrait"
+    backup_identity = poster_maintenance._file_identity(str(backup))
+    assert backup_identity["inode"] == original_identity["inode"]
+    assert backup_identity["device"] == original_identity["device"]
     assert marker.read_bytes() == b"old marker"
     assert notification_calls[0][1]["succeeded_count"] == 1
     assert run["emby_notification"]["id"] == "notice"
@@ -177,6 +182,51 @@ def test_poster_analysis_lists_each_video_stem_in_shared_folder(monkeypatch, tmp
     assert plan_err is None
     assert plan["file_count"] == 2
     assert plan["total_actionable_item_count"] == 3
+
+
+def test_poster_items_can_filter_status_and_search_details(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+    scan = {
+        "id": "poster-filter-scan",
+        "path": str(tmp_path / "library"),
+        "status": "success",
+        "items": [
+            {
+                "id": "ready",
+                "source": "Studio/Ready-background.jpg",
+                "poster": "Studio/Ready-poster.jpg",
+                "backup": "Studio/Ready-poster-backup.jpg",
+                "status": "eligible",
+                "message": "Ready: rename portrait to Ready-poster-backup.jpg",
+                "eligible": True,
+            },
+            {
+                "id": "missing",
+                "source": "Studio/Missing-background.jpg",
+                "poster": "Studio/Missing-poster.jpg",
+                "backup": "Studio/Missing-poster-backup.jpg",
+                "status": "missing",
+                "message": "Matching poster does not exist",
+                "eligible": False,
+            },
+        ],
+        "counts": {"candidate_count": 2, "eligible_count": 1, "missing_count": 1},
+    }
+    poster_maintenance.poster_scans[scan["id"]] = scan
+
+    ready, ready_err = poster_maintenance.poster_items_payload(
+        scan["id"], status="eligible"
+    )
+    searched, search_err = poster_maintenance.poster_items_payload(
+        scan["id"], search="missing-poster"
+    )
+
+    assert ready_err is None
+    assert ready["total"] == 1
+    assert ready["items"][0]["id"] == "ready"
+    assert search_err is None
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == "missing"
 
 
 def test_poster_analysis_excludes_trailer_and_extra_video_artwork(monkeypatch, tmp_path):
@@ -257,9 +307,24 @@ def test_landscape_poster_run_never_overwrites_existing_backup(monkeypatch, tmp_
 
     run = _run(lib, monkeypatch, tmp_path)
 
+    assert run["counters"]["updated"] == 0
+    assert run["counters"]["skipped"] == 1
+    assert poster.read_bytes() == b"current poster"
+    assert backup.read_bytes() == b"original backup"
+
+
+def test_landscape_poster_run_reuses_matching_existing_backup(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"new landscape")
+    poster = _write(movie / "Movie-poster.jpg", b"same portrait")
+    backup = _write(movie / "Movie-poster-backup.jpg", b"same portrait")
+
+    run = _run(lib, monkeypatch, tmp_path)
+
     assert run["counters"]["updated"] == 1
     assert poster.read_bytes() == b"new landscape"
-    assert backup.read_bytes() == b"original backup"
+    assert backup.read_bytes() == b"same portrait"
 
 
 def test_landscape_poster_run_skips_when_poster_already_matches(monkeypatch, tmp_path):
@@ -725,12 +790,20 @@ def test_landscape_poster_ui_assets_render():
     assert res.status_code == 200
     assert "Landscape Posters" in html
     assert 'id="posterRunButton"' in html
+    assert 'id="posterPath"' in html
+    assert 'id="posterBrowseButton"' in html
+    assert 'id="posterCancelScanButton"' in html
+    assert 'id="posterItemStatus"' in html
+    assert 'id="posterSearch"' in html
+    assert 'id="posterAutomationCollapse" class="collapse"' in html
+    assert "-poster-backup" in html
     assert 'id="posterEmbyTestButton"' not in html
     assert 'href="/settings#emby_url"' in html
     assert 'id="posterEmbyLastRefresh"' in html
     assert 'id="posterEmbyRefreshToggle"' not in html
     assert "fetch('/api/maintenance/landscape-posters/status')" in script
     assert "fetch('/api/maintenance/landscape-posters/scan'" in script
+    assert "fetch('/api/maintenance/landscape-posters/scan/cancel'" in script
     assert 'id="posterApplyButton"' in html
     assert "fetch('/api/maintenance/landscape-posters/settings'" in script
     assert "fetch('/api/maintenance/landscape-posters/emby/test'" not in script

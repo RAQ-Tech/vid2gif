@@ -265,3 +265,24 @@ def atomic_quarantine_file(
             except OSError:
                 pass
         raise
+
+
+def atomic_move_file_no_overwrite(
+    source,
+    destination,
+    *,
+    root=None,
+    expected_source=None,
+):
+    """Rename a regular file without replacing an existing destination.
+
+    This shares the durable hard-link/unlink implementation used for
+    quarantine moves, but describes ordinary in-folder renames accurately at
+    call sites such as poster backup preservation.
+    """
+    return atomic_quarantine_file(
+        source,
+        destination,
+        root=root,
+        expected_source=expected_source,
+    )
