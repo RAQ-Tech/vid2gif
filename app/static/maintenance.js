@@ -622,7 +622,7 @@
   }
 
   function fileActionOptions(group, file, state, locked = false) {
-    if (locked) return '<span class="badge text-bg-success">Keep selected video</span>';
+    if (locked) return '';
     const selected = effectiveFileAction(file, state);
     const parent = fileParentVideo(group, file);
     const canPreserveWithKeeper = file.kind !== 'video' && file.renameable && parent?.id !== state.keepId;
@@ -636,9 +636,23 @@
           ['keep', file.kind === 'video' ? 'Keep in library' : 'Keep with selected video'],
           ['cleanup', cleanupActionLabel()]
         ];
-    return `<select class="form-select form-select-sm" data-maint-operation="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>` +
+    return `<select class="form-select form-select-sm duplicate-action-select duplicate-action-select-${escapeHtml(selected)}" data-maint-operation="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}" aria-label="Planned action for ${escapeHtml(file.name)}"${state.enabled ? '' : ' disabled'}>` +
       options.map(([value, label]) => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('') +
       `</select>`;
+  }
+
+  function fileActionIndicator(action, locked = false) {
+    if (locked) {
+      return '<span class="badge duplicate-action-badge duplicate-action-indicator-keep">Keep selected video</span>';
+    }
+    if (action === 'rename') {
+      return '<span class="badge duplicate-action-badge duplicate-action-indicator-rename">Keep + rename</span>';
+    }
+    if (action === 'cleanup') {
+      const deleting = byId('maintenanceAction')?.value === 'delete';
+      return `<span class="badge duplicate-action-badge ${deleting ? 'duplicate-action-indicator-delete' : 'duplicate-action-indicator-cleanup'}">${deleting ? 'Delete' : 'Quarantine'}</span>`;
+    }
+    return '<span class="badge duplicate-action-badge duplicate-action-indicator-keep">Keep</span>';
   }
 
   function fileActionHelp(file, state, locked = false) {
@@ -672,6 +686,65 @@
       (video.accessories || []).forEach(accessory => files.push(accessory));
     });
     return files;
+  }
+
+  function accessoryComparisonKey(file) {
+    const equivalenceKey = String(file.equivalence_key || '').trim().toLowerCase();
+    if (equivalenceKey) return equivalenceKey;
+    const suffix = String(file.suffix || '').trim().toLowerCase();
+    if (suffix) return `${file.role || 'accessory'}:${suffix}`;
+    return `unmatched:${file.id}`;
+  }
+
+  function comparisonRow(file, depth = 0, anchor = null, relation = '') {
+    return {file, depth, anchor, relation};
+  }
+
+  function groupComparisonRows(group, state) {
+    const videos = group.videos || [];
+    const keepId = state.keepId || group.recommended_keep_id || '';
+    const keeper = videos.find(video => video.id === keepId) || null;
+    const rows = [];
+
+    if (keeper) rows.push(comparisonRow(keeper, 0, null, 'keeper'));
+    videos
+      .filter(video => video.id !== keepId && effectiveFileAction(video, state) === 'cleanup')
+      .forEach(video => rows.push(comparisonRow(video, keeper ? 1 : 0, keeper, keeper ? 'matching_cleanup' : 'standalone_cleanup')));
+    videos
+      .filter(video => video.id !== keepId && effectiveFileAction(video, state) !== 'cleanup')
+      .forEach(video => rows.push(comparisonRow(video, 0, null, 'preserved')));
+
+    const accessoryBuckets = new Map();
+    const orderedVideos = keeper
+      ? [keeper, ...videos.filter(video => video.id !== keepId)]
+      : videos;
+    orderedVideos.forEach(video => {
+      (video.accessories || []).forEach(accessory => {
+        const key = accessoryComparisonKey(accessory);
+        if (!accessoryBuckets.has(key)) accessoryBuckets.set(key, []);
+        accessoryBuckets.get(key).push(accessory);
+      });
+    });
+
+    accessoryBuckets.forEach(accessories => {
+      const preserved = accessories.filter(file => effectiveFileAction(file, state) !== 'cleanup');
+      const cleanup = accessories.filter(file => effectiveFileAction(file, state) === 'cleanup');
+      const anchor = preserved.find(file => effectiveFileAction(file, state) === 'rename') ||
+        preserved.find(file => file.parent_video_id === keepId) ||
+        preserved[0] || null;
+
+      if (!anchor) {
+        cleanup.forEach(file => rows.push(comparisonRow(file, 0, null, 'standalone_cleanup')));
+        return;
+      }
+      rows.push(comparisonRow(anchor, 0, null, effectiveFileAction(anchor, state) === 'rename' ? 'preserved_rename' : 'preserved'));
+      cleanup.forEach(file => rows.push(comparisonRow(file, 1, anchor, 'matching_cleanup')));
+      preserved
+        .filter(file => file.id !== anchor.id)
+        .forEach(file => rows.push(comparisonRow(file, 0, null, 'preserved')));
+    });
+
+    return rows;
   }
 
   function fileIsKeeperVideo(file, state) {
@@ -1005,7 +1078,10 @@
     return `<option value="${escapeHtml(video.id)}"${video.id === recommendedId ? ' selected' : ''}>${escapeHtml(label)}</option>`;
   }
 
-  function fileRow(group, file, state) {
+  function fileRow(group, row, state) {
+    const file = row.file || row;
+    const comparisonDepth = Number(row.depth || 0);
+    const comparisonAnchor = row.anchor || null;
     const locked = fileIsKeeperVideo(file, state);
     const parent = fileParentVideo(group, file);
     const kind = file.kind === 'video'
@@ -1018,6 +1094,12 @@
       ? '<span class="badge text-bg-info ms-1">Keeper sidecar</span>'
       : '';
     const action = locked ? 'keep' : effectiveFileAction(file, state);
+    const comparisonDetail = comparisonDepth && comparisonAnchor
+      ? `<div class="duplicate-match-context" title="Matches ${escapeHtml(comparisonAnchor.name)}">Matches kept item above</div>`
+      : '';
+    const matchMarker = comparisonDepth
+      ? '<span class="duplicate-match-arrow" aria-hidden="true">&#8627;</span>'
+      : '';
     const quality = file.subtitle_quality || {};
     const qualityClass = quality.status === 'complete'
       ? 'text-bg-success'
@@ -1026,12 +1108,12 @@
       ? `<div class="mt-1"><span class="badge ${qualityClass}">${escapeHtml(quality.status === 'likely_incomplete' ? 'Likely incomplete' : (quality.status === 'complete' ? 'Coverage good' : 'Coverage review'))}</span>` +
         `<span class="small text-muted ms-1">${escapeHtml(quality.coverage_percent != null ? `${quality.coverage_percent}% · ends ${quality.last_timestamp_label || '?'} of ${quality.video_duration_label || '?'} · ${quality.cue_count || 0} cues` : (quality.label || 'Runtime unavailable'))}</span></div>`
       : '';
-    return `<tr>` +
+    return `<tr class="duplicate-file-row duplicate-action-${escapeHtml(action)}${comparisonDepth ? ' duplicate-file-match-child' : ''}" data-duplicate-file-row="${escapeHtml(file.id)}" data-comparison-depth="${comparisonDepth}"${comparisonAnchor ? ` data-comparison-anchor="${escapeHtml(comparisonAnchor.id)}"` : ''}>` +
       `<td data-sort-value="${escapeHtml(kind)}"><span class="fw-semibold">${escapeHtml(kind)}</span>${locked ? '<span class="badge text-bg-success ms-1">Keeper</span>' : ''}</td>` +
-      `<td class="duplicate-file-cell" data-sort-value="${escapeHtml(file.name)}"><code class="duplicate-file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
-      `<td class="duplicate-file-context" data-sort-value="${escapeHtml(fileDetails(group, file, state))}">${escapeHtml(association)}${associationBadge}${qualityDetail}</td>` +
+      `<td class="duplicate-file-cell" data-sort-value="${escapeHtml(file.name)}">${matchMarker}<code class="duplicate-file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
+      `<td class="duplicate-file-context" data-sort-value="${escapeHtml(fileDetails(group, file, state))}">${comparisonDetail}${escapeHtml(association)}${associationBadge}${qualityDetail}</td>` +
       `<td data-sort-value="${Number(file.size_bytes || 0)}">${escapeHtml(file.size_label || formatSize(file.size_bytes))}</td>` +
-      `<td class="duplicate-file-action" data-sort-value="${escapeHtml(action)}">${fileActionOptions(group, file, state, locked)}<div class="small text-muted mt-1">${escapeHtml(fileActionHelp(file, state, locked))}</div></td>` +
+      `<td class="duplicate-file-action" data-sort-value="${escapeHtml(action)}"><div class="duplicate-action-control">${fileActionIndicator(action, locked)}${fileActionOptions(group, file, state, locked)}</div><div class="small text-muted mt-1">${escapeHtml(fileActionHelp(file, state, locked))}</div></td>` +
       `</tr>`;
   }
 
@@ -1151,9 +1233,9 @@
     const expanded = Boolean(state.expanded);
     const hasDetails = Boolean((group.videos || []).length);
     const loading = Boolean(state.loading);
-    const displayFiles = hasDetails ? groupDisplayFiles(group) : [];
+    const displayFiles = hasDetails ? groupComparisonRows(group, state) : [];
     const rows = displayFiles.length
-      ? displayFiles.map(file => fileRow(group, file, state)).join('')
+      ? displayFiles.map(row => fileRow(group, row, state)).join('')
       : '<tr><td colspan="5" class="text-muted text-center py-3">No files are available in this group.</td></tr>';
     const keeper = hasDetails
       ? (group.videos || []).find(video => video.id === state.keepId)
@@ -1175,9 +1257,10 @@
             `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-group-sidecars="keep" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>Keep all sidecars</button>` +
             `</div></div>` +
             `<div class="small text-muted mt-2"><strong>Action meanings:</strong> Keep leaves a file untouched. ${escapeHtml(cleanupActionLabel())} removes it from the library${byId('maintenanceAction')?.value === 'delete' ? ' permanently' : ' and stores it in quarantine'}. Rename preserves a sidecar by changing only its filename to match the kept video.</div>` +
+            `<div class="small text-muted mt-1"><strong>Comparison order:</strong> each kept file is followed by its matching cleanup files, shown slightly indented.</div>` +
             `<div class="table-responsive workspace-table-wrap mt-2">` +
-            `<table class="table table-hover align-middle workspace-table maintenance-table duplicate-review-table" data-table-id="maintenance-duplicate-files" data-sort-mode="client">` +
-            `<thead><tr><th data-column-id="kind" data-sortable="true">Type</th><th data-column-id="file" data-sortable="true">Full filename</th><th data-column-id="details" data-sortable="true">Belongs to / details</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="operation" data-sortable="true">Planned action</th></tr></thead>` +
+            `<table class="table table-hover align-middle workspace-table maintenance-table duplicate-review-table" data-table-id="maintenance-duplicate-files" data-sort-mode="none">` +
+            `<thead><tr><th data-column-id="kind">Type</th><th data-column-id="file">Full filename</th><th data-column-id="details">Belongs to / details</th><th data-column-id="size">Size</th><th data-column-id="operation">Planned action</th></tr></thead>` +
             `<tbody>${rows}</tbody>` +
             `</table></div></div>`
           : '<div class="text-muted small mt-3">Open this group to load file details.</div>'))

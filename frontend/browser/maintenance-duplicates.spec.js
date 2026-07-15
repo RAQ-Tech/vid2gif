@@ -265,6 +265,8 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
           size_label: '100 B',
           parent_video_id: 'video-2160',
           role: 'subtitle',
+          suffix: '.en.srt',
+          equivalence_key: 'subtitle:.en.srt',
           renameable: true,
           default_operation: 'keep',
           default_selected: false,
@@ -289,6 +291,8 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
           size_label: '200 B',
           parent_video_id: 'video-1080',
           role: 'subtitle',
+          suffix: '.en.srt',
+          equivalence_key: 'subtitle:.en.srt',
           renameable: true,
           default_operation: 'move',
           default_selected: true,
@@ -366,10 +370,23 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
   await expect(page.locator('[data-maint-file]')).toHaveCount(0);
   await expect(page.locator('.duplicate-file-name')).toContainText([
     'Movie.Extended.Release.2160p.Remux.mkv',
-    'Movie.Extended.Release.2160p.Remux.en.srt',
     'Movie.Extended.Release.1080p.WEB-DL.mkv',
+    'Movie.Extended.Release.2160p.Remux.en.srt',
     'Movie.Extended.Release.1080p.WEB-DL.en.srt',
   ]);
+  expect(await page.locator('[data-duplicate-file-row]').evaluateAll(rows => rows.map(row => row.getAttribute('data-comparison-depth')))).toEqual(['0', '1', '0', '1']);
+  await expect(page.locator('[data-duplicate-file-row="video-1080"]')).toHaveAttribute('data-comparison-anchor', 'video-2160');
+  await expect(page.locator('[data-duplicate-file-row="srt-1080"]')).toHaveAttribute('data-comparison-anchor', 'srt-2160');
+  await expect(page.locator('[data-duplicate-file-row="video-2160"] .duplicate-action-badge')).toHaveText('Keep selected video');
+  await expect(page.locator('[data-duplicate-file-row="video-1080"] .duplicate-action-badge')).toHaveText('Quarantine');
+  await expect(page.locator('.duplicate-review-table')).toHaveAttribute('data-sort-mode', 'none');
+  await expect(page.locator('.duplicate-review-table thead button')).toHaveCount(0);
+
+  await page.locator('[data-maint-operation="srt-1080"]').selectOption('keep');
+  await expect(page.locator('[data-duplicate-file-row="srt-1080"]')).toHaveAttribute('data-comparison-depth', '0');
+  await expect(page.locator('[data-duplicate-file-row="srt-1080"] .duplicate-action-badge')).toHaveText('Keep');
+  await page.locator('[data-maint-operation="srt-1080"]').selectOption('cleanup');
+  await expect(page.locator('[data-duplicate-file-row="srt-1080"]')).toHaveAttribute('data-comparison-depth', '1');
 
   await page.locator('[data-maint-group-sidecars="cleanup"]').click();
   await expect(page.locator('[data-maint-operation="srt-2160"]')).toHaveValue('cleanup');
@@ -431,6 +448,7 @@ test('subtitle coverage recommendation is visible and a resolved group leaves th
         accessories: [{
           id: 'srt-2160', kind: 'accessory', path: '/library/Movie/Movie.2160p.eng.srt', name: 'Movie.2160p.eng.srt',
           size_bytes: 100, size_label: '100 B', parent_video_id: 'video-2160', role: 'subtitle', renameable: true,
+          suffix: '.eng.srt', equivalence_key: 'subtitle:.eng.srt',
           default_operation: 'move', default_selected: true,
           subtitle_quality: {status: 'likely_incomplete', coverage_percent: 65.6, last_timestamp_label: '27:15', video_duration_label: '41:30', cue_count: 373},
         }],
@@ -441,6 +459,7 @@ test('subtitle coverage recommendation is visible and a resolved group leaves th
         accessories: [{
           id: 'srt-1080', kind: 'accessory', path: '/library/Movie/Movie.1080p.eng.srt', name: 'Movie.1080p.eng.srt',
           size_bytes: 200, size_label: '200 B', parent_video_id: 'video-1080', role: 'subtitle', renameable: true,
+          suffix: '.eng.srt', equivalence_key: 'subtitle:.eng.srt',
           default_operation: 'rename', default_selected: true, default_destination_path: '/library/Movie/Movie.2160p.eng.srt',
           subtitle_quality: {status: 'complete', coverage_percent: 99.6, last_timestamp_label: '41:21', video_duration_label: '41:30', cue_count: 593},
         }],
@@ -513,6 +532,21 @@ test('subtitle coverage recommendation is visible and a resolved group leaves th
   await expect(page.locator('[data-maint-operation="srt-1080"]')).toContainText('Keep with selected video (rename)');
   await expect(card).toContainText('65.6% · ends 27:15 of 41:30');
   await expect(card).toContainText('99.6% · ends 41:21 of 41:30');
+  expect(await page.locator('[data-duplicate-file-row]').evaluateAll(rows => rows.map(row => row.getAttribute('data-comparison-depth')))).toEqual(['0', '1', '0', '1']);
+  expect(await page.locator('[data-duplicate-file-row]').evaluateAll(rows => rows.map(row => row.getAttribute('data-duplicate-file-row')))).toEqual([
+    'video-2160',
+    'video-1080',
+    'srt-1080',
+    'srt-2160',
+  ]);
+  await expect(page.locator('[data-duplicate-file-row="srt-1080"] .duplicate-action-badge')).toHaveText('Keep + rename');
+  await expect(page.locator('[data-duplicate-file-row="srt-2160"] .duplicate-action-badge')).toHaveText('Quarantine');
+  await expect(page.locator('[data-duplicate-file-row="srt-2160"]')).toHaveClass(/duplicate-file-match-child/);
+  const actionColors = await page.locator('[data-duplicate-file-row]').evaluateAll(rows => rows.map(row =>
+    getComputedStyle(row.cells[0]).borderLeftColor
+  ));
+  expect(actionColors[0]).not.toBe(actionColors[1]);
+  expect(actionColors[2]).not.toBe(actionColors[3]);
 
   await page.locator('#maintenancePlanButton').click();
   await page.locator('#maintenanceApplyButton').click();
