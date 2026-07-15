@@ -107,6 +107,59 @@ def test_landscape_poster_run_replaces_existing_poster_and_preserves_backup(monk
     assert run["emby_notification"]["id"] == "notice"
 
 
+def test_landscape_poster_run_processes_each_video_stem_in_shared_folder(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Shared Title"
+    marker = _write(folder / ".posters_done", b"legacy folder marker")
+    stems = [
+        "Shared Title - 2024-01-05 [WEBDL-2160p]",
+        "Shared Title - 2024-05-20 [WEBDL-2160p]",
+        "Shared Title - 2025-02-14 [WEBDL-2160p]",
+    ]
+    for index, stem in enumerate(stems, start=1):
+        _write(folder / f"{stem}.mp4", bytes([index]))
+        _write(folder / f"{stem}-background.jpg", f"landscape {index}".encode())
+        _write(folder / f"{stem}-poster.jpg", f"portrait {index}".encode())
+
+    run = _run(lib, monkeypatch, tmp_path)
+
+    assert run["counters"]["candidates"] == 3
+    assert run["counters"]["updated"] == 3
+    assert run["counters"]["skipped"] == 0
+    assert marker.read_bytes() == b"legacy folder marker"
+    for index, stem in enumerate(stems, start=1):
+        assert (folder / f"{stem}-poster.jpg").read_bytes() == f"landscape {index}".encode()
+        assert (folder / f"{stem}-poster-backup.jpg").read_bytes() == f"portrait {index}".encode()
+
+
+def test_poster_analysis_lists_each_video_stem_in_shared_folder(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Shared Title"
+    stems = [
+        "Shared Title - 2024-01-05 [WEBDL-2160p]",
+        "Shared Title - 2024-05-20 [WEBDL-2160p]",
+        "Shared Title - 2025-02-14 [WEBDL-2160p]",
+    ]
+    for index, stem in enumerate(stems, start=1):
+        _write(folder / f"{stem}.mp4", bytes([index]))
+        _write(folder / f"{stem}-background.jpg", f"landscape {index}".encode())
+        _write(folder / f"{stem}-poster.jpg", f"portrait {index}".encode())
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    scan, err = poster_maintenance.start_poster_scan(
+        str(lib), synchronous=True, lib_root=str(lib)
+    )
+    page, page_err = poster_maintenance.poster_items_payload(scan["id"], limit=10)
+
+    assert err is None
+    assert page_err is None
+    assert scan["counts"]["candidate_count"] == 3
+    assert scan["counts"]["eligible_count"] == 3
+    assert scan["counts"]["ambiguous_count"] == 0
+    assert page["total"] == 3
+    assert {item["status"] for item in page["items"]} == {"eligible"}
+
+
 def test_disabled_automatic_poster_sync_does_not_load_emby_catalog(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"

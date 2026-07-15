@@ -714,7 +714,7 @@ th[aria-sort="descending"] .table-sort-icon {
 
 .duplicate-review-stats {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
   gap: 8px;
   margin: 12px 0;
 }
@@ -764,6 +764,12 @@ th[aria-sort="descending"] .table-sort-icon {
   color: var(--bs-danger-text-emphasis);
   background: var(--bs-danger-bg-subtle);
   border-color: var(--bs-danger-border-subtle);
+}
+
+.duplicate-review-protected {
+  color: var(--bs-primary-text-emphasis);
+  background: var(--bs-primary-bg-subtle);
+  border-color: var(--bs-primary-border-subtle);
 }
 
 .duplicate-group-review,

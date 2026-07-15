@@ -131,6 +131,10 @@ def test_bif_filename_matching_and_interval_parsing():
     assert video_preview_maintenance.bif_interval_seconds("Movie.bif", "Movie") is None
     assert video_preview_maintenance.bif_interval_seconds("Movie-320-180.bif", "Movie") == 180
     assert video_preview_maintenance.bif_interval_seconds("Movie-320-10.bif", "Movie") == 10
+    assert video_preview_maintenance._bif_owner_stem(
+        "Movie 2024-01-05-320-10.bif",
+        ["Movie 2024", "Movie 2024-01-05"],
+    ) == "Movie 2024-01-05"
 
 
 def test_video_preview_scan_counts_any_stem_matched_bif_as_present(monkeypatch, tmp_path):
@@ -156,6 +160,31 @@ def test_video_preview_scan_counts_any_stem_matched_bif_as_present(monkeypatch, 
     ten_second = next(item for item in present["items"] if item["name"] == "TenSecond.mkv")
     assert ten_second["status"] == "present"
     assert ten_second["bifs"][0]["interval_seconds"] == 10
+
+
+def test_video_preview_scan_tracks_each_release_in_shared_folder_by_exact_stem(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Shared Title"
+    stems = [
+        "Shared Title - 2024-01-05 [WEBDL-2160p]",
+        "Shared Title - 2024-05-20 [WEBDL-2160p]",
+        "Shared Title - 2025-02-14 [WEBDL-2160p]",
+    ]
+    for stem in stems:
+        _write(folder / f"{stem}.mp4")
+    _write(folder / f"{stems[1]}-320-10.bif")
+
+    scan = _scan(lib, monkeypatch, tmp_path)
+
+    assert scan["counts"] == {
+        "scanned_video_count": 3,
+        "present_count": 1,
+        "missing_count": 2,
+    }
+    by_name = {item["name"]: item for item in scan["items"]}
+    assert by_name[f"{stems[1]}.mp4"]["status"] == "present"
+    assert by_name[f"{stems[0]}.mp4"]["status"] == "missing"
+    assert by_name[f"{stems[2]}.mp4"]["status"] == "missing"
 
 
 def test_video_preview_scan_skips_quarantine_and_symlinked_files(monkeypatch, tmp_path):

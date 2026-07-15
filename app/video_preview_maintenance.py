@@ -158,6 +158,13 @@ def bif_matches_video(bif_name, video_stem):
     return lower_stem[len(lower_video)] in {"-", ".", "_", " ", "["}
 
 
+def _bif_owner_stem(bif_name, video_stems):
+    matches = [stem for stem in (video_stems or []) if bif_matches_video(bif_name, stem)]
+    if not matches:
+        return ""
+    return max(matches, key=lambda stem: (len(stem), stem.casefold()))
+
+
 def bif_interval_seconds(bif_name, video_stem=""):
     stem = _bif_stem(bif_name)
     if not stem:
@@ -230,7 +237,7 @@ def _public_bif(path, video_stem):
     }
 
 
-def _video_item(video_path, folder_files, lib_root):
+def _video_item(video_path, folder_files, lib_root, video_stems=None):
     name = os.path.basename(video_path)
     stem = os.path.splitext(name)[0]
     bifs = []
@@ -239,7 +246,9 @@ def _video_item(video_path, folder_files, lib_root):
         full_path = os.path.join(folder, entry)
         if os.path.islink(full_path) or not os.path.isfile(full_path):
             continue
-        if bif_matches_video(entry, stem):
+        if bif_matches_video(entry, stem) and (
+            not video_stems or _bif_owner_stem(entry, video_stems).casefold() == stem.casefold()
+        ):
             bifs.append(_public_bif(full_path, stem))
     bifs.sort(key=lambda item: item["name"].lower())
     status = "present"
@@ -296,12 +305,13 @@ def _scan_videos(scan, lib_root):
             for filename in files
             if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
         ]
+        video_stems = [os.path.splitext(filename)[0] for filename in video_files]
         for filename in sorted(video_files, key=str.lower):
             _check_cancelled(scan)
             video_path = os.path.join(base, filename)
             if os.path.islink(video_path) or not os.path.isfile(video_path):
                 continue
-            item = _video_item(video_path, files, lib_root)
+            item = _video_item(video_path, files, lib_root, video_stems=video_stems)
             items.append(item)
             if len(items) % 25 == 0:
                 _set_scan_progress(
@@ -1225,11 +1235,14 @@ def analyze_bif_quality(
 
 def _find_matching_video_for_bif(bif_path, folder_files):
     bif_name = os.path.basename(bif_path)
-    for filename in sorted(folder_files, key=str.lower):
-        if os.path.splitext(filename)[1].lower() not in VIDEO_EXTS:
-            continue
-        stem = os.path.splitext(filename)[0]
-        if bif_matches_video(bif_name, stem):
+    videos = [
+        filename
+        for filename in folder_files
+        if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
+    ]
+    owner = _bif_owner_stem(bif_name, [os.path.splitext(name)[0] for name in videos])
+    for filename in sorted(videos, key=str.lower):
+        if os.path.splitext(filename)[0].casefold() == owner.casefold():
             return os.path.join(os.path.dirname(bif_path), filename)
     return ""
 
@@ -3085,7 +3098,19 @@ def _matching_bifs_for_video(video_path):
         names = os.listdir(folder)
     except OSError:
         return []
-    return [name for name in names if bif_matches_video(name, stem) and os.path.isfile(os.path.join(folder, name))]
+    video_stems = [
+        os.path.splitext(name)[0]
+        for name in names
+        if os.path.splitext(name)[1].lower() in VIDEO_EXTS
+        and os.path.isfile(os.path.join(folder, name))
+    ]
+    return [
+        name
+        for name in names
+        if bif_matches_video(name, stem)
+        and _bif_owner_stem(name, video_stems).casefold() == stem.casefold()
+        and os.path.isfile(os.path.join(folder, name))
+    ]
 
 
 def _write_bif_from_jpegs(jpeg_paths, output_path, interval_seconds):

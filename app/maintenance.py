@@ -69,6 +69,17 @@ _QUALITY_PATTERNS = [
     r"\b(?:aac|ac3|eac3|eac3\s*5\s*1|dts|truehd|atmos|flac|mp3)\b",
     r"\b(?:10bit|8bit|proper|repack|rerip|extended|unrated|theatrical|directors?\s*cut)\b",
 ]
+_COPY_SUFFIX_RE = re.compile(
+    r"(?:\s*\(\s*\d{1,3}\s*\)|[\s._-]+(?:copy(?:[\s._-]*\d+)?|duplicate|dupe))\s*$",
+    flags=re.IGNORECASE,
+)
+_FULL_RELEASE_DATE_RE = re.compile(
+    r"(?<!\d)((?:19|20)\d{2})[\s._-]+(0?[1-9]|1[0-2])[\s._-]+(0?[1-9]|[12]\d|3[01])(?!\d)"
+)
+_COMPACT_RELEASE_DATE_RE = re.compile(
+    r"(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)"
+)
+_RELEASE_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 
 
 def _now_id():
@@ -155,15 +166,32 @@ def _effective_move_root(settings, lib_root):
 
 
 def normalize_duplicate_name(stem):
-    value = str(stem or "").lower()
+    value = _COPY_SUFFIX_RE.sub("", str(stem or "").strip()).lower()
     value = re.sub(r"[\[\]\(\)\{\}]", " ", value)
     value = re.sub(r"[._\-]+", " ", value)
     for pattern in _QUALITY_PATTERNS:
         value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
     value = re.sub(r"\b(?:copy|duplicate|dupe)\s*\d*\b", " ", value, flags=re.IGNORECASE)
-    value = re.sub(r"\b\d+\b\s*$", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     return value or str(stem or "").strip().lower()
+
+
+def _release_date_token(value):
+    text = str(value or "")
+    match = _FULL_RELEASE_DATE_RE.search(text)
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    match = _COMPACT_RELEASE_DATE_RE.search(text)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    match = _RELEASE_YEAR_RE.search(text)
+    return match.group(1) if match else ""
+
+
+def _title_without_release_date(value):
+    text = _FULL_RELEASE_DATE_RE.sub(" ", str(value or ""))
+    text = _COMPACT_RELEASE_DATE_RE.sub(" ", text)
+    return _RELEASE_YEAR_RE.sub(" ", text)
 
 
 def _duration_close(first, second):
@@ -534,6 +562,75 @@ def _candidate_groups(videos, settings=None):
     return [items for items in buckets.values() if len(items) > 1]
 
 
+def _protected_set_summary(paths, reason, *, title="", release_dates=None):
+    video_paths = sorted(
+        {os.path.realpath(path) for path in paths if path},
+        key=str.lower,
+    )
+    if not video_paths:
+        return None
+    names = [os.path.basename(path) for path in video_paths]
+    label = normalize_duplicate_name(title) if title else normalize_duplicate_name(
+        os.path.splitext(names[0])[0]
+    )
+    set_id = "protected:" + hashlib.sha256(
+        "|".join(os.path.normcase(path) for path in video_paths).encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "id": set_id,
+        "folder": os.path.dirname(video_paths[0]),
+        "normalized_name": label,
+        "video_count": len(video_paths),
+        "video_paths": video_paths,
+        "video_names": names,
+        "release_dates": sorted({value for value in (release_dates or []) if value}),
+        "reason": reason,
+    }
+
+
+def _related_release_sets(videos):
+    """Find same-folder/title media with affirmative evidence of distinct releases."""
+    buckets = {}
+    for path in videos:
+        nfo = parse_nfo_identity(path)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        release_date = _release_date_token(nfo.get("premiered")) or _release_date_token(stem)
+        title_source = nfo.get("title") or nfo.get("sorttitle") or _title_without_release_date(stem)
+        title = normalize_duplicate_name(title_source)
+        if not title:
+            continue
+        studio = normalize_duplicate_name(nfo.get("studio") or "")
+        folder = os.path.normcase(os.path.realpath(os.path.dirname(path)))
+        buckets.setdefault((folder, studio, title), []).append(
+            {
+                "path": path,
+                "release_date": release_date,
+                "provider_identity": "|".join(nfo.get("unique_ids") or []),
+            }
+        )
+
+    protected = []
+    for (_folder, _studio, title), records in buckets.items():
+        if len(records) < 2:
+            continue
+        dates = [record["release_date"] for record in records]
+        provider_ids = [record["provider_identity"] for record in records]
+        distinct_dates = all(dates) and len(set(dates)) > 1
+        distinct_provider_ids = all(provider_ids) and len(set(provider_ids)) > 1
+        if not distinct_dates and not distinct_provider_ids:
+            continue
+        evidence = "different release dates" if distinct_dates else "different provider IDs"
+        summary = _protected_set_summary(
+            [record["path"] for record in records],
+            f"Same-title videos have {evidence} and are excluded from duplicate cleanup",
+            title=title,
+            release_dates=dates,
+        )
+        if summary:
+            protected.append(summary)
+    return protected
+
+
 def _set_scan_progress(scan, percent, label, **values):
     with maintenance_lock:
         task_progress.update_scan(scan, "duplicate_scan", percent, label, **values)
@@ -683,7 +780,7 @@ def _duration_clusters(videos):
                 break
         if not placed:
             clusters.append([video])
-    return [cluster for cluster in clusters if len(cluster) > 1]
+    return clusters
 
 
 def _group_payload_from_videos(videos, group_id, lib_root, settings):
@@ -735,20 +832,29 @@ def _build_groups(paths, group_index, lib_root, settings):
         videos.append(item)
 
     if len(videos) < 2:
-        return []
+        return [], []
 
     clusters = _duration_clusters(videos) if settings.get("grouping_mode") == "balanced" else [videos]
+    if settings.get("grouping_mode") == "balanced" and len(clusters) > 1:
+        summary = _protected_set_summary(
+            [video.get("path") for video in videos],
+            "Different runtimes were treated as separate releases; this set is excluded from duplicate cleanup",
+        )
+        return [], [summary] if summary else []
+
     groups = []
-    for offset, cluster in enumerate(clusters):
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue
         groups.append(
             _group_payload_from_videos(
                 cluster,
-                f"group-{group_index + offset}",
+                f"group-{group_index + len(groups)}",
                 lib_root,
                 settings,
             )
         )
-    return groups
+    return groups, []
 
 
 def _public_file(item):
@@ -833,6 +939,13 @@ def public_scan(scan, include_groups=False):
     for group in groups:
         for key, value in _group_default_action_counts(group).items():
             default_action_counts[key] += value
+    protected_sets = list(scan.get("protected_distinct_sets") or [])
+    protected_video_paths = {
+        path
+        for item in protected_sets
+        for path in (item.get("video_paths") or [])
+        if path
+    }
     public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
@@ -851,6 +964,8 @@ def public_scan(scan, include_groups=False):
         "settings": public_duplicate_settings(scan.get("settings")),
         "results_page_size": DUPLICATE_GROUP_PAGE_DEFAULT,
         "large_result": len(scan.get("groups") or []) >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
+        "protected_distinct_set_count": len(protected_sets),
+        "protected_distinct_video_count": len(protected_video_paths),
         "default_action_counts": default_action_counts,
         "review_group_count": sum(1 for group in groups if _group_review_flags(group)),
         "emby_mapping": emby_catalog.public_summary(
@@ -956,16 +1071,36 @@ def _run_scan(scan, lib_root):
             scanned_video_count=len(videos),
         )
 
+        protected_sets = {
+            item["id"]: item
+            for item in _related_release_sets(videos)
+            if item.get("id")
+        }
+        protected_paths = {
+            os.path.normcase(os.path.realpath(path))
+            for item in protected_sets.values()
+            for path in item.get("video_paths") or []
+        }
         candidates = _candidate_groups(videos, settings=settings)
         groups = []
         total = len(candidates)
         group_index = 1
         for index, paths in enumerate(candidates, start=1):
             _check_scan_cancelled(scan)
-            built_groups = _build_groups(paths, group_index, lib_root, settings)
+            actionable_paths = [
+                path
+                for path in paths
+                if os.path.normcase(os.path.realpath(path)) not in protected_paths
+            ]
+            built_groups, built_protected = _build_groups(
+                actionable_paths, group_index, lib_root, settings
+            )
             if built_groups:
                 groups.extend(built_groups)
                 group_index += len(built_groups)
+            for item in built_protected:
+                if item.get("id"):
+                    protected_sets[item["id"]] = item
             percent = 10 + int(80 * index / max(total, 1))
             _set_scan_progress(
                 scan,
@@ -990,10 +1125,16 @@ def _run_scan(scan, lib_root):
         _set_scan_progress(
             scan,
             100,
-            f"Found {len(groups)} duplicate group{'s' if len(groups) != 1 else ''}",
+            (
+                f"Found {len(groups)} duplicate group{'s' if len(groups) != 1 else ''}; "
+                f"protected {len(protected_sets)} distinct set{'s' if len(protected_sets) != 1 else ''}"
+                if protected_sets
+                else f"Found {len(groups)} duplicate group{'s' if len(groups) != 1 else ''}"
+            ),
             status="success",
             groups=groups,
             reclaimable_bytes=reclaimable,
+            protected_distinct_sets=list(protected_sets.values()),
             emby_mapping=emby_mapping,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
@@ -1070,6 +1211,7 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "cancel_requested": False,
         "scanned_video_count": 0,
         "groups": [],
+        "protected_distinct_sets": [],
         "reclaimable_bytes": 0,
         "lib_root": os.path.realpath(lib_root),
         "settings": settings,

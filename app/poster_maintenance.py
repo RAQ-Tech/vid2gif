@@ -366,6 +366,17 @@ def _candidate_from_background(path):
     }
 
 
+def _background_candidate_groups(directory, files):
+    """Group artwork by video stem so a folder may safely contain many videos."""
+    groups = {}
+    for name in sorted(files, key=str.lower):
+        candidate = _candidate_from_background(os.path.join(directory, name))
+        if not candidate:
+            continue
+        groups.setdefault(candidate["base"].casefold(), []).append(candidate)
+    return [groups[key] for key in sorted(groups)]
+
+
 def _relevant_file(name):
     stem, ext = os.path.splitext(name)
     if ext.lower() not in BACKGROUND_IMAGE_EXTS:
@@ -832,14 +843,14 @@ def _run_poster_scan(scan, lib_root):
                 return
             dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
             folders += 1
-            candidates = [candidate for name in sorted(files, key=str.lower) if (candidate := _candidate_from_background(os.path.join(base, name)))]
-            if len(candidates) > 1:
-                for candidate in candidates:
-                    items.append(_analysis_item(candidate, root, "ambiguous", "Multiple landscape background candidates are ambiguous"))
-            else:
-                for candidate in candidates:
-                    status, message = _analyze_candidate(candidate, root)
-                    items.append(_analysis_item(candidate, root, status, message))
+            for candidates in _background_candidate_groups(base, files):
+                if len(candidates) > 1:
+                    for candidate in candidates:
+                        items.append(_analysis_item(candidate, root, "ambiguous", "Multiple landscape backgrounds for this video stem are ambiguous"))
+                else:
+                    for candidate in candidates:
+                        status, message = _analyze_candidate(candidate, root)
+                        items.append(_analysis_item(candidate, root, status, message))
             if folders % 50 == 0:
                 task_progress.update_scan(
                     scan,
@@ -1220,66 +1231,62 @@ def _scan_and_apply(run, lib_root, settings):
             continue
 
         counters["folders_scanned"] += 1
-        candidates = [
-            candidate
-            for name in sorted(files, key=str.lower)
-            if (candidate := _candidate_from_background(os.path.join(base, name)))
-        ]
-        if len(candidates) > 1:
-            candidate = candidates[0]
-            counters["candidates"] += 1
-            counters["skipped"] += 1
-            status, message = "skipped", "Multiple landscape background candidates are ambiguous"
-            key = _path_key(candidate["background_path"], root)
-            records[key] = _record_for(candidate, root, status, message)
-            items.append(_public_item(candidate, root, status, message))
-            candidates = []
-        for candidate in candidates:
-            if os.path.islink(candidate["background_path"]):
-                continue
-            counters["candidates"] += 1
-            status, message = _process_candidate(candidate, root)
-            if status == "updated":
-                counters["updated"] += 1
-            elif status == "already_matching":
-                counters["already_matching"] += 1
-            elif status == "missing_poster":
-                counters["missing_poster"] += 1
-            elif status == "skipped":
+        for candidates in _background_candidate_groups(base, files):
+            if len(candidates) > 1:
+                candidate = candidates[0]
+                counters["candidates"] += 1
                 counters["skipped"] += 1
-            else:
-                counters["errors"] += 1
-            key = _path_key(candidate["background_path"], root)
-            records[key] = _record_for(candidate, root, status, message)
-            items.append(_public_item(candidate, root, status, message))
-            if status in {"updated", "error"}:
-                issue_id = f"poster:{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
-                impact_issues.append(
-                    {
-                        "issue_id": issue_id,
-                        "finding_ids": [issue_id],
-                        "label": os.path.basename(candidate["poster_path"]),
-                        "path": candidate["poster_path"],
-                    }
-                )
+                status, message = "skipped", "Multiple landscape backgrounds for this video stem are ambiguous"
+                key = _path_key(candidate["background_path"], root)
+                records[key] = _record_for(candidate, root, status, message)
+                items.append(_public_item(candidate, root, status, message))
+                continue
+            for candidate in candidates:
+                if os.path.islink(candidate["background_path"]):
+                    continue
+                counters["candidates"] += 1
+                status, message = _process_candidate(candidate, root)
                 if status == "updated":
-                    sync_candidates.append(dict(candidate))
-                    impact_resolutions.append(
+                    counters["updated"] += 1
+                elif status == "already_matching":
+                    counters["already_matching"] += 1
+                elif status == "missing_poster":
+                    counters["missing_poster"] += 1
+                elif status == "skipped":
+                    counters["skipped"] += 1
+                else:
+                    counters["errors"] += 1
+                key = _path_key(candidate["background_path"], root)
+                records[key] = _record_for(candidate, root, status, message)
+                items.append(_public_item(candidate, root, status, message))
+                if status in {"updated", "error"}:
+                    issue_id = f"poster:{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
+                    impact_issues.append(
                         {
                             "issue_id": issue_id,
-                            "stream": "posters",
-                            "resolve_all": True,
-                            "ensure_issue": True,
+                            "finding_ids": [issue_id],
                             "label": os.path.basename(candidate["poster_path"]),
                             "path": candidate["poster_path"],
                         }
                     )
-                    try:
-                        impact_bytes += os.path.getsize(candidate["poster_path"])
-                    except OSError:
-                        pass
-            if len(items) > POSTER_RUN_ITEM_RETENTION_COUNT:
-                del items[: len(items) - POSTER_RUN_ITEM_RETENTION_COUNT]
+                    if status == "updated":
+                        sync_candidates.append(dict(candidate))
+                        impact_resolutions.append(
+                            {
+                                "issue_id": issue_id,
+                                "stream": "posters",
+                                "resolve_all": True,
+                                "ensure_issue": True,
+                                "label": os.path.basename(candidate["poster_path"]),
+                                "path": candidate["poster_path"],
+                            }
+                        )
+                        try:
+                            impact_bytes += os.path.getsize(candidate["poster_path"])
+                        except OSError:
+                            pass
+                if len(items) > POSTER_RUN_ITEM_RETENTION_COUNT:
+                    del items[: len(items) - POSTER_RUN_ITEM_RETENTION_COUNT]
         try:
             current_files = os.listdir(base)
         except OSError:

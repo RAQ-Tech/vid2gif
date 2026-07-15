@@ -193,6 +193,8 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
     reclaimable_label: '1.2 KB',
     default_action_counts: { keep: 2, cleanup: 2, rename: 0 },
     review_group_count: 1,
+    protected_distinct_set_count: 1,
+    protected_distinct_video_count: 3,
   };
   const summary = {
     id: 'group-review',
@@ -327,6 +329,7 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
 
   await page.goto('/maintenance#duplicates');
   await expect(page.locator('#duplicateReviewSummary')).toContainText('Groups flagged');
+  await expect(page.locator('#duplicateReviewSummary .duplicate-review-protected strong')).toHaveText('1');
   await expect(page.locator('[data-maint-group-card="group-review"]')).toContainText('2 matching subtitle files differ in size');
   await expect(page.locator('[data-maint-group-card="group-review"] .duplicate-summary-keeper')).toContainText('Movie.Extended.Release.2160p.Remux.mkv');
 

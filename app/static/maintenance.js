@@ -920,6 +920,7 @@
       `<span class="duplicate-review-stat duplicate-review-cleanup"><strong>${escapeHtml(totals.cleanup)}</strong><small>${escapeHtml(cleanupLabel)}</small></span>` +
       `<span class="duplicate-review-stat duplicate-review-rename"><strong>${escapeHtml(totals.rename)}</strong><small>Rename sidecars</small></span>` +
       `<span class="duplicate-review-stat duplicate-review-attention"><strong>${escapeHtml(currentScan.review_group_count || 0)}</strong><small>Groups flagged</small></span>` +
+      `<span class="duplicate-review-stat duplicate-review-protected" title="Same-title videos with different release evidence or runtimes are never added to cleanup"><strong>${escapeHtml(currentScan.protected_distinct_set_count || 0)}</strong><small>Distinct sets protected</small></span>` +
       `</div><div class="small text-muted mt-2">These are the current choices. You only need to expand groups that are flagged or that you want to override.</div>`;
   }
 
@@ -1469,11 +1470,15 @@
     if (!scan) {
       setMessage('No scan results yet.', '');
     } else if (scan.status === 'success') {
+      const protectedDetail = scan.protected_distinct_set_count
+        ? `${scan.protected_distinct_set_count} same-title set${scan.protected_distinct_set_count === 1 ? '' : 's'} (${scan.protected_distinct_video_count || 0} videos) recognized as distinct and excluded from cleanup.`
+        : '';
+      const resultDetail = scan.large_result
+        ? `Large result set. Loading ${groupPageLimit} groups at a time.`
+        : (scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}.` : '');
       setMessage(
         `${scan.duplicate_group_count || 0} duplicate groups found`,
-        scan.large_result
-          ? withEmbyCoverage(`Large result set. Loading ${groupPageLimit} groups at a time.`, scan)
-          : withEmbyCoverage(scan.reclaimable_label ? `Default reclaimable size: ${scan.reclaimable_label}` : '', scan)
+        withEmbyCoverage([resultDetail, protectedDetail].filter(Boolean).join(' '), scan)
       );
       appendEmbySyncNotice('maintenanceMessageDetail', embySyncFrom(currentApply));
       appendEmbyNotificationNotice('maintenanceMessageDetail', notificationFrom(currentApply));

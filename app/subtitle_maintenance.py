@@ -146,6 +146,16 @@ def subtitle_matches_video(subtitle_name, video_stem):
     return lower_stem[len(lower_video)] in {".", "-", "_", " ", "["}
 
 
+def _subtitle_owner_stem(subtitle_name, video_stems):
+    matches = [
+        stem for stem in (video_stems or [])
+        if subtitle_matches_video(subtitle_name, stem)
+    ]
+    if not matches:
+        return ""
+    return max(matches, key=lambda stem: (len(stem), stem.casefold()))
+
+
 def subtitle_language_code(subtitle_name, video_stem, allow_subgen=True):
     stem, ext = os.path.splitext(str(subtitle_name or ""))
     if ext.lower() not in SUBTITLE_EXTS or not subtitle_matches_video(subtitle_name, video_stem):
@@ -190,7 +200,7 @@ def _public_subtitle(path, video_stem, lib_root, settings=None):
     }
 
 
-def _classify_video(video_path, folder_files, settings, lib_root):
+def _classify_video(video_path, folder_files, settings, lib_root, video_stems=None):
     name = os.path.basename(video_path)
     stem = os.path.splitext(name)[0]
     folder = os.path.dirname(video_path)
@@ -200,7 +210,10 @@ def _classify_video(video_path, folder_files, settings, lib_root):
         full_path = os.path.join(folder, entry)
         if os.path.islink(full_path) or not os.path.isfile(full_path):
             continue
-        if subtitle_matches_video(entry, stem):
+        if subtitle_matches_video(entry, stem) and (
+            not video_stems
+            or _subtitle_owner_stem(entry, video_stems).casefold() == stem.casefold()
+        ):
             subtitles.append(_public_subtitle(full_path, stem, lib_root, settings))
     subtitles.sort(key=lambda item: item["name"].lower())
 
@@ -306,12 +319,21 @@ def _scan_videos(scan, settings, lib_root):
             for filename in files
             if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
         ]
+        video_stems = [os.path.splitext(filename)[0] for filename in videos]
         for filename in sorted(videos, key=str.lower):
             _check_cancelled(scan)
             video_path = os.path.join(base, filename)
             if os.path.islink(video_path) or not os.path.isfile(video_path):
                 continue
-            items.append(_classify_video(video_path, files, settings, lib_root))
+            items.append(
+                _classify_video(
+                    video_path,
+                    files,
+                    settings,
+                    lib_root,
+                    video_stems=video_stems,
+                )
+            )
             scanned += 1
             if scanned % 25 == 0:
                 _set_scan_progress(

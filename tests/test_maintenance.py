@@ -57,10 +57,88 @@ def test_duplicate_name_normalization_removes_quality_tags():
     assert maintenance.normalize_duplicate_name("Movie 720p BluRay H264") == "movie"
     assert maintenance.normalize_duplicate_name("Movie [WEBDL-2160p](1)") == "movie"
     assert maintenance.normalize_duplicate_name("Movie [WEBDL-2160p](2)") == "movie"
+    assert maintenance.normalize_duplicate_name("Movie 2024 [WEBDL-2160p]") == "movie 2024"
+    assert maintenance.normalize_duplicate_name("Movie (2024) [WEBDL-2160p]") == "movie 2024"
+    assert maintenance.normalize_duplicate_name("Movie 2 [WEBDL-2160p]") == "movie 2"
     assert (
         maintenance.normalize_duplicate_name("Show.S01E01.1080p")
         != maintenance.normalize_duplicate_name("Show.S01E02.1080p")
     )
+
+
+@pytest.mark.parametrize("grouping_mode", ["balanced", "strict", "folder"])
+def test_duplicate_scan_protects_same_title_distinct_releases(
+    monkeypatch, tmp_path, grouping_mode
+):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Shared Title"
+    metadata = {}
+    for index, (date, duration) in enumerate(
+        (("2024-01-05", 1800), ("2024-05-20", 2450), ("2025-02-14", 3300)),
+        start=1,
+    ):
+        video = _write(folder / f"Shared Title - {date} [WEBDL-2160p].mp4", bytes([index]) * 100)
+        _write(
+            video.with_suffix(".nfo"),
+            (
+                "<movie><title>Shared Title</title><studio>Studio</studio>"
+                f"<premiered>{date}</premiered><uniqueid type=\"provider\">release-{index}</uniqueid></movie>"
+            ).encode("utf-8"),
+        )
+        metadata[video.name] = {"width": 3840, "height": 2160, "duration_seconds": duration}
+
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        metadata,
+        settings_overrides={"duplicate_grouping_mode": grouping_mode},
+    )
+    public = maintenance.public_scan(scan)
+
+    assert scan["groups"] == []
+    assert public["duplicate_group_count"] == 0
+    assert public["protected_distinct_set_count"] == 1
+    assert public["protected_distinct_video_count"] == 3
+    assert scan["protected_distinct_sets"][0]["release_dates"] == [
+        "2024-01-05",
+        "2024-05-20",
+        "2025-02-14",
+    ]
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+            "groups": [],
+        },
+        lib_root=str(lib),
+    )
+    assert plan is None
+    assert err == "Select at least one duplicate group"
+
+
+def test_duplicate_scan_protects_same_stem_candidates_with_distinct_runtimes(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Shared Title"
+    files = [
+        _write(folder / "Shared Title [WEBDL-2160p].mp4", b"a" * 100),
+        _write(folder / "Shared Title [WEBDL-2160p](1).mp4", b"b" * 100),
+        _write(folder / "Shared Title [WEBDL-2160p](2).mp4", b"c" * 100),
+    ]
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            files[0].name: {"width": 3840, "height": 2160, "duration_seconds": 1800},
+            files[1].name: {"width": 3840, "height": 2160, "duration_seconds": 2400},
+            files[2].name: {"width": 3840, "height": 2160, "duration_seconds": 3300},
+        },
+    )
+
+    assert scan["groups"] == []
+    assert maintenance.public_scan(scan)["protected_distinct_set_count"] == 1
 
 
 def test_duplicate_scan_groups_four_copy_suffixes_together(monkeypatch, tmp_path):

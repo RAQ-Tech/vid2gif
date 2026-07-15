@@ -137,6 +137,10 @@ def test_subtitle_filename_matching_and_language_parsing():
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.eng.forced.srt", stem) == "eng"
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.subgen.large-v3.srt", stem) is None
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.srt", stem) is None
+    assert subtitle_maintenance._subtitle_owner_stem(
+        "Movie 2024-01-05.subgen.large-v3.eng.srt",
+        ["Movie 2024", "Movie 2024-01-05"],
+    ) == "Movie 2024-01-05"
 
 
 def test_subtitle_scan_flags_missing_non_english_and_unknown(monkeypatch, tmp_path):
@@ -162,6 +166,30 @@ def test_subtitle_scan_flags_missing_non_english_and_unknown(monkeypatch, tmp_pa
     assert page["items"][0]["srt_files"][0]["path"] == str(bad)
     assert page["items"][0]["srt_files"][0]["language_code"] == "nno"
     assert "items" not in subtitle_maintenance.public_scan(scan)
+
+
+def test_subtitle_scan_tracks_each_release_in_shared_folder_by_exact_stem(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Shared Title"
+    stems = [
+        "Shared Title - 2024-01-05 [WEBDL-2160p]",
+        "Shared Title - 2024-05-20 [WEBDL-2160p]",
+        "Shared Title - 2025-02-14 [WEBDL-2160p]",
+    ]
+    for stem in stems:
+        _write(folder / f"{stem}.mp4")
+    _write(folder / f"{stems[0]}.subgen.large-v3.eng.srt")
+    _write(folder / f"{stems[2]}.subgen.large-v3.eng.srt")
+
+    scan = _scan(lib, monkeypatch)
+
+    assert scan["counts"]["scanned_video_count"] == 3
+    assert scan["counts"]["ok_count"] == 2
+    assert scan["counts"]["missing_count"] == 1
+    by_name = {item["name"]: item for item in scan["items"]}
+    assert by_name[f"{stems[0]}.mp4"]["subtitle_count"] == 1
+    assert by_name[f"{stems[1]}.mp4"]["subtitle_count"] == 0
+    assert by_name[f"{stems[2]}.mp4"]["subtitle_count"] == 1
 
 
 def test_subtitle_scan_accepts_configured_expected_language(monkeypatch, tmp_path):
