@@ -943,14 +943,14 @@
         <div class="panel-heading">
           <div>
             <h2 class="h5 mb-1">Review Cleanup</h2>
-            <div class="text-muted small">Choose the keeper, operation overrides, and final file action plan.</div>
+            <div class="text-muted small">Confirm the keeper and each file's one final action: keep, quarantine/delete, or rename.</div>
           </div>
           <div class="toolbar-row mb-0">
             <label class="form-label mb-0 compact-control" for="maintenanceAction">
-              Action
+              Cleanup mode
               <select id="maintenanceAction" class="form-select form-select-sm">
-                <option value="move" selected>Move to quarantine</option>
-                <option value="delete">Delete immediately</option>
+                <option value="move" selected>Quarantine selected files</option>
+                <option value="delete">Permanently delete selected files</option>
               </select>
             </label>
             <button id="maintenancePlanButton" class="btn btn-outline-primary btn-sm" type="button" disabled>
@@ -967,13 +967,36 @@
         <div class="settings-panel">
           <div class="panel-subheading">
             <i class="bi bi-check2-square" aria-hidden="true"></i>
-            <span>Choose duplicate groups</span>
+            <span>Quick review</span>
           </div>
-          <p class="small text-muted mb-2">New scan results select every duplicate group across all result pages. Expand a group to review its keeper and file-level actions before quarantine.</p>
+          <p class="small text-muted mb-2">New scan results select every duplicate group across all result pages. Each collapsed card shows the planned outcome and flags unusual groups; expand only the ones that need a closer look.</p>
+          <div id="duplicateReviewSummary" aria-live="polite">
+            <div class="duplicate-review-stats">
+              <div class="duplicate-review-stat"><strong>0</strong><span>Groups selected</span></div>
+              <div class="duplicate-review-stat duplicate-review-keep"><strong>0</strong><span>Files kept</span></div>
+              <div class="duplicate-review-stat duplicate-review-cleanup"><strong>0</strong><span>Files quarantined</span></div>
+              <div class="duplicate-review-stat duplicate-review-rename"><strong>0</strong><span>Sidecars renamed</span></div>
+              <div class="duplicate-review-stat duplicate-review-attention"><strong>0</strong><span>Groups flagged</span></div>
+            </div>
+          </div>
           <div id="duplicateSelectionSummary" class="scan-estimate-detail">Run a scan to choose duplicate groups.</div>
           <div class="toolbar-row mt-3">
-            <button id="duplicateSelectAllButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select groups across all pages</button>
-            <button id="duplicateClearSelectionButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Clear selection</button>
+            <button id="duplicateSelectAllButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select all groups</button>
+            <button id="duplicateClearSelectionButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Deselect all groups</button>
+            <button id="duplicateSelectPageButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select this page</button>
+            <button id="duplicateDeselectPageButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Deselect this page</button>
+            <button id="duplicateExpandPageButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Expand this page</button>
+            <button id="duplicateCollapsePageButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Collapse this page</button>
+          </div>
+          <div class="toolbar-row mt-2">
+            <label class="form-label mb-0 compact-control" for="duplicateReviewFilter">
+              Show
+              <select id="duplicateReviewFilter" class="form-select form-select-sm">
+                <option value="all" selected>All groups</option>
+                <option value="attention">Flagged for review</option>
+                <option value="ready">No review flags</option>
+              </select>
+            </label>
             <label class="form-label mb-0 compact-control" for="duplicatePageLimit">
               Per page
               <select id="duplicatePageLimit" class="form-select form-select-sm">

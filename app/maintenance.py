@@ -608,6 +608,68 @@ def _annotate_group_defaults(videos, recommended, settings, lib_root, action="mo
             accessory["default_selected"] = operation != "keep"
 
 
+def _group_default_action_counts(group):
+    counts = {"keep": 0, "cleanup": 0, "rename": 0}
+    for video in group.get("videos") or []:
+        items = [video, *(video.get("accessories") or [])]
+        for item in items:
+            operation = str(item.get("default_operation") or "keep")
+            if operation == "rename":
+                counts["rename"] += 1
+            elif operation in {"move", "delete", "cleanup"}:
+                counts["cleanup"] += 1
+            else:
+                counts["keep"] += 1
+    return counts
+
+
+def _group_review_flags(group):
+    flags = []
+    accessory_buckets = {}
+    unknown_count = 0
+    for video in group.get("videos") or []:
+        for accessory in video.get("accessories") or []:
+            if accessory.get("role") == "unknown":
+                unknown_count += 1
+            key = accessory.get("equivalence_key") or (
+                f"{accessory.get('role', 'accessory')}:{str(accessory.get('suffix') or '').lower()}"
+            )
+            accessory_buckets.setdefault(key, []).append(accessory)
+
+    for accessories in accessory_buckets.values():
+        sizes = {int(item.get("size_bytes") or 0) for item in accessories}
+        if len(accessories) < 2 or len(sizes) < 2:
+            continue
+        role = str(accessories[0].get("role") or "accessory")
+        flags.append(
+            {
+                "kind": "different_size_accessories",
+                "role": role,
+                "file_count": len(accessories),
+                "label": f"{len(accessories)} matching {role} files differ in size",
+            }
+        )
+    if unknown_count:
+        flags.append(
+            {
+                "kind": "unknown_accessories",
+                "role": "unknown",
+                "file_count": unknown_count,
+                "label": f"{unknown_count} unrecognized sidecar file{'s' if unknown_count != 1 else ''}",
+            }
+        )
+    if len(group.get("videos") or []) > 2:
+        flags.append(
+            {
+                "kind": "multiple_video_candidates",
+                "role": "video",
+                "file_count": len(group.get("videos") or []),
+                "label": f"{len(group.get('videos') or [])} video candidates",
+            }
+        )
+    return flags
+
+
 def _duration_clusters(videos):
     clusters = []
     for video in videos:
@@ -703,6 +765,8 @@ def _public_file(item):
         "parent_video_id": item.get("parent_video_id", ""),
         "role": item.get("role", ""),
         "suffix": item.get("suffix", ""),
+        "equivalence_key": item.get("equivalence_key", ""),
+        "renameable": bool(item.get("renameable")),
         "default_operation": item.get("default_operation", ""),
         "default_destination_path": item.get("default_destination_path", ""),
         "default_reason": item.get("default_reason", ""),
@@ -723,6 +787,7 @@ def _public_file(item):
 
 
 def _public_group(group):
+    review_flags = _group_review_flags(group)
     return {
         "id": group.get("id", ""),
         "folder": group.get("folder", ""),
@@ -733,6 +798,9 @@ def _public_group(group):
         "reclaimable_bytes": group.get("reclaimable_bytes", 0),
         "reclaimable_label": group.get("reclaimable_label", ""),
         "accessory_count": group.get("accessory_count", 0),
+        "default_action_counts": _group_default_action_counts(group),
+        "needs_review": bool(review_flags),
+        "review_flags": review_flags,
     }
 
 
@@ -740,6 +808,7 @@ def _public_group_summary(group):
     videos = group.get("videos") or []
     recommended_id = group.get("recommended_keep_id", "")
     recommended = next((video for video in videos if video.get("id") == recommended_id), {})
+    review_flags = _group_review_flags(group)
     return {
         "id": group.get("id", ""),
         "folder": group.get("folder", ""),
@@ -750,12 +819,20 @@ def _public_group_summary(group):
         "accessory_count": group.get("accessory_count", 0),
         "reclaimable_bytes": group.get("reclaimable_bytes", 0),
         "reclaimable_label": group.get("reclaimable_label", ""),
+        "default_action_counts": _group_default_action_counts(group),
+        "needs_review": bool(review_flags),
+        "review_flags": review_flags,
     }
 
 
 def public_scan(scan, include_groups=False):
     if not scan:
         return None
+    groups = list(scan.get("groups") or [])
+    default_action_counts = {"keep": 0, "cleanup": 0, "rename": 0}
+    for group in groups:
+        for key, value in _group_default_action_counts(group).items():
+            default_action_counts[key] += value
     public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
@@ -774,6 +851,8 @@ def public_scan(scan, include_groups=False):
         "settings": public_duplicate_settings(scan.get("settings")),
         "results_page_size": DUPLICATE_GROUP_PAGE_DEFAULT,
         "large_result": len(scan.get("groups") or []) >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
+        "default_action_counts": default_action_counts,
+        "review_group_count": sum(1 for group in groups if _group_review_flags(group)),
         "emby_mapping": emby_catalog.public_summary(
             scan.get("emby_mapping"), app_settings.load_settings()
         ),
@@ -1066,7 +1145,7 @@ def status_payload(scan_id=None):
     return {"scan": public_scan(scan)}, None
 
 
-def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
+def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT, review="all"):
     _ensure_duplicate_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     with maintenance_lock:
@@ -1077,6 +1156,14 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
         if scan.get("status") != "success":
             return None, "Scan is not complete"
         groups = list(scan.get("groups") or [])
+
+    review = str(review or "all").strip().lower()
+    if review == "attention":
+        groups = [group for group in groups if _group_review_flags(group)]
+    elif review == "ready":
+        groups = [group for group in groups if not _group_review_flags(group)]
+    else:
+        review = "all"
 
     total = len(groups)
     page = groups[offset : offset + limit]
@@ -1091,6 +1178,7 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT):
         "next_offset": offset + limit if offset + limit < total else None,
         "previous_offset": max(0, offset - limit) if offset > 0 else None,
         "large_result": total >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
+        "review": review,
         "groups": [_public_group_summary(group) for group in page],
     }, None
 
@@ -1346,17 +1434,24 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
             removable_video_ids = [video_id for video_id in removable_video_ids if video_id in allowed]
 
         candidate_files = {}
-        for video_id in removable_video_ids:
-            video = videos[video_id]
-            candidate_files[video_id] = video
-            for accessory in video.get("accessories") or []:
-                candidate_files[accessory["id"]] = accessory
+        removable_video_id_set = set(removable_video_ids)
+        for video_id, video in videos.items():
+            if video_id in removable_video_id_set:
+                candidate_files[video_id] = video
+            if video_id == keep_id or video_id in removable_video_id_set:
+                for accessory in video.get("accessories") or []:
+                    candidate_files[accessory["id"]] = accessory
 
         include_file_ids = override.get("include_file_ids")
         if isinstance(include_file_ids, list):
             selected_ids = [str(file_id) for file_id in include_file_ids if str(file_id) in candidate_files]
         else:
-            selected_ids = list(candidate_files)
+            selected_ids = [
+                file_id
+                for file_id, item in candidate_files.items()
+                if item.get("default_selected") is not False
+                and item.get("default_operation") != "keep"
+            ]
         operation_overrides = _file_operation_overrides(override)
 
         for file_id in selected_ids:

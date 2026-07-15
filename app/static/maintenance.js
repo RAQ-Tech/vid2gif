@@ -15,6 +15,7 @@
   let currentGroupsPage = null;
   let groupPageOffset = 0;
   let groupPageLimit = 25;
+  let duplicateReviewFilter = 'all';
   let pollTimer = null;
   let applyPollTimer = null;
   const DUPLICATE_SELECTION_STORAGE_KEY = 'vid2gif_duplicate_cleanup_selection_v1';
@@ -25,7 +26,8 @@
     excluded: new Set(),
     selected: new Set(),
     total: 0,
-    reclaimableById: new Map()
+    reclaimableById: new Map(),
+    actionCountsById: new Map()
   };
   let previewScan = null;
   let previewPollTimer = null;
@@ -571,12 +573,19 @@
     if (summary) summary.innerHTML = '';
   }
 
-  function fileDetails(file) {
+  function fileParentVideo(group, file) {
+    if (file.kind === 'video') return file;
+    return (group.videos || []).find(video => video.id === file.parent_video_id) || null;
+  }
+
+  function fileDetails(group, file, state) {
     if (file.kind === 'video') {
       return file.metadata_label || 'Video';
     }
-    const parts = [file.role ? `Accessory: ${file.role}` : 'Accessory'];
-    if (file.default_reason) parts.push(file.default_reason);
+    const parent = fileParentVideo(group, file);
+    const parts = [file.role ? `${file.role[0].toUpperCase()}${file.role.slice(1)} sidecar` : 'Sidecar'];
+    if (parent?.name) parts.push(`for ${parent.name}`);
+    if (parent?.id === state.keepId) parts.push('attached to keeper');
     return parts.join(' - ');
   }
 
@@ -584,31 +593,67 @@
     return file.default_selected !== false && file.default_operation !== 'keep';
   }
 
-  function fileOperationOptions(group, file, state, locked = false) {
-    if (locked) return '<span class="badge text-bg-secondary">Keep</span>';
-    const selected = state.fileOperations?.get(file.id) || 'default';
-    const options = file.kind === 'video'
-      ? [
-        ['default', 'Default cleanup'],
-        ['keep', 'Keep']
-      ]
-      : [
-        ['default', `Default: ${file.default_operation || 'review'}`],
-        ['cleanup', 'Move/Delete'],
-        ['rename', 'Rename to keeper'],
-        ['keep', 'Keep']
-      ];
-    return `<select class="form-select form-select-sm" data-maint-operation="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}">` +
+  function defaultFileAction(file) {
+    if (!defaultSelected(file)) return 'keep';
+    return file.default_operation === 'rename' ? 'rename' : 'cleanup';
+  }
+
+  function effectiveFileAction(file, state) {
+    const override = state.fileOperations?.get(file.id);
+    if (override === 'keep') return 'keep';
+    if (override === 'rename') return 'rename';
+    if (['cleanup', 'move', 'delete'].includes(override || '')) return 'cleanup';
+    return state.includedFileIds.has(file.id) ? defaultFileAction(file) : 'keep';
+  }
+
+  function cleanupActionLabel() {
+    return byId('maintenanceAction')?.value === 'delete' ? 'Delete permanently' : 'Move to quarantine';
+  }
+
+  function setFileAction(state, fileId, action) {
+    if (!state || !fileId) return;
+    if (action === 'keep') {
+      state.includedFileIds.delete(fileId);
+      state.fileOperations.set(fileId, 'keep');
+    } else {
+      state.includedFileIds.add(fileId);
+      state.fileOperations.set(fileId, action === 'rename' ? 'rename' : 'cleanup');
+    }
+  }
+
+  function fileActionOptions(group, file, state, locked = false) {
+    if (locked) return '<span class="badge text-bg-success">Keep selected video</span>';
+    const selected = effectiveFileAction(file, state);
+    const parent = fileParentVideo(group, file);
+    const options = [
+      ['keep', 'Keep in library'],
+      ['cleanup', cleanupActionLabel()]
+    ];
+    if (file.kind !== 'video' && file.renameable && parent?.id !== state.keepId) {
+      options.push(['rename', 'Rename to match keeper']);
+    }
+    return `<select class="form-select form-select-sm" data-maint-operation="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>` +
       options.map(([value, label]) => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('') +
       `</select>`;
+  }
+
+  function fileActionHelp(file, state, locked = false) {
+    if (locked) return 'This is the selected keeper video.';
+    const action = effectiveFileAction(file, state);
+    if (action === 'rename') return 'Preserves this sidecar by renaming it to the keeper video stem.';
+    if (action === 'cleanup') {
+      return byId('maintenanceAction')?.value === 'delete'
+        ? 'This file will be permanently deleted.'
+        : 'This file will be moved to the configured quarantine folder.';
+    }
+    return 'This file stays where it is.';
   }
 
   function groupCandidateFiles(group, state) {
     const keepId = state.keepId || group.recommended_keep_id;
     const files = [];
     (group.videos || []).forEach(video => {
-      if (video.id === keepId) return;
-      files.push(video);
+      if (video.id !== keepId) files.push(video);
       (video.accessories || []).forEach(accessory => files.push(accessory));
     });
     return files;
@@ -623,9 +668,8 @@
     return files;
   }
 
-  function fileBelongsToKeeper(file, state) {
-    const keeperId = state.keepId || '';
-    return file.kind === 'video' ? file.id === keeperId : file.parent_video_id === keeperId;
+  function fileIsKeeperVideo(file, state) {
+    return file.kind === 'video' && file.id === (state.keepId || '');
   }
 
   function duplicateSelectionFromStorage(scanId, total) {
@@ -643,7 +687,8 @@
       excluded: new Set(sameScan && Array.isArray(saved.excluded) ? saved.excluded : []),
       selected: new Set(sameScan && Array.isArray(saved.selected) ? saved.selected : []),
       total: Number(total || 0),
-      reclaimableById: new Map(sameScan && Array.isArray(saved.reclaimableById) ? saved.reclaimableById : [])
+      reclaimableById: new Map(sameScan && Array.isArray(saved.reclaimableById) ? saved.reclaimableById : []),
+      actionCountsById: new Map(sameScan && Array.isArray(saved.actionCountsById) ? saved.actionCountsById : [])
     };
   }
 
@@ -667,7 +712,8 @@
         mode: duplicateSelection.mode,
         excluded: Array.from(duplicateSelection.excluded),
         selected: Array.from(duplicateSelection.selected),
-        reclaimableById: Array.from(duplicateSelection.reclaimableById.entries())
+        reclaimableById: Array.from(duplicateSelection.reclaimableById.entries()),
+        actionCountsById: Array.from(duplicateSelection.actionCountsById.entries())
       }));
     } catch (_e) {
       // Selection still remains stable for this page session.
@@ -726,10 +772,21 @@
       if (label) label.textContent = selected ? `Review ${selected} Selected` : 'Review Selection';
     }
     const selectButton = byId('duplicateSelectAllButton');
-    if (selectButton) selectButton.disabled = !duplicateSelection.total || applyActive;
+    if (selectButton) {
+      selectButton.disabled = !duplicateSelection.total || applyActive;
+      selectButton.textContent = duplicateSelection.total ? `Select all ${duplicateSelection.total} groups` : 'Select all groups';
+    }
     const clearButton = byId('duplicateClearSelectionButton');
-    if (clearButton) clearButton.disabled = !selected || applyActive;
+    if (clearButton) {
+      clearButton.disabled = !selected || applyActive;
+      clearButton.textContent = 'Deselect all groups';
+    }
+    ['duplicateSelectPageButton', 'duplicateDeselectPageButton', 'duplicateExpandPageButton', 'duplicateCollapsePageButton'].forEach(id => {
+      const button = byId(id);
+      if (button) button.disabled = !(currentGroupsPage?.groups || []).length || applyActive;
+    });
     renderDuplicateSelectionSummary();
+    renderDuplicateReviewSummary();
   }
 
   function duplicateSelectionChanged() {
@@ -789,6 +846,83 @@
     return state;
   }
 
+  function emptyActionCounts() {
+    return {keep: 0, cleanup: 0, rename: 0};
+  }
+
+  function normalizedActionCounts(counts) {
+    return {
+      keep: Number(counts?.keep || 0),
+      cleanup: Number(counts?.cleanup || 0),
+      rename: Number(counts?.rename || 0)
+    };
+  }
+
+  function addActionCounts(target, source, multiplier = 1) {
+    ['keep', 'cleanup', 'rename'].forEach(key => {
+      target[key] = Number(target[key] || 0) + (Number(source?.[key] || 0) * multiplier);
+    });
+    return target;
+  }
+
+  function groupReviewStats(group, state) {
+    if (!(group.videos || []).length) {
+      return {
+        counts: normalizedActionCounts(group.default_action_counts),
+        cleanupBytes: Number(group.reclaimable_bytes || 0)
+      };
+    }
+    const counts = emptyActionCounts();
+    let cleanupBytes = 0;
+    groupDisplayFiles(group).forEach(file => {
+      const action = fileIsKeeperVideo(file, state) ? 'keep' : effectiveFileAction(file, state);
+      counts[action] += 1;
+      if (action === 'cleanup') cleanupBytes += Number(file.size_bytes || 0);
+    });
+    return {counts, cleanupBytes};
+  }
+
+  function duplicateReviewTotals() {
+    const totals = emptyActionCounts();
+    if (duplicateSelection.mode === 'all_eligible') {
+      addActionCounts(totals, currentScan?.default_action_counts);
+      duplicateSelection.excluded.forEach(groupId => {
+        addActionCounts(totals, duplicateSelection.actionCountsById.get(groupId), -1);
+      });
+    } else {
+      duplicateSelection.selected.forEach(groupId => {
+        addActionCounts(totals, duplicateSelection.actionCountsById.get(groupId));
+      });
+    }
+    groupState.forEach((state, groupId) => {
+      if (!duplicateGroupIsSelected(groupId)) return;
+      const group = groupSummaries.get(groupId);
+      if (!group || !(group.videos || []).length) return;
+      addActionCounts(totals, duplicateSelection.actionCountsById.get(groupId), -1);
+      addActionCounts(totals, groupReviewStats(group, state).counts);
+    });
+    Object.keys(totals).forEach(key => { totals[key] = Math.max(0, totals[key]); });
+    return totals;
+  }
+
+  function renderDuplicateReviewSummary() {
+    const target = byId('duplicateReviewSummary');
+    if (!target) return;
+    if (!currentScan || currentScan.status !== 'success') {
+      target.innerHTML = '<div class="small text-muted">Run a scan to see the proposed keep and cleanup totals.</div>';
+      return;
+    }
+    const totals = duplicateReviewTotals();
+    const cleanupLabel = byId('maintenanceAction')?.value === 'delete' ? 'Delete' : 'Quarantine';
+    target.innerHTML = `<div class="duplicate-review-stats">` +
+      `<span class="duplicate-review-stat"><strong>${escapeHtml(duplicateSelectedCount())}</strong><small>Groups selected</small></span>` +
+      `<span class="duplicate-review-stat duplicate-review-keep"><strong>${escapeHtml(totals.keep)}</strong><small>Keep</small></span>` +
+      `<span class="duplicate-review-stat duplicate-review-cleanup"><strong>${escapeHtml(totals.cleanup)}</strong><small>${escapeHtml(cleanupLabel)}</small></span>` +
+      `<span class="duplicate-review-stat duplicate-review-rename"><strong>${escapeHtml(totals.rename)}</strong><small>Rename sidecars</small></span>` +
+      `<span class="duplicate-review-stat duplicate-review-attention"><strong>${escapeHtml(currentScan.review_group_count || 0)}</strong><small>Groups flagged</small></span>` +
+      `</div><div class="small text-muted mt-2">These are the current choices. You only need to expand groups that are flagged or that you want to override.</div>`;
+  }
+
   function updateSelectedSize() {
     let total = 0;
     if (duplicateSelection.mode === 'all_eligible') {
@@ -801,12 +935,20 @@
         total += Number(duplicateSelection.reclaimableById.get(groupId) || 0);
       });
     }
+    groupState.forEach((state, groupId) => {
+      if (!duplicateGroupIsSelected(groupId)) return;
+      const group = groupSummaries.get(groupId);
+      if (!group || !(group.videos || []).length) return;
+      total -= Number(duplicateSelection.reclaimableById.get(groupId) || 0);
+      total += groupReviewStats(group, state).cleanupBytes;
+    });
     total = Math.max(0, total);
     const selected = byId('maintenanceSelectedSize');
     if (selected) {
       selected.textContent = currentPlan?.total_size_label || (duplicateSelectedCount() ? `about ${formatSize(total)}` : '0 B');
       selected.title = currentPlan ? 'Reviewed cleanup size' : 'Estimated from the scan defaults; Review Selection shows the exact plan.';
     }
+    renderDuplicateReviewSummary();
   }
 
   function markGroupDirty(groupId) {
@@ -845,10 +987,6 @@
     return `<div class="maintenance-pager">` +
       `<div class="text-muted small">${escapeHtml(pageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
       `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="select">Select this page</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="deselect">Clear this page</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="expand">Expand all</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-bulk="collapse">Collapse all</button>` +
       `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
       `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
       `</div>` +
@@ -861,17 +999,24 @@
   }
 
   function fileRow(group, file, state) {
-    const locked = fileBelongsToKeeper(file, state);
-    const checked = !locked && state.includedFileIds.has(file.id) ? ' checked' : '';
-    const disabled = state.enabled && !locked ? '' : ' disabled';
-    const kind = file.kind === 'video' ? 'Video' : 'Accessory';
+    const locked = fileIsKeeperVideo(file, state);
+    const parent = fileParentVideo(group, file);
+    const kind = file.kind === 'video'
+      ? 'Video'
+      : `${file.role ? `${file.role[0].toUpperCase()}${file.role.slice(1)}` : 'Sidecar'}`;
+    const association = file.kind === 'video'
+      ? (file.metadata_label || 'Video candidate')
+      : `Attached to ${parent?.name || 'video'}`;
+    const associationBadge = file.kind !== 'video' && parent?.id === state.keepId
+      ? '<span class="badge text-bg-info ms-1">Keeper sidecar</span>'
+      : '';
+    const action = locked ? 'keep' : effectiveFileAction(file, state);
     return `<tr>` +
-      `<td><input class="form-check-input" type="checkbox" data-maint-file="${escapeHtml(file.id)}" data-maint-group="${escapeHtml(group.id)}" aria-label="Include ${escapeHtml(file.name)}"${checked}${disabled}></td>` +
-      `<td data-sort-value="${escapeHtml(kind)}">${escapeHtml(kind)}</td>` +
-      `<td class="path-cell" data-sort-value="${escapeHtml(file.name)}"><code title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
-      `<td class="path-cell" data-sort-value="${escapeHtml(fileDetails(file))}"><code title="${escapeHtml(fileDetails(file))}">${escapeHtml(fileDetails(file))}</code></td>` +
-      `<td data-sort-value="${locked ? 'keep' : escapeHtml(state.fileOperations?.get(file.id) || file.default_operation || 'default')}">${fileOperationOptions(group, file, state, locked)}</td>` +
+      `<td data-sort-value="${escapeHtml(kind)}"><span class="fw-semibold">${escapeHtml(kind)}</span>${locked ? '<span class="badge text-bg-success ms-1">Keeper</span>' : ''}</td>` +
+      `<td class="duplicate-file-cell" data-sort-value="${escapeHtml(file.name)}"><code class="duplicate-file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</code></td>` +
+      `<td class="duplicate-file-context" data-sort-value="${escapeHtml(fileDetails(group, file, state))}">${escapeHtml(association)}${associationBadge}</td>` +
       `<td data-sort-value="${Number(file.size_bytes || 0)}">${escapeHtml(file.size_label || formatSize(file.size_bytes))}</td>` +
+      `<td class="duplicate-file-action" data-sort-value="${escapeHtml(action)}">${fileActionOptions(group, file, state, locked)}<div class="small text-muted mt-1">${escapeHtml(fileActionHelp(file, state, locked))}</div></td>` +
       `</tr>`;
   }
 
@@ -928,7 +1073,7 @@
     const target = byId('maintenanceGroups');
     if (target) target.innerHTML = '<div class="text-muted text-center py-4">Loading duplicate groups...</div>';
     try {
-      const res = await fetch(`/api/maintenance/duplicates/groups?scan_id=${encodeURIComponent(currentScan.id)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(groupPageLimit)}`);
+      const res = await fetch(`/api/maintenance/duplicates/groups?scan_id=${encodeURIComponent(currentScan.id)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(groupPageLimit)}&review=${encodeURIComponent(duplicateReviewFilter)}`);
       const data = await readJsonResponse(res);
       if (!res.ok) {
         setMessage(data.error || 'Duplicate groups unavailable', '');
@@ -941,6 +1086,7 @@
         const existing = groupSummaries.get(group.id) || {};
         groupSummaries.set(group.id, {...existing, ...group});
         duplicateSelection.reclaimableById.set(group.id, Number(group.reclaimable_bytes || 0));
+        duplicateSelection.actionCountsById.set(group.id, normalizedActionCounts(group.default_action_counts));
       });
       saveDuplicateSelection();
       renderGroups();
@@ -957,6 +1103,27 @@
     }
   }
 
+  function renderGroupReviewStats(group, state) {
+    if (!state.enabled) {
+      return '<div class="duplicate-group-review"><span class="badge text-bg-secondary">Excluded from this cleanup run</span></div>';
+    }
+    const stats = groupReviewStats(group, state).counts;
+    const cleanupLabel = byId('maintenanceAction')?.value === 'delete' ? 'Delete' : 'Quarantine';
+    return `<div class="duplicate-group-review">` +
+      `<span class="badge duplicate-review-keep">Keep ${escapeHtml(stats.keep)}</span>` +
+      `<span class="badge duplicate-review-cleanup">${escapeHtml(cleanupLabel)} ${escapeHtml(stats.cleanup)}</span>` +
+      `<span class="badge duplicate-review-rename">Rename ${escapeHtml(stats.rename)}</span>` +
+      `</div>`;
+  }
+
+  function renderGroupReviewFlags(group) {
+    const flags = group.review_flags || [];
+    if (!flags.length) return '<span class="badge text-bg-success">No quick-review flags</span>';
+    return flags.map(flag =>
+      `<span class="badge text-bg-warning" title="Review this group before applying">${escapeHtml(flag.label || 'Review recommended')}</span>`
+    ).join('');
+  }
+
   function renderGroup(group) {
     const state = ensureGroupState(group);
     const expanded = Boolean(state.expanded);
@@ -965,7 +1132,7 @@
     const displayFiles = hasDetails ? groupDisplayFiles(group) : [];
     const rows = displayFiles.length
       ? displayFiles.map(file => fileRow(group, file, state)).join('')
-      : '<tr><td colspan="6" class="text-muted text-center py-3">No files are available in this group.</td></tr>';
+      : '<tr><td colspan="5" class="text-muted text-center py-3">No files are available in this group.</td></tr>';
     const keeper = hasDetails
       ? (group.videos || []).find(video => video.id === state.keepId)
       : null;
@@ -975,13 +1142,20 @@
         ? '<div class="text-muted small mt-3">Loading group details...</div>'
         : (hasDetails
           ? `<div class="maintenance-group-detail">` +
-            `<label class="form-label mb-0 compact-control">Keeper` +
+            `<div class="duplicate-group-tools">` +
+            `<label class="form-label mb-0 duplicate-keeper-control">Video to keep` +
             `<select class="form-select form-select-sm" data-maint-keep="${escapeHtml(group.id)}">` +
             `${(group.videos || []).map(video => groupOption(video, state.keepId)).join('')}` +
-            `</select></label>` +
+            `</select><code class="duplicate-keeper-name">${escapeHtml(keeper?.name || '')}</code></label>` +
+            `<div class="toolbar-row mb-0">` +
+            `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-group-defaults="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>Reset suggested actions</button>` +
+            `<button class="btn btn-outline-warning btn-sm" type="button" data-maint-group-sidecars="cleanup" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>${escapeHtml(cleanupActionLabel())} all sidecars</button>` +
+            `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-group-sidecars="keep" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>Keep all sidecars</button>` +
+            `</div></div>` +
+            `<div class="small text-muted mt-2"><strong>Action meanings:</strong> Keep leaves a file untouched. ${escapeHtml(cleanupActionLabel())} removes it from the library${byId('maintenanceAction')?.value === 'delete' ? ' permanently' : ' and stores it in quarantine'}. Rename preserves a sidecar by changing only its filename to match the kept video.</div>` +
             `<div class="table-responsive workspace-table-wrap mt-2">` +
-            `<table class="table table-hover align-middle workspace-table maintenance-table" data-table-id="maintenance-duplicate-files" data-sort-mode="client">` +
-            `<thead><tr><th data-column-id="include" data-resizable="false">Include</th><th data-column-id="kind" data-sortable="true">Kind</th><th data-column-id="file" data-sortable="true">File</th><th data-column-id="details" data-sortable="true">Details</th><th data-column-id="operation" data-sortable="true">Operation</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th></tr></thead>` +
+            `<table class="table table-hover align-middle workspace-table maintenance-table duplicate-review-table" data-table-id="maintenance-duplicate-files" data-sort-mode="client">` +
+            `<thead><tr><th data-column-id="kind" data-sortable="true">Type</th><th data-column-id="file" data-sortable="true">Full filename</th><th data-column-id="details" data-sortable="true">Belongs to / details</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="operation" data-sortable="true">Planned action</th></tr></thead>` +
             `<tbody>${rows}</tbody>` +
             `</table></div></div>`
           : '<div class="text-muted small mt-3">Open this group to load file details.</div>'))
@@ -990,7 +1164,7 @@
       `<div class="maintenance-group-heading">` +
       `<div class="form-check">` +
       `<input class="form-check-input" type="checkbox" data-maint-group-enabled="${escapeHtml(group.id)}" id="enabled-${escapeHtml(group.id)}"${state.enabled ? ' checked' : ''}>` +
-      `<label class="form-check-label" for="enabled-${escapeHtml(group.id)}">Clean group</label>` +
+      `<label class="form-check-label" for="enabled-${escapeHtml(group.id)}">Include group</label>` +
       `</div>` +
       `<div class="maintenance-group-title">` +
       `<div class="fw-semibold">${escapeHtml(group.normalized_name || 'Duplicate group')}</div>` +
@@ -1002,10 +1176,12 @@
       `</div>` +
       `<div class="maintenance-group-summary">` +
       `<span>${escapeHtml(group.video_count ?? (group.videos || []).length)} videos</span>` +
-      `<span>${escapeHtml(group.accessory_count || 0)} accessory files</span>` +
-      `<span>Recommended: ${escapeHtml(recommended)}</span>` +
+      `<span>${escapeHtml(group.accessory_count || 0)} sidecar files</span>` +
+      `<span class="duplicate-summary-keeper">Keep: <code>${escapeHtml(recommended)}</code></span>` +
       `<span>Default reclaimable: ${escapeHtml(group.reclaimable_label || '')}</span>` +
       `</div>` +
+      `${renderGroupReviewStats(group, state)}` +
+      `<div class="duplicate-review-flags">${renderGroupReviewFlags(group)}</div>` +
       `${detail}` +
       `</section>`;
   }
@@ -1019,8 +1195,13 @@
       return;
     }
     if (!currentGroupsPage || !(currentGroupsPage.groups || []).length) {
+      const emptyLabel = duplicateReviewFilter === 'attention'
+        ? 'No groups are flagged for closer review.'
+        : (duplicateReviewFilter === 'ready'
+          ? 'Every group currently has a quick-review flag.'
+          : 'No duplicate groups on this page.');
       target.innerHTML = currentScan.duplicate_group_count
-        ? `${currentGroupsPage ? renderPager(currentGroupsPage) : ''}<div class="text-muted text-center py-4">No duplicate groups on this page.</div>`
+        ? `${currentGroupsPage ? renderPager(currentGroupsPage) : ''}<div class="text-muted text-center py-4">${emptyLabel}</div>`
         : '<div class="text-muted text-center py-4">No duplicate groups found.</div>';
       updateSelectedSize();
       return;
@@ -1028,6 +1209,48 @@
     const groups = currentPageGroups();
     target.innerHTML = `${renderPager(currentGroupsPage)}${groups.map(renderGroup).join('')}${renderPager(currentGroupsPage)}`;
     updateSelectedSize();
+  }
+
+  function setCurrentPageGroupSelection(selected) {
+    currentPageGroups().forEach(group => {
+      setDuplicateGroupSelected(group.id, selected);
+    });
+    duplicateSelectionChanged();
+    renderGroups();
+  }
+
+  function setCurrentPageExpanded(expanded) {
+    currentPageGroups().forEach(group => { ensureGroupState(group).expanded = expanded; });
+    renderGroups();
+    if (expanded) {
+      Promise.allSettled(currentPageGroups()
+        .filter(group => !(group.videos || []).length)
+        .map(group => loadGroupDetails(group.id)));
+    }
+  }
+
+  function resetGroupSuggestedActions(groupId) {
+    const group = groupSummaries.get(groupId);
+    const state = groupState.get(groupId);
+    if (!group || !state) return;
+    const candidates = groupCandidateFiles(group, state);
+    state.includedFileIds = new Set(candidates.filter(defaultSelected).map(file => file.id));
+    state.fileOperations = new Map();
+    state.dirty = true;
+    markGroupDirty(groupId);
+    renderGroups();
+  }
+
+  function setGroupSidecarActions(groupId, action) {
+    const group = groupSummaries.get(groupId);
+    const state = groupState.get(groupId);
+    if (!group || !state) return;
+    groupCandidateFiles(group, state)
+      .filter(file => file.kind !== 'video')
+      .forEach(file => setFileAction(state, file.id, action));
+    state.dirty = true;
+    markGroupDirty(groupId);
+    renderGroups();
   }
 
   async function openBrowser(path) {
@@ -4146,6 +4369,15 @@
       duplicateSelectionChanged();
       renderGroups();
     });
+    byId('duplicateSelectPageButton')?.addEventListener('click', () => setCurrentPageGroupSelection(true));
+    byId('duplicateDeselectPageButton')?.addEventListener('click', () => setCurrentPageGroupSelection(false));
+    byId('duplicateExpandPageButton')?.addEventListener('click', () => setCurrentPageExpanded(true));
+    byId('duplicateCollapsePageButton')?.addEventListener('click', () => setCurrentPageExpanded(false));
+    byId('duplicateReviewFilter')?.addEventListener('change', event => {
+      duplicateReviewFilter = ['all', 'attention', 'ready'].includes(event.target.value) ? event.target.value : 'all';
+      groupPageOffset = 0;
+      loadGroupsPage(0);
+    });
     byId('duplicatePageLimit')?.addEventListener('change', event => {
       groupPageLimit = [25, 50, 100].includes(Number(event.target.value)) ? Number(event.target.value) : 25;
       try { localStorage.setItem(DUPLICATE_PAGE_SIZE_STORAGE_KEY, String(groupPageLimit)); } catch (_e) {}
@@ -4322,40 +4554,23 @@
     byId('maintenanceRefreshLogsButton')?.addEventListener('click', refreshMaintenanceLogs);
     byId('maintenanceAction')?.addEventListener('change', () => {
       invalidatePlan();
-      updateSelectedSize();
+      renderGroups();
     });
 
     byId('maintenanceGroups')?.addEventListener('click', event => {
       const page = event.target.closest('[data-maint-page]');
       const expand = event.target.closest('[data-maint-expand]');
-      const bulk = event.target.closest('[data-maint-bulk]');
-      if (bulk) {
-        const action = bulk.getAttribute('data-maint-bulk');
-        if (action === 'collapse') {
-          currentPageGroups().forEach(group => { ensureGroupState(group).expanded = false; });
-          renderGroups();
-          return;
-        }
-        if (action === 'expand') {
-          currentPageGroups().forEach(group => { ensureGroupState(group).expanded = true; });
-          renderGroups();
-          Promise.allSettled(currentPageGroups()
-            .filter(group => !(group.videos || []).length)
-            .map(group => loadGroupDetails(group.id)));
-          return;
-        }
-        currentPageGroups().forEach(group => {
-          const state = ensureGroupState(group);
-          setDuplicateGroupSelected(group.id, action === 'select');
-          if ((group.videos || []).length) {
-            state.includedFileIds = action === 'select'
-              ? new Set(groupCandidateFiles(group, state).map(file => file.id))
-              : new Set();
-            state.dirty = true;
-          }
-        });
-        duplicateSelectionChanged();
-        renderGroups();
+      const defaults = event.target.closest('[data-maint-group-defaults]');
+      const sidecars = event.target.closest('[data-maint-group-sidecars]');
+      if (defaults) {
+        resetGroupSuggestedActions(defaults.getAttribute('data-maint-group-defaults'));
+        return;
+      }
+      if (sidecars) {
+        setGroupSidecarActions(
+          sidecars.getAttribute('data-maint-group'),
+          sidecars.getAttribute('data-maint-group-sidecars')
+        );
         return;
       }
       if (page) {
@@ -4549,7 +4764,6 @@
     byId('maintenanceGroups')?.addEventListener('change', event => {
       const enabled = event.target.closest('[data-maint-group-enabled]');
       const keep = event.target.closest('[data-maint-keep]');
-      const file = event.target.closest('[data-maint-file]');
       const operation = event.target.closest('[data-maint-operation]');
       if (enabled) {
         const groupId = enabled.getAttribute('data-maint-group-enabled');
@@ -4572,32 +4786,16 @@
         loadGroupDetails(groupId, keep.value);
         return;
       }
-      if (file) {
-        const groupId = file.getAttribute('data-maint-group');
-        const fileId = file.getAttribute('data-maint-file');
-        const state = groupState.get(groupId);
-        if (state && fileId) {
-          if (file.checked) {
-            state.includedFileIds.add(fileId);
-          } else {
-            state.includedFileIds.delete(fileId);
-          }
-        }
-        markGroupDirty(groupId);
-        return;
-      }
       if (operation) {
         const groupId = operation.getAttribute('data-maint-group');
         const fileId = operation.getAttribute('data-maint-operation');
         const state = groupState.get(groupId);
         if (state && fileId) {
-          if (operation.value === 'default') {
-            state.fileOperations.delete(fileId);
-          } else {
-            state.fileOperations.set(fileId, operation.value);
-          }
+          setFileAction(state, fileId, operation.value);
+          state.dirty = true;
         }
         markGroupDirty(groupId);
+        renderGroups();
       }
     });
 

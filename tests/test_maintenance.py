@@ -280,6 +280,85 @@ def test_cleanup_plan_moves_equivalent_accessory(monkeypatch, tmp_path):
     assert (lib / ".vid2gif-duplicates" / "Movie" / duplicate_sidecar.name).is_file()
 
 
+def test_cleanup_plan_can_quarantine_both_matching_sidecars(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    keep = _write(movie / "Movie.2160p.mkv", b"a" * 300)
+    remove = _write(movie / "Movie.1080p.mkv", b"b" * 200)
+    keeper_sidecar = _write(movie / "Movie.2160p.en.srt", b"short subtitle")
+    duplicate_sidecar = _write(movie / "Movie.1080p.en.srt", b"a different and longer subtitle")
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    keep_video = next(video for video in group["videos"] if video["path"] == str(keep))
+    remove_video = next(video for video in group["videos"] if video["path"] == str(remove))
+    keep_srt = keep_video["accessories"][0]
+    remove_srt = remove_video["accessories"][0]
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "explicit", "group_ids": [group["id"]]},
+            "groups": [
+                {
+                    "id": group["id"],
+                    "enabled": True,
+                    "keep_video_id": keep_video["id"],
+                    "remove_video_ids": [remove_video["id"]],
+                    "include_file_ids": [remove_video["id"], keep_srt["id"], remove_srt["id"]],
+                    "file_operations": [
+                        {"file_id": keep_srt["id"], "operation": "cleanup"},
+                        {"file_id": remove_srt["id"], "operation": "cleanup"},
+                    ],
+                }
+            ],
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    assert plan["file_count"] == 3
+    assert {item["operation"] for item in plan["files"]} == {"move"}
+
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert apply_err is None
+    assert result["applied_count"] == 3
+    assert keep.exists()
+    assert not remove.exists()
+    assert not keeper_sidecar.exists()
+    assert not duplicate_sidecar.exists()
+    assert (lib / ".vid2gif-duplicates" / "Movie" / keeper_sidecar.name).is_file()
+    assert (lib / ".vid2gif-duplicates" / "Movie" / duplicate_sidecar.name).is_file()
+
+
+def test_duplicate_quick_review_counts_and_filters_flag_mismatched_sidecars(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie.2160p.mkv", b"a" * 300)
+    _write(movie / "Movie.1080p.mkv", b"b" * 200)
+    _write(movie / "Movie.2160p.en.srt", b"short subtitle")
+    _write(movie / "Movie.1080p.en.srt", b"a different and longer subtitle")
+    _write_duplicate_pair(lib, "Other")
+    scan = _scan(lib, lib, monkeypatch)
+
+    status, status_err = maintenance.status_payload(scan["id"])
+    attention, attention_err = maintenance.groups_payload(scan["id"], review="attention")
+    ready, ready_err = maintenance.groups_payload(scan["id"], review="ready")
+
+    assert status_err is None
+    assert attention_err is None
+    assert ready_err is None
+    assert status["scan"]["default_action_counts"] == {"keep": 3, "cleanup": 3, "rename": 0}
+    assert status["scan"]["review_group_count"] == 1
+    assert attention["total"] == 1
+    assert attention["groups"][0]["needs_review"] is True
+    assert attention["groups"][0]["review_flags"][0]["kind"] == "different_size_accessories"
+    assert "subtitle files differ in size" in attention["groups"][0]["review_flags"][0]["label"]
+    assert ready["total"] == 1
+    assert ready["groups"][0]["needs_review"] is False
+
+
 def test_cleanup_plan_uses_custom_move_root(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     move_root = lib / "_quarantine"
@@ -948,8 +1027,13 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
     assert "selection: duplicateSelectionPayload()" in script
-    assert "data-maint-bulk=\"select\"" in script
     assert 'id="duplicateSelectionSummary"' in html
+    assert 'id="duplicateReviewSummary"' in html
+    assert 'id="duplicateSelectAllButton"' in html
+    assert 'id="duplicateDeselectPageButton"' in html
+    assert 'id="duplicateExpandPageButton"' in html
+    assert 'id="duplicateCollapsePageButton"' in html
+    assert 'id="duplicateReviewFilter"' in html
     assert 'id="duplicatePageLimit"' in html
     assert 'id="maintenanceApplyStatus"' in html
     assert "Page navigation does not change this selection." in script
@@ -981,6 +1065,11 @@ def test_maintenance_page_and_static_assets_render():
     assert "data-overview-folder-toggle" in script
     assert "escapeHtml(item.path || '')" in script
     assert "data-maint-operation" in script
+    assert "data-maint-group-sidecars" in script
+    assert "Default cleanup" not in script
+    assert "Default: move" not in script
+    assert "Move/Delete" not in script
+    assert "data-maint-file" not in script
     assert "data-maint-expand" in script
     assert "data-maint-page" in script
     assert "escapeHtml(change.source || '')" in script

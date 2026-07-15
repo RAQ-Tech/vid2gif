@@ -877,6 +877,7 @@ def api_maintenance_duplicates_groups():
         request.args.get("scan_id"),
         offset=request.args.get("offset"),
         limit=request.args.get("limit"),
+        review=request.args.get("review"),
     )
     if err:
         status = 404 if err == "Scan not found" else 400

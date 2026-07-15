@@ -712,9 +712,134 @@ th[aria-sort="descending"] .table-sort-icon {
   margin-top: 12px;
 }
 
+.duplicate-review-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.duplicate-review-stat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--bs-border-color);
+  border-left: 4px solid var(--bs-secondary);
+  border-radius: 7px;
+  background: var(--bs-tertiary-bg);
+}
+
+.duplicate-review-stat strong {
+  font-size: 1.15rem;
+  line-height: 1.1;
+}
+
+.duplicate-review-stat span,
+.duplicate-review-stat small {
+  color: var(--bs-secondary-color);
+  font-size: 0.78rem;
+}
+
+.duplicate-review-keep {
+  color: var(--bs-success-text-emphasis);
+  background: var(--bs-success-bg-subtle);
+  border-color: var(--bs-success-border-subtle);
+}
+
+.duplicate-review-cleanup {
+  color: var(--bs-warning-text-emphasis);
+  background: var(--bs-warning-bg-subtle);
+  border-color: var(--bs-warning-border-subtle);
+}
+
+.duplicate-review-rename {
+  color: var(--bs-info-text-emphasis);
+  background: var(--bs-info-bg-subtle);
+  border-color: var(--bs-info-border-subtle);
+}
+
+.duplicate-review-attention {
+  color: var(--bs-danger-text-emphasis);
+  background: var(--bs-danger-bg-subtle);
+  border-color: var(--bs-danger-border-subtle);
+}
+
+.duplicate-group-review,
+.duplicate-review-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.duplicate-summary-keeper {
+  min-width: min(100%, 340px);
+  flex: 1;
+}
+
+.duplicate-summary-keeper code,
+.duplicate-keeper-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-group-tools {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.duplicate-keeper-control {
+  display: grid;
+  min-width: min(100%, 420px);
+  flex: 1;
+  gap: 5px;
+}
+
+.duplicate-review-table {
+  min-width: 980px;
+}
+
+.duplicate-review-table .duplicate-file-cell,
+.duplicate-review-table .duplicate-file-context,
+.duplicate-review-table .duplicate-file-action {
+  white-space: normal;
+}
+
+.duplicate-review-table .duplicate-file-cell {
+  min-width: 300px;
+  max-width: 520px;
+}
+
+.duplicate-file-name {
+  display: block;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-review-table .duplicate-file-context {
+  min-width: 220px;
+}
+
+.duplicate-review-table .duplicate-file-action {
+  min-width: 260px;
+}
+
 .maintenance-table td,
 .maintenance-table th {
   white-space: nowrap;
+}
+
+@media (max-width: 991.98px) {
+  .duplicate-review-stats {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
 }
 
 .maintenance-plan-list {
