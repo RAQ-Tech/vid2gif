@@ -82,6 +82,12 @@ GENERATION_STALL_TIMEOUT_SECONDS = max(
     _env_int("VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT", 120),
 )
 GENERATION_STDERR_LIMIT = 32 * 1024
+PREVIEW_FILESYSTEM_WORKFLOW = "video_preview_missing_scan.filesystem"
+PREVIEW_EMBY_WORKFLOW = "video_preview_missing_scan.emby"
+PREVIEW_PROFILE_WORKFLOW = "video_preview_missing_scan.profile"
+QUALITY_CATALOG_WORKFLOW = "video_preview_quality_scan.catalog"
+QUALITY_ANALYSIS_WORKFLOW = "video_preview_quality_scan.analysis"
+QUALITY_EMBY_WORKFLOW = "video_preview_quality_scan.emby"
 __test__ = False
 
 preview_scans = {}
@@ -318,6 +324,13 @@ def _scan_videos(scan, lib_root):
                     scan,
                     min(95, 5 + len(items) // 10),
                     "Scanning media folders",
+                    stage_workflow=PREVIEW_FILESYSTEM_WORKFLOW,
+                    completed_units=len(items),
+                    remaining_stages=[
+                        {"workflow": PREVIEW_EMBY_WORKFLOW},
+                        {"workflow": PREVIEW_PROFILE_WORKFLOW},
+                    ],
+                    unit_label="videos",
                     scanned_video_count=len(items),
                     current_stage="Scanning media folders",
                     progress_detail=f"{len(items)} videos checked for matching BIF files",
@@ -438,6 +451,13 @@ def _run_scan(scan, lib_root):
             scan,
             1,
             "Scanning media folders",
+            stage_workflow=PREVIEW_FILESYSTEM_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[
+                {"workflow": PREVIEW_EMBY_WORKFLOW},
+                {"workflow": PREVIEW_PROFILE_WORKFLOW},
+            ],
+            unit_label="videos",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
@@ -448,8 +468,27 @@ def _run_scan(scan, lib_root):
         counts = _counts(items)
         _set_scan_progress(
             scan,
+            60,
+            f"Checked {counts['scanned_video_count']} videos for matching BIF files",
+            stage_workflow=PREVIEW_FILESYSTEM_WORKFLOW,
+            completed_units=counts["scanned_video_count"],
+            total_units=counts["scanned_video_count"],
+            remaining_stages=[
+                {"workflow": PREVIEW_EMBY_WORKFLOW},
+                {"workflow": PREVIEW_PROFILE_WORKFLOW},
+            ],
+            unit_label="videos",
+            scanned_video_count=counts["scanned_video_count"],
+        )
+        _set_scan_progress(
+            scan,
             65,
             "Matching results with Emby",
+            stage_workflow=PREVIEW_EMBY_WORKFLOW,
+            completed_units=0,
+            total_units=len(items),
+            remaining_stages=[{"workflow": PREVIEW_PROFILE_WORKFLOW}],
+            unit_label="videos",
             scanned_video_count=counts["scanned_video_count"],
             current_stage="Matching results with Emby",
             progress_detail=(
@@ -470,6 +509,11 @@ def _run_scan(scan, lib_root):
             scan,
             85,
             "Checking the BIF profile",
+            stage_workflow=PREVIEW_PROFILE_WORKFLOW,
+            completed_units=0,
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="videos",
             scanned_video_count=counts["scanned_video_count"],
             current_stage="Checking the BIF profile",
             progress_detail=(
@@ -484,6 +528,11 @@ def _run_scan(scan, lib_root):
             scan,
             95,
             "Preparing results",
+            stage_workflow=PREVIEW_PROFILE_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="videos",
             scanned_video_count=counts["scanned_video_count"],
             current_stage="Preparing results",
             progress_detail="Saving the scan and preparing the missing-video list",
@@ -499,6 +548,12 @@ def _run_scan(scan, lib_root):
             recommended_profile=recommendation,
             emby_mapping=emby_mapping,
             current_stage="Complete",
+            stage_workflow=PREVIEW_PROFILE_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="videos",
+            overall_units=len(items),
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
@@ -1457,6 +1512,10 @@ def _scan_quality_items(scan, lib_root, catalog_result, settings):
                     scan,
                     min(95, 5 + len(items)),
                     f"{run_counts['reused_count']} reused, {run_counts['analyzed_count']} analyzed",
+                    stage_workflow=QUALITY_ANALYSIS_WORKFLOW,
+                    completed_units=len(items),
+                    remaining_stages=[{"workflow": QUALITY_EMBY_WORKFLOW}],
+                    unit_label="BIF files",
                     checked_bif_count=len(items),
                     reused_count=run_counts["reused_count"],
                     analyzed_count=run_counts["analyzed_count"],
@@ -1583,6 +1642,13 @@ def _run_quality_scan(scan, lib_root):
             scan,
             1,
             "Checking BIF quality",
+            stage_workflow=QUALITY_CATALOG_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[
+                {"workflow": QUALITY_ANALYSIS_WORKFLOW},
+                {"workflow": QUALITY_EMBY_WORKFLOW},
+            ],
+            unit_label="catalog pages",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
@@ -1592,6 +1658,15 @@ def _run_quality_scan(scan, lib_root):
             settings,
             before_page=lambda: _check_quality_cancelled(scan),
         )
+        _set_quality_progress(
+            scan,
+            5,
+            "Analyzing BIF files",
+            stage_workflow=QUALITY_ANALYSIS_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[{"workflow": QUALITY_EMBY_WORKFLOW}],
+            unit_label="BIF files",
+        )
         items, start_manifest, run_counts = _scan_quality_items(
             scan,
             lib_root,
@@ -1599,6 +1674,16 @@ def _run_quality_scan(scan, lib_root):
             settings,
         )
         counts = {**_quality_counts(items), **run_counts}
+        _set_quality_progress(
+            scan,
+            96,
+            f"Analyzed {len(items)} BIF files; matching results with Emby",
+            stage_workflow=QUALITY_EMBY_WORKFLOW,
+            completed_units=0,
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="BIF files",
+        )
         emby_mapping = emby_catalog.enrich_records(
             items,
             settings,
@@ -1629,6 +1714,12 @@ def _run_quality_scan(scan, lib_root):
             analyzed_count=counts["analyzed_count"],
             emby_mapping=emby_mapping,
             freshness=freshness,
+            stage_workflow=QUALITY_EMBY_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="BIF files",
+            overall_units=len(items),
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )

@@ -1104,6 +1104,9 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="subtitleItemStatus"' in html
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
+    assert 'id="maintenanceBrowseButton"' in html
+    assert 'aria-controls="maintenanceBrowserCollapse"' in html
+    assert 'id="maintenanceBrowserCollapse" class="collapse"' in html
     assert "selection: duplicateSelectionPayload()" in script
     assert 'id="duplicateSelectionSummary"' in html
     assert 'id="duplicateReviewSummary"' in html

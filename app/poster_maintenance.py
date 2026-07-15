@@ -49,6 +49,8 @@ MIN_FULL_SCAN_INTERVAL_SECONDS = 3600
 POSTER_RUN_RETENTION_COUNT = max(1, _env_int("POSTER_RUN_RETENTION_COUNT", 25))
 POSTER_RUN_ITEM_RETENTION_COUNT = max(50, _env_int("POSTER_RUN_ITEM_RETENTION_COUNT", 200))
 IMAGE_PROBE_TIMEOUT_SECONDS = max(1, _env_int("POSTER_IMAGE_PROBE_TIMEOUT", 10))
+POSTER_FILESYSTEM_WORKFLOW = "poster_scan.filesystem"
+POSTER_EMBY_WORKFLOW = "poster_scan.emby"
 __test__ = False
 
 _settings_lock = threading.RLock()
@@ -823,6 +825,10 @@ def _run_poster_scan(scan, lib_root):
             "poster_scan",
             1,
             "Analyzing poster artwork",
+            stage_workflow=POSTER_FILESYSTEM_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[{"workflow": POSTER_EMBY_WORKFLOW}],
+            unit_label="folders",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
@@ -857,8 +863,34 @@ def _run_poster_scan(scan, lib_root):
                     "poster_scan",
                     25,
                     f"Analyzed {folders} folders",
+                    stage_workflow=POSTER_FILESYSTEM_WORKFLOW,
+                    completed_units=folders,
+                    remaining_stages=[{"workflow": POSTER_EMBY_WORKFLOW}],
+                    unit_label="folders",
                 )
         counts = _poster_counts(items)
+        task_progress.update_scan(
+            scan,
+            "poster_scan",
+            80,
+            f"Analyzed {folders} folders",
+            stage_workflow=POSTER_FILESYSTEM_WORKFLOW,
+            completed_units=folders,
+            total_units=folders,
+            remaining_stages=[{"workflow": POSTER_EMBY_WORKFLOW}],
+            unit_label="folders",
+        )
+        task_progress.update_scan(
+            scan,
+            "poster_scan",
+            85,
+            f"Matching {len(items)} poster records with Emby",
+            stage_workflow=POSTER_EMBY_WORKFLOW,
+            completed_units=0,
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="posters",
+        )
         emby_mapping = _enrich_poster_items(items, scan)
         if emby_mapping is None:
             return
@@ -872,6 +904,12 @@ def _run_poster_scan(scan, lib_root):
             items=items,
             counts=counts,
             emby_mapping=emby_mapping,
+            stage_workflow=POSTER_EMBY_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="posters",
+            overall_units=folders,
         )
         persisted = maintenance_scan_store.persist_success("posters", "posters", scan, lib_root)
         if persisted:

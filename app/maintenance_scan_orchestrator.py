@@ -13,7 +13,7 @@ from . import task_progress
 from . import poster_maintenance
 from . import subtitle_maintenance
 from . import video_preview_maintenance
-from .progress import utc_iso
+from .progress import format_duration, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
 
 
@@ -43,6 +43,31 @@ STEP_WORKFLOWS = {
     "subtitles": "subtitle_scan",
     "posters": "poster_scan",
     "actor_images": "actor_image_scan",
+}
+STEP_STAGE_WORKFLOWS = {
+    "overview": ("library_overview_scan.filesystem",),
+    "duplicates": (
+        "duplicate_scan.discovery",
+        "duplicate_scan.analysis",
+        "duplicate_scan.emby",
+    ),
+    "video_previews_missing": (
+        "video_preview_missing_scan.filesystem",
+        "video_preview_missing_scan.emby",
+        "video_preview_missing_scan.profile",
+    ),
+    "video_previews_quality": (
+        "video_preview_quality_scan.catalog",
+        "video_preview_quality_scan.analysis",
+        "video_preview_quality_scan.emby",
+    ),
+    "subtitles": ("subtitle_scan.filesystem", "subtitle_scan.emby"),
+    "posters": ("poster_scan.filesystem", "poster_scan.emby"),
+    "actor_images": (
+        "actor_image_scan.people",
+        "actor_image_scan.media",
+        "actor_image_scan.candidates",
+    ),
 }
 
 _lock = threading.Lock()
@@ -120,6 +145,17 @@ def _scan_result_count(scan, area):
     return next((int(scan.get(key) or 0) for key in keys if key in scan), 0)
 
 
+def _step_plan(steps):
+    return [
+        {"workflow": workflow}
+        for step in steps
+        for workflow in STEP_STAGE_WORKFLOWS.get(
+            step,
+            (STEP_WORKFLOWS.get(step, step),),
+        )
+    ]
+
+
 def _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_steps, total_steps, sublabel=""):
     run["_active_cancel"] = cancel_loader
     while True:
@@ -132,30 +168,57 @@ def _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_s
         scan = (payload or {}).get("scan") or {}
         status = scan.get("status") or "failed"
         local_progress = int(scan.get("progress_percent") or 0)
-        overall = int(100 * completed_steps / max(total_steps, 1))
-        label = scan.get("progress_label") or sublabel or AREA_LABELS[area]
-        pending_steps = (run.get("_expanded_steps") or [])[completed_steps + 1:]
-        eta_parts = [scan.get("eta_seconds")]
-        eta_parts.extend(
-            task_progress.duration_estimate(STEP_WORKFLOWS.get(step, step)).get("seconds")
-            for step in pending_steps
+        local_indeterminate = bool(scan.get("progress_indeterminate"))
+        overall = int(
+            100
+            * (completed_steps + (0 if local_indeterminate else local_progress / 100.0))
+            / max(total_steps, 1)
         )
-        eta = sum(eta_parts) if eta_parts and all(value is not None for value in eta_parts) else None
+        label = (
+            scan.get("progress_label_base")
+            or scan.get("current_stage")
+            or sublabel
+            or AREA_LABELS[area]
+        )
+        pending_steps = (run.get("_expanded_steps") or [])[completed_steps + 1:]
+        future = task_progress.plan_estimate(_step_plan(pending_steps))
+        current_eta = scan.get("eta_seconds")
+        eta = (
+            int(current_eta) + int(future["seconds"])
+            if current_eta is not None and future.get("seconds") is not None
+            else None
+        )
+        eta_confidence = (
+            "history"
+            if eta is not None
+            and scan.get("eta_confidence") == "history"
+            and future.get("confidence") in {"history", "complete"}
+            else ("learning" if eta is not None else "calibrating")
+        )
+        eta_detail = (
+            f"about {format_duration(eta)} remaining"
+            if eta is not None
+            else "learning timing for remaining checks"
+        )
         _update(
             run,
             progress_percent=overall,
-            progress_indeterminate=True,
+            progress_indeterminate=local_indeterminate,
             progress_completed_steps=completed_steps,
             progress_total_steps=total_steps,
             eta_seconds=eta,
-            eta_confidence="history" if eta is not None else "calibrating",
-            progress_label=f"{completed_steps} of {total_steps} checks complete · {label}",
+            eta_confidence=eta_confidence,
+            progress_label=(
+                f"{completed_steps} of {total_steps} checks complete · "
+                f"{label} · {eta_detail}"
+            ),
         )
         _area_update(
             run, area, status=status, scan_id=scan.get("id") or scan_id,
             progress_percent=local_progress,
             progress_indeterminate=bool(scan.get("progress_indeterminate")),
             eta_seconds=scan.get("eta_seconds"),
+            eta_confidence=scan.get("eta_confidence", "none"),
             progress_label=label, error=err or scan.get("error") or "",
             result_count=_scan_result_count(scan, area), finished_at=scan.get("finished_at"),
         )
@@ -192,7 +255,20 @@ def _execute(run):
     run["progress_total_steps"] = total_steps
     completed = 0
     issues = False
-    _update(run, status="running", started_at=utc_iso(), progress_label="Starting maintenance scans")
+    initial_estimate = task_progress.plan_estimate(_step_plan(expanded))
+    initial_eta = initial_estimate.get("seconds")
+    _update(
+        run,
+        status="running",
+        started_at=utc_iso(),
+        eta_seconds=initial_eta,
+        eta_confidence=initial_estimate.get("confidence", "calibrating"),
+        progress_label=(
+            f"Starting maintenance scans · about {format_duration(initial_eta)} remaining"
+            if initial_eta is not None
+            else "Starting maintenance scans · learning timing for selected checks"
+        ),
+    )
     try:
         for step in expanded:
             if run.get("cancel_requested"):

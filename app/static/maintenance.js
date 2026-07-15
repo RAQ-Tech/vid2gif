@@ -1254,9 +1254,10 @@
     renderGroups();
   }
 
-  async function openBrowser(path) {
+  async function openBrowser(path, show = true) {
     const browser = byId('maintenanceBrowser');
     if (!browser) return;
+    if (show) setMaintenanceBrowserOpen(true);
     browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
     try {
       const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
@@ -1280,6 +1281,28 @@
     } catch (e) {
       browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
     }
+  }
+
+  function setMaintenanceBrowserOpen(open) {
+    const panel = byId('maintenanceBrowserCollapse');
+    const button = byId('maintenanceBrowseButton');
+    if (!panel) return;
+    if (window.bootstrap?.Collapse) {
+      const collapse = window.bootstrap.Collapse.getOrCreateInstance(panel, {toggle: false});
+      if (open) collapse.show();
+      else collapse.hide();
+    } else {
+      panel.classList.toggle('show', open);
+    }
+    if (button) {
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const label = button.querySelector('span');
+      if (label) label.textContent = open ? 'Hide Folders' : 'Browse Folders';
+    }
+  }
+
+  function maintenanceBrowserIsOpen() {
+    return byId('maintenanceBrowserCollapse')?.classList.contains('show') || false;
   }
 
   function setPreviewBrowserOpen(open) {
@@ -4352,7 +4375,11 @@
       }
     });
     byId('maintenanceBrowseButton')?.addEventListener('click', () => {
-      openBrowser(byId('maintenancePath')?.value.trim() || config.libRoot || '/library');
+      if (maintenanceBrowserIsOpen()) {
+        setMaintenanceBrowserOpen(false);
+      } else {
+        openBrowser(byId('maintenancePath')?.value.trim() || config.libRoot || '/library');
+      }
     });
     byId('maintenanceScanButton')?.addEventListener('click', startScan);
     byId('maintenanceCancelScanButton')?.addEventListener('click', cancelScan);
@@ -4608,6 +4635,7 @@
       } else if (choose) {
         const path = choose.getAttribute('data-maint-choose') || '';
         if (byId('maintenancePath')) byId('maintenancePath').value = path;
+        setMaintenanceBrowserOpen(false);
       }
     });
 
@@ -4869,7 +4897,7 @@
     setQualityProgress(null);
     setSubtitleProgress(null);
     setActorProgress(null);
-    openBrowser(config.libRoot || '/library');
+    openBrowser(config.libRoot || '/library', false);
     openSubtitleBrowser(config.libRoot || '/library');
     openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();

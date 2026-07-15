@@ -52,6 +52,8 @@ LANGUAGE_MODIFIER_TOKENS = {
     "song",
     "songs",
 }
+SUBTITLE_FILESYSTEM_WORKFLOW = "subtitle_scan.filesystem"
+SUBTITLE_EMBY_WORKFLOW = "subtitle_scan.emby"
 __test__ = False
 
 subtitle_scans = {}
@@ -340,6 +342,10 @@ def _scan_videos(scan, settings, lib_root):
                     scan,
                     min(95, 5 + scanned // 10),
                     f"Scanned {scanned} videos",
+                    stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
+                    completed_units=scanned,
+                    remaining_stages=[{"workflow": SUBTITLE_EMBY_WORKFLOW}],
+                    unit_label="videos",
                     scanned_video_count=scanned,
                 )
     items.sort(key=lambda item: item["relative_path"].lower())
@@ -658,11 +664,37 @@ def _run_scan(scan, settings, lib_root):
             scan,
             1,
             "Scanning subtitle sidecars",
+            stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[{"workflow": SUBTITLE_EMBY_WORKFLOW}],
+            unit_label="videos",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
         )
         items = _scan_videos(scan, settings, lib_root)
+        _set_scan_progress(
+            scan,
+            60,
+            f"Scanned {len(items)} videos for subtitle sidecars",
+            stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[{"workflow": SUBTITLE_EMBY_WORKFLOW}],
+            unit_label="videos",
+            scanned_video_count=len(items),
+        )
+        _set_scan_progress(
+            scan,
+            65,
+            f"Matching {len(items)} subtitle records with Emby",
+            stage_workflow=SUBTITLE_EMBY_WORKFLOW,
+            completed_units=0,
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="videos",
+            scanned_video_count=len(items),
+        )
         emby_mapping = emby_catalog.enrich_records(
             items,
             app_settings.load_settings(),
@@ -695,6 +727,12 @@ def _run_scan(scan, settings, lib_root):
             scanned_video_count=counts["scanned_video_count"],
             emby_mapping=emby_mapping,
             emby_streams=emby_streams,
+            stage_workflow=SUBTITLE_EMBY_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="videos",
+            overall_units=len(items),
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )

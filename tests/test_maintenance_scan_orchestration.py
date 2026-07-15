@@ -124,6 +124,21 @@ def test_scan_all_is_sequential_and_continues_after_failure(monkeypatch, tmp_pat
     assert run["areas"]["subtitles"]["status"] == "success"
 
 
+def test_full_scan_plan_expands_each_area_into_recorded_operation_stages():
+    assert orchestrator._step_plan(
+        ["duplicates", "video_previews_quality", "posters"]
+    ) == [
+        {"workflow": "duplicate_scan.discovery"},
+        {"workflow": "duplicate_scan.analysis"},
+        {"workflow": "duplicate_scan.emby"},
+        {"workflow": "video_preview_quality_scan.catalog"},
+        {"workflow": "video_preview_quality_scan.analysis"},
+        {"workflow": "video_preview_quality_scan.emby"},
+        {"workflow": "poster_scan.filesystem"},
+        {"workflow": "poster_scan.emby"},
+    ]
+
+
 def test_orchestrator_cancel_stops_active_scan(monkeypatch, tmp_path):
     state = tmp_path / "state"
     library = tmp_path / "library"

@@ -33,6 +33,34 @@ const groups = Array.from({ length: 30 }, (_value, index) => ({
   review_flags: [],
 }));
 
+test('duplicate scan source folder browser opens and collapses like the BIF browser', async ({ page }) => {
+  await page.route('**/api/media-browser?*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      path: '/library',
+      parent: null,
+      folders: [{name: 'Studio', path: '/library/Studio'}],
+    }),
+  }));
+
+  await page.goto('/maintenance#duplicates');
+  const button = page.locator('#maintenanceBrowseButton');
+  const browser = page.locator('#maintenanceBrowserCollapse');
+
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-expanded', 'true');
+  await expect(button).toContainText('Hide Folders');
+  await expect(browser).toHaveClass(/show/);
+  await expect(browser).toContainText('Studio');
+
+  await button.click();
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
+  await expect(button).toContainText('Browse Folders');
+  await expect(browser).not.toHaveClass(/show/);
+});
+
 test('duplicate results render and selection persists across pages', async ({ page }) => {
   let planRequest = null;
   await page.route('**/api/maintenance/duplicates/status*', route => route.fulfill({

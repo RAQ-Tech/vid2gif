@@ -47,6 +47,9 @@ _actor_cache_loaded = False
 actor_plans = {}
 actor_apply_runs = {}
 actor_lock = threading.Lock()
+ACTOR_PEOPLE_WORKFLOW = "actor_image_scan.people"
+ACTOR_MEDIA_WORKFLOW = "actor_image_scan.media"
+ACTOR_CANDIDATE_WORKFLOW = "actor_image_scan.candidates"
 
 
 class ScanCancelled(Exception):
@@ -494,8 +497,26 @@ def _build_items(settings, scan, lib_root, opener=None):
     }
     _set_scan_progress(
         scan,
-        20,
+        15,
         f"Found {len(missing_people)} people missing images",
+        stage_workflow=ACTOR_PEOPLE_WORKFLOW,
+        completed_units=len(people),
+        total_units=len(people),
+        remaining_stages=[
+            {"workflow": ACTOR_MEDIA_WORKFLOW},
+            {"workflow": ACTOR_CANDIDATE_WORKFLOW},
+        ],
+        unit_label="people",
+        checked_person_count=len(people),
+    )
+    _set_scan_progress(
+        scan,
+        20,
+        "Loading Emby media items",
+        stage_workflow=ACTOR_MEDIA_WORKFLOW,
+        completed_units=0,
+        remaining_stages=[{"workflow": ACTOR_CANDIDATE_WORKFLOW}],
+        unit_label="media items",
         checked_person_count=len(people),
     )
     media_items, item_result = _fetch_paged(
@@ -511,6 +532,16 @@ def _build_items(settings, scan, lib_root, opener=None):
     )
     if item_result.get("status") != "success":
         raise RuntimeError(item_result.get("message") or "Emby media item scan failed")
+    _set_scan_progress(
+        scan,
+        25,
+        f"Checking {len(media_items)} Emby media items",
+        stage_workflow=ACTOR_MEDIA_WORKFLOW,
+        completed_units=0,
+        total_units=len(media_items),
+        remaining_stages=[{"workflow": ACTOR_CANDIDATE_WORKFLOW}],
+        unit_label="media items",
+    )
 
     related = {}
     scan_path = scan["path"]
@@ -542,14 +573,31 @@ def _build_items(settings, scan, lib_root, opener=None):
         if index % 50 == 0:
             _set_scan_progress(
                 scan,
-                min(85, 20 + index // 10),
+                min(75, 25 + int(50 * index / max(len(media_items), 1))),
                 f"Checked {index} Emby media items",
+                stage_workflow=ACTOR_MEDIA_WORKFLOW,
+                completed_units=index,
+                total_units=len(media_items),
+                remaining_stages=[{"workflow": ACTOR_CANDIDATE_WORKFLOW}],
+                unit_label="media items",
                 checked_item_count=index,
             )
 
     exceptions = load_exceptions()
     items = []
-    for key, entry in related.items():
+    related_entries = list(related.items())
+    _set_scan_progress(
+        scan,
+        80,
+        f"Reviewing local image candidates for {len(related_entries)} people",
+        stage_workflow=ACTOR_CANDIDATE_WORKFLOW,
+        completed_units=0,
+        total_units=len(related_entries),
+        remaining_stages=[],
+        unit_label="people",
+        checked_item_count=len(media_items),
+    )
+    for index, (key, entry) in enumerate(related_entries, start=1):
         _check_cancelled(scan)
         person = entry["person"]
         video_paths = [video["path"] for video in entry.get("videos") or []]
@@ -567,6 +615,18 @@ def _build_items(settings, scan, lib_root, opener=None):
         _set_item_candidate_status(item)
         _apply_exception(item, exceptions)
         items.append(item)
+        if index % 25 == 0:
+            _set_scan_progress(
+                scan,
+                min(98, 80 + int(18 * index / max(len(related_entries), 1))),
+                f"Reviewed candidates for {index} of {len(related_entries)} people",
+                stage_workflow=ACTOR_CANDIDATE_WORKFLOW,
+                completed_units=index,
+                total_units=len(related_entries),
+                remaining_stages=[],
+                unit_label="people",
+                checked_item_count=len(media_items),
+            )
     items.sort(key=lambda item: normalize_actor_name(item.get("name")))
     return items, len(people), len(media_items)
 
@@ -581,6 +641,13 @@ def _run_scan(scan, lib_root, opener=None):
             scan,
             1,
             "Scanning Emby actor images",
+            stage_workflow=ACTOR_PEOPLE_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[
+                {"workflow": ACTOR_MEDIA_WORKFLOW},
+                {"workflow": ACTOR_CANDIDATE_WORKFLOW},
+            ],
+            unit_label="people",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
@@ -612,6 +679,12 @@ def _run_scan(scan, lib_root, opener=None):
             checked_person_count=checked_people,
             checked_item_count=checked_media,
             emby_mapping=emby_mapping,
+            stage_workflow=ACTOR_CANDIDATE_WORKFLOW,
+            completed_units=len(items),
+            total_units=len(items),
+            remaining_stages=[],
+            unit_label="people",
+            overall_units=checked_media,
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )

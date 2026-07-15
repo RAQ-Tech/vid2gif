@@ -44,6 +44,7 @@ KNOWN_SKIP_DIRS = {
     "_previews",
     "__pycache__",
 }
+OVERVIEW_FILESYSTEM_WORKFLOW = "library_overview_scan.filesystem"
 __test__ = False
 
 dashboard_lock = threading.Lock()
@@ -522,6 +523,10 @@ def _scan_library_inventory(scan):
                     "library_overview_scan",
                     25,
                     f"Scanned {scanned_dirs} folders and {scanned_files} files",
+                    stage_workflow=OVERVIEW_FILESYSTEM_WORKFLOW,
+                    completed_units=scanned_dirs + scanned_files,
+                    remaining_stages=[],
+                    unit_label="filesystem entries",
                     library_count=len(folders) + 1,
                     folder_count=len(folders),
                     root=_format_library_stats(dict(root_stats)),
@@ -540,6 +545,7 @@ def _scan_library_inventory(scan):
         "video_count": root_stats["video_count"],
         "video_size_bytes": root_stats["video_size_bytes"],
         "video_size_label": root_stats["video_size_label"],
+        "scan_operation_count": scanned_dirs + scanned_files,
         "root": root_stats,
         "folders": folders,
     }
@@ -564,6 +570,10 @@ def _run_library_scan_state(scan):
             "library_overview_scan",
             1,
             "Scanning libraries",
+            stage_workflow=OVERVIEW_FILESYSTEM_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[],
+            unit_label="filesystem entries",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
@@ -576,6 +586,12 @@ def _run_library_scan_state(scan):
                 "library_overview_scan",
                 100,
                 "Library inventory complete" if result["status"] == "success" else "Library inventory cancelled",
+                stage_workflow=OVERVIEW_FILESYSTEM_WORKFLOW,
+                completed_units=result.get("scan_operation_count", 0),
+                total_units=result.get("scan_operation_count", 0),
+                remaining_stages=[],
+                unit_label="filesystem entries",
+                overall_units=result.get("scan_operation_count", 0),
                 **result,
             )
         if result["status"] == "success":

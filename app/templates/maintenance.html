@@ -922,9 +922,9 @@
           <label class="form-label" for="maintenancePath">Library path</label>
           <div class="input-group">
             <input id="maintenancePath" class="form-control" value="{{ lib_root }}" placeholder="{{ lib_root }}">
-            <button id="maintenanceBrowseButton" class="btn btn-outline-secondary" type="button">
-              <i class="bi bi-search" aria-hidden="true"></i>
-              <span>Browse</span>
+            <button id="maintenanceBrowseButton" class="btn btn-outline-secondary" type="button" aria-expanded="false" aria-controls="maintenanceBrowserCollapse">
+              <i class="bi bi-folder2-open" aria-hidden="true"></i>
+              <span>Browse Folders</span>
             </button>
             <button id="maintenanceScanButton" class="btn btn-primary" type="button">
               <i class="bi bi-search" aria-hidden="true"></i>
@@ -935,7 +935,9 @@
               <span>Cancel</span>
             </button>
           </div>
-          <div id="maintenanceBrowser" class="media-browser mt-3"></div>
+          <div id="maintenanceBrowserCollapse" class="collapse">
+            <div id="maintenanceBrowser" class="media-browser mt-3"></div>
+          </div>
         </div>
       </section>
 

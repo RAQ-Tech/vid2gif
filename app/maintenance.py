@@ -49,6 +49,9 @@ DUPLICATE_APPLY_RETENTION_COUNT = 10
 DUPLICATE_APPLY_MAX_AGE_SECONDS = 24 * 60 * 60
 DUPLICATE_APPLY_LARGE_FILE_COUNT = 100
 FFPROBE_TIMEOUT_SECONDS = max(1, _env_int("FFPROBE_TIMEOUT_SECONDS", 30))
+DUPLICATE_DISCOVERY_WORKFLOW = "duplicate_scan.discovery"
+DUPLICATE_ANALYSIS_WORKFLOW = "duplicate_scan.analysis"
+DUPLICATE_EMBY_WORKFLOW = "duplicate_scan.emby"
 __test__ = False
 
 duplicate_scans = {}
@@ -505,8 +508,10 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
     excluded = {str(item).lower() for item in settings.get("excluded_folders") or set()}
     move_root = os.path.realpath(_effective_move_root(settings, lib_root) or "")
     videos = []
+    scanned_folders = 0
     for base, dirs, files in os.walk(root_path, followlinks=False):
         _check_scan_cancelled(scan)
+        scanned_folders += 1
         dirs[:] = [
             d
             for d in dirs
@@ -526,6 +531,21 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
                 continue
             if os.path.splitext(filename)[1].lower() in VIDEO_EXTS:
                 videos.append(os.path.realpath(path))
+        if scan and scanned_folders % 50 == 0:
+            _set_scan_progress(
+                scan,
+                5,
+                f"Scanning folders · {len(videos)} videos found",
+                stage_workflow=DUPLICATE_DISCOVERY_WORKFLOW,
+                completed_units=len(videos),
+                remaining_stages=[
+                    {"workflow": DUPLICATE_ANALYSIS_WORKFLOW},
+                    {"workflow": DUPLICATE_EMBY_WORKFLOW},
+                ],
+                unit_label="videos",
+                scanned_video_count=len(videos),
+                scanned_folder_count=scanned_folders,
+            )
     videos.sort(key=lambda path: path.lower())
     return videos
 
@@ -1053,6 +1073,13 @@ def _run_scan(scan, lib_root):
             scan,
             1,
             "Scanning folders",
+            stage_workflow=DUPLICATE_DISCOVERY_WORKFLOW,
+            completed_units=0,
+            remaining_stages=[
+                {"workflow": DUPLICATE_ANALYSIS_WORKFLOW},
+                {"workflow": DUPLICATE_EMBY_WORKFLOW},
+            ],
+            unit_label="videos",
             status="running",
             _started_ts=now,
             started_at=utc_iso(now),
@@ -1066,8 +1093,16 @@ def _run_scan(scan, lib_root):
         _check_scan_cancelled(scan)
         _set_scan_progress(
             scan,
-            10,
+            8,
             f"Found {len(videos)} video file{'s' if len(videos) != 1 else ''}",
+            stage_workflow=DUPLICATE_DISCOVERY_WORKFLOW,
+            completed_units=len(videos),
+            total_units=len(videos),
+            remaining_stages=[
+                {"workflow": DUPLICATE_ANALYSIS_WORKFLOW},
+                {"workflow": DUPLICATE_EMBY_WORKFLOW},
+            ],
+            unit_label="videos",
             scanned_video_count=len(videos),
         )
 
@@ -1085,6 +1120,16 @@ def _run_scan(scan, lib_root):
         groups = []
         total = len(candidates)
         group_index = 1
+        _set_scan_progress(
+            scan,
+            10,
+            f"Preparing {total} duplicate candidate group{'s' if total != 1 else ''}",
+            stage_workflow=DUPLICATE_ANALYSIS_WORKFLOW,
+            completed_units=0,
+            total_units=total,
+            remaining_stages=[{"workflow": DUPLICATE_EMBY_WORKFLOW}],
+            unit_label="groups",
+        )
         for index, paths in enumerate(candidates, start=1):
             _check_scan_cancelled(scan)
             actionable_paths = [
@@ -1106,11 +1151,26 @@ def _run_scan(scan, lib_root):
                 scan,
                 percent,
                 f"Checked {index} of {total} duplicate candidate groups",
+                stage_workflow=DUPLICATE_ANALYSIS_WORKFLOW,
+                completed_units=index,
+                total_units=total,
+                remaining_stages=[{"workflow": DUPLICATE_EMBY_WORKFLOW}],
+                unit_label="groups",
             )
 
         _check_scan_cancelled(scan)
         reclaimable = sum(group.get("reclaimable_bytes") or 0 for group in groups)
         group_videos = [video for group in groups for video in group.get("videos") or []]
+        _set_scan_progress(
+            scan,
+            92,
+            f"Matching {len(group_videos)} duplicate video records with Emby",
+            stage_workflow=DUPLICATE_EMBY_WORKFLOW,
+            completed_units=0,
+            total_units=len(group_videos),
+            remaining_stages=[],
+            unit_label="videos",
+        )
         emby_mapping = emby_catalog.enrich_records(
             group_videos,
             app_settings.load_settings(),
@@ -1136,6 +1196,12 @@ def _run_scan(scan, lib_root):
             reclaimable_bytes=reclaimable,
             protected_distinct_sets=list(protected_sets.values()),
             emby_mapping=emby_mapping,
+            stage_workflow=DUPLICATE_EMBY_WORKFLOW,
+            completed_units=len(group_videos),
+            total_units=len(group_videos),
+            remaining_stages=[],
+            unit_label="videos",
+            overall_units=len(videos),
             _finished_ts=finished,
             finished_at=utc_iso(finished),
         )
