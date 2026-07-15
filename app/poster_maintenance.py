@@ -13,6 +13,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import media_scope
 from . import task_progress
 from .config import (
     LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
@@ -371,9 +372,20 @@ def _candidate_from_background(path):
 def _background_candidate_groups(directory, files):
     """Group artwork by video stem so a folder may safely contain many videos."""
     groups = {}
+    video_names_by_stem = {}
+    for name in files:
+        stem, ext = os.path.splitext(name)
+        if ext.lower() in VIDEO_EXTS:
+            video_names_by_stem.setdefault(stem.casefold(), []).append(name)
     for name in sorted(files, key=str.lower):
         candidate = _candidate_from_background(os.path.join(directory, name))
         if not candidate:
+            continue
+        matching_videos = video_names_by_stem.get(candidate["base"].casefold(), [])
+        if matching_videos and not any(
+            media_scope.is_main_video_filename(video_name)
+            for video_name in matching_videos
+        ):
             continue
         groups.setdefault(candidate["base"].casefold(), []).append(candidate)
     return [groups[key] for key in sorted(groups)]
@@ -650,6 +662,7 @@ def _poster_video_paths(item):
         for name in names
         if os.path.splitext(name)[0].casefold() == base
         and os.path.splitext(name)[1].lower() in VIDEO_EXTS
+        and media_scope.is_main_video_filename(name)
         and os.path.isfile(os.path.join(folder, name))
         and not os.path.islink(os.path.join(folder, name))
     ]
@@ -847,7 +860,11 @@ def _run_poster_scan(scan, lib_root):
                     finished_at=utc_iso(),
                 )
                 return
-            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
+            dirs[:] = [
+                name for name in dirs
+                if not os.path.islink(os.path.join(base, name))
+                and not media_scope.is_non_main_video_dir(name)
+            ]
             folders += 1
             for candidates in _background_candidate_groups(base, files):
                 if len(candidates) > 1:
@@ -1021,18 +1038,40 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
     allowed, error = maintenance_scan_store.action_allowed("posters", scan_id, lib_root)
     if not allowed:
         return None, error
-    selected = {str(value) for value in payload.get("item_ids") or [] if str(value)}
-    visible = {str(value) for value in payload.get("visible_item_ids") or [] if str(value)}
-    if not selected or not visible or not selected.issubset(visible):
-        return None, "Selected posters must belong to the visible page"
     with _poster_scan_lock:
         scan = poster_scans.get(scan_id)
         if not scan or scan.get("status") != "success":
             return None, "Poster analysis is not complete"
         by_id = {item.get("id"): item for item in scan.get("items") or []}
-        if not visible.issubset(by_id):
-            return None, "Visible poster results are stale"
-        items = [by_id[item_id] for item_id in selected if by_id[item_id].get("eligible")]
+        selection = payload.get("selection")
+        if isinstance(selection, dict):
+            eligible = {
+                item_id for item_id, item in by_id.items()
+                if item_id and item.get("eligible")
+            }
+            if selection.get("mode") == "all_eligible":
+                excluded = {
+                    str(value or "")
+                    for value in selection.get("excluded_item_ids") or []
+                    if str(value or "")
+                }
+                selected = eligible - excluded
+            elif selection.get("mode") == "explicit":
+                selected = {
+                    str(value or "")
+                    for value in selection.get("item_ids") or []
+                    if str(value or "")
+                }
+            else:
+                return None, "Poster selection mode is invalid"
+        else:
+            selected = {str(value) for value in payload.get("item_ids") or [] if str(value)}
+            visible = {str(value) for value in payload.get("visible_item_ids") or [] if str(value)}
+            if not selected or not visible or not selected.issubset(visible):
+                return None, "Selected posters must belong to the visible page"
+            if not visible.issubset(by_id):
+                return None, "Visible poster results are stale"
+        items = [by_id[item_id] for item_id in selected if item_id in by_id and by_id[item_id].get("eligible")]
         for item in items:
             candidate = item.get("candidate") or {}
             identities = item.get("identities") or {}
@@ -1050,11 +1089,13 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
         "created_at": utc_iso(),
         "items": items,
         "file_count": len(items),
+        "selected_item_count": len(selected),
+        "total_actionable_item_count": (scan.get("counts") or {}).get("eligible_count", 0),
         "emby_item_ids": sorted({item.get("emby_item_id") for item in items if item.get("emby_item_id")}),
     }
     with _poster_scan_lock:
         poster_plans[plan_id] = plan
-    return {key: plan.get(key) for key in ("id", "scan_id", "path", "created_at", "file_count", "emby_item_ids")}, None
+    return {key: plan.get(key) for key in ("id", "scan_id", "path", "created_at", "file_count", "selected_item_count", "total_actionable_item_count", "emby_item_ids")}, None
 
 
 def public_poster_apply(run):
@@ -1254,7 +1295,11 @@ def _scan_and_apply(run, lib_root, settings):
     scan_path = run["path"]
 
     for base, dirs, files in os.walk(scan_path, followlinks=False):
-        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(base, d))]
+        dirs[:] = [
+            d for d in dirs
+            if not os.path.islink(os.path.join(base, d))
+            and not media_scope.is_non_main_video_dir(d)
+        ]
         rel_folder = os.path.normcase(_relative_path(base, root)).replace(os.sep, "/")
         signature = _folder_signature(base, files)
         if (

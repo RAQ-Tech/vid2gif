@@ -15,6 +15,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import media_scope
 from . import subtitle_quality
 from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -41,7 +42,7 @@ MAINTENANCE_LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "duplicates")
 MAINTENANCE_LOG_INDEX = os.path.join(MAINTENANCE_LOG_DIR, "index.json")
 MAINTENANCE_LOG_RETENTION_COUNT = 25
 MAINTENANCE_LOG_MAX_BYTES = 5 * 1024 * 1024
-DUPLICATE_GROUP_PAGE_DEFAULT = 25
+DUPLICATE_GROUP_PAGE_DEFAULT = 10
 DUPLICATE_GROUP_PAGE_MAX = 100
 DUPLICATE_GROUP_LARGE_RESULT_COUNT = 100
 DUPLICATE_SCAN_RETENTION_COUNT = 10
@@ -59,6 +60,7 @@ duplicate_scans = {}
 _duplicate_cache_loaded = False
 cleanup_plans = {}
 duplicate_apply_runs = {}
+duplicate_restore_plans = {}
 maintenance_lock = threading.Lock()
 
 
@@ -381,6 +383,42 @@ def _copy_name_penalty(name):
     )
 
 
+def _canonical_copy_stem(name):
+    stem = os.path.splitext(os.path.basename(str(name or "")))[0].strip()
+    canonical = re.sub(
+        r"(?:\s*\(\d+\)|[\s._-]+(?:copy(?:[\s._-]*\d+)?|duplicate|dupe))$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    ).rstrip(" ._-")
+    return canonical if canonical and canonical != stem else ""
+
+
+def _canonical_keeper_renames(keep_video):
+    canonical_stem = _canonical_copy_stem(keep_video.get("name"))
+    if not canonical_stem:
+        return []
+    folder = os.path.dirname(keep_video.get("path", ""))
+    renames = [
+        (
+            keep_video,
+            os.path.realpath(os.path.join(folder, f"{canonical_stem}{keep_video.get('ext', '')}")),
+            "Copy-marked keeper will be renamed to the canonical filename",
+        )
+    ]
+    for accessory in keep_video.get("accessories") or []:
+        suffix = accessory.get("suffix") or ""
+        if suffix:
+            renames.append(
+                (
+                    accessory,
+                    os.path.realpath(os.path.join(folder, f"{canonical_stem}{suffix}")),
+                    "Keeper sidecar will follow the canonical video filename",
+                )
+            )
+    return renames
+
+
 def _keeper_sort_key(video, rule):
     rule = str(rule or "quality")
     if rule == "largest":
@@ -518,6 +556,7 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
             for d in dirs
             if d != QUARANTINE_DIRNAME
             and d.lower() not in excluded
+            and not media_scope.is_non_main_video_dir(d)
             and not os.path.islink(os.path.join(base, d))
             and not (
                 move_root
@@ -531,7 +570,8 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
             if os.path.islink(path) or not os.path.isfile(path):
                 continue
             if os.path.splitext(filename)[1].lower() in VIDEO_EXTS:
-                videos.append(os.path.realpath(path))
+                if media_scope.is_main_video_filename(filename):
+                    videos.append(os.path.realpath(path))
         if scan and scanned_folders % 50 == 0:
             _set_scan_progress(
                 scan,
@@ -924,6 +964,7 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
         "reclaimable_bytes": reclaimable,
         "reclaimable_label": format_size(reclaimable),
         "accessory_count": accessory_count,
+        "keeper_rule": settings.get("keeper_rule") or "quality",
     }
 
 
@@ -1033,12 +1074,31 @@ def _public_group_summary(group):
     recommended_id = group.get("recommended_keep_id", "")
     recommended = next((video for video in videos if video.get("id") == recommended_id), {})
     review_flags = _group_review_flags(group)
+    has_noncopy = any(not _copy_name_penalty(video.get("name")) for video in videos)
+    recommended_is_copy = bool(_copy_name_penalty(recommended.get("name")))
+    if recommended_is_copy and has_noncopy:
+        recommended_reason = "Higher media quality outweighed the copy-number filename"
+    elif has_noncopy and not recommended_is_copy:
+        recommended_reason = "Preferred the original filename when media quality was otherwise tied"
+    else:
+        recommended_reason = "Best match under the configured keeper rule"
     return {
         "id": group.get("id", ""),
         "folder": group.get("folder", ""),
         "normalized_name": group.get("normalized_name", ""),
         "recommended_keep_id": recommended_id,
         "recommended_keep_name": recommended.get("name", ""),
+        "recommended_keep_reason": recommended_reason,
+        "keeper_options": [
+            {
+                "id": video.get("id", ""),
+                "name": video.get("name", ""),
+                "metadata_label": video.get("metadata_label", ""),
+                "size_label": video.get("size_label", ""),
+                "copy_marked": bool(_copy_name_penalty(video.get("name"))),
+            }
+            for video in videos
+        ],
         "video_count": len(videos),
         "accessory_count": group.get("accessory_count", 0),
         "reclaimable_bytes": group.get("reclaimable_bytes", 0),
@@ -1792,6 +1852,51 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
             )
             planned_items.append((file_id, item, operation, destination_path, reason))
 
+        keep_video = videos.get(keep_id) or {}
+        canonical_stem = _canonical_copy_stem(keep_video.get("name"))
+        if canonical_stem:
+            canonicalized_items = []
+            for file_id, item, operation, destination_path, reason in planned_items:
+                expected_keeper_target = _accessory_destination(item, keep_video)
+                if (
+                    operation == "rename"
+                    and item.get("kind") != "video"
+                    and item.get("suffix")
+                    and destination_path
+                    and os.path.normcase(os.path.realpath(destination_path))
+                    == os.path.normcase(os.path.realpath(expected_keeper_target))
+                ):
+                    destination_path = os.path.realpath(
+                        os.path.join(
+                            os.path.dirname(keep_video.get("path", "")),
+                            f"{canonical_stem}{item.get('suffix')}",
+                        )
+                    )
+                    reason = "Preserved sidecar will follow the canonical keeper filename"
+                    if os.path.normcase(os.path.realpath(item.get("path", ""))) == os.path.normcase(destination_path):
+                        continue
+                canonicalized_items.append(
+                    (file_id, item, operation, destination_path, reason)
+                )
+            planned_items = canonicalized_items
+        already_planned = {file_id for file_id, *_rest in planned_items}
+        cleanup_paths_before_renames = {
+            os.path.normcase(os.path.realpath(item.get("path", "")))
+            for _file_id, item, operation, _destination_path, _reason in planned_items
+            if operation in {"move", "delete"} and item.get("path")
+        }
+        for item, destination_path, reason in _canonical_keeper_renames(keep_video):
+            if item.get("id") in already_planned:
+                continue
+            if (
+                os.path.lexists(destination_path)
+                and os.path.normcase(destination_path) not in cleanup_paths_before_renames
+            ):
+                continue
+            planned_items.append(
+                (item.get("id", ""), item, "rename", destination_path, reason)
+            )
+
         scheduled_cleanup_paths = {
             os.path.normcase(os.path.realpath(item.get("path", "")))
             for _file_id, item, operation, _destination_path, _reason in planned_items
@@ -1823,7 +1928,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
                 destination_is_scheduled_for_cleanup = (
                     os.path.normcase(os.path.realpath(destination_path)) in scheduled_cleanup_paths
                 )
-                if os.path.exists(destination_path) and not destination_is_scheduled_for_cleanup:
+                if os.path.lexists(destination_path) and not destination_is_scheduled_for_cleanup:
                     manual_review.append(
                         {
                             "file_id": file_id,
@@ -2056,6 +2161,13 @@ def list_duplicate_cleanup_logs():
     for item in index.get("logs") or []:
         public = dict(item)
         public.pop("path", None)
+        public["reversible"] = bool(
+            public.get("action") == "move"
+            and int(public.get("applied_count") or 0) > 0
+        )
+        public["restore_available"] = bool(
+            public["reversible"] and not public.get("restored_at")
+        )
         logs.append(public)
     return logs
 
@@ -2076,6 +2188,206 @@ def read_duplicate_cleanup_log(log_id):
             "size_label": match.get("size_label", ""),
             "truncated": bool(match.get("truncated")),
         }, None
+
+
+def _cleanup_log_records(log_id):
+    clean_id = os.path.basename(str(log_id or ""))
+    index = _read_json(MAINTENANCE_LOG_INDEX, {"logs": []})
+    match = next((item for item in index.get("logs") or [] if item.get("id") == clean_id), None)
+    if not match:
+        return None, None, "Log not found"
+    path = match.get("path", "")
+    if not path_is_under(path, MAINTENANCE_LOG_DIR) or not os.path.isfile(path):
+        return None, None, "Log not found"
+    records = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if value.get("type") == "file" and value.get("result") == "applied":
+                    records.append(value)
+    except OSError:
+        return None, None, "Log not found"
+    return match, records, None
+
+
+def _unique_restore_destination(path, reserved=None):
+    reserved = reserved or set()
+    path = os.path.realpath(path)
+    stem, ext = os.path.splitext(path)
+    candidate = path
+    index = 1
+    while os.path.lexists(candidate) or os.path.normcase(candidate) in reserved:
+        candidate = f"{stem} (restored {index}){ext}"
+        index += 1
+    return candidate
+
+
+def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT):
+    entry, records, err = _cleanup_log_records(log_id)
+    if err:
+        return None, err
+    if entry.get("action") != "move":
+        return None, "Permanent deletions cannot be restored"
+    if entry.get("restored_at"):
+        return None, "This cleanup log has already been restored"
+    root = os.path.realpath(lib_root)
+    files = []
+    unavailable = []
+    reserved = set()
+    vacated = set()
+    for record in reversed(records):
+        operation = str(record.get("operation") or "")
+        if operation not in {"move", "rename"}:
+            continue
+        raw_source = str(record.get("new_path") or "").strip()
+        raw_requested = str(record.get("old_path") or "").strip()
+        source = os.path.realpath(raw_source) if raw_source else ""
+        requested = os.path.realpath(raw_requested) if raw_requested else ""
+        if (
+            not source
+            or not requested
+            or not path_is_under(source, root)
+            or not path_is_under(requested, root)
+        ):
+            unavailable.append({"source_path": source, "reason": "Restore path is outside the library"})
+            continue
+        if not os.path.isfile(source) or os.path.islink(source):
+            unavailable.append({"source_path": source, "reason": "Restorable file is no longer present"})
+            continue
+        requested_key = os.path.normcase(requested)
+        collision = os.path.lexists(requested) and requested_key not in vacated
+        destination = (
+            _unique_restore_destination(requested, reserved)
+            if collision or requested_key in reserved
+            else requested
+        )
+        files.append(
+            {
+                "file_id": record.get("file_id", ""),
+                "source_path": source,
+                "destination_path": destination,
+                "requested_destination_path": requested,
+                "source_name": os.path.basename(source),
+                "destination_name": os.path.basename(destination),
+                "original_operation": operation,
+                "collision_adjusted": destination != requested,
+                "size_bytes": int(record.get("size_bytes") or 0),
+                "size_label": format_size(record.get("size_bytes") or 0),
+                "identity": _stat_identity(source) or {},
+            }
+        )
+        reserved.add(os.path.normcase(destination))
+        vacated.add(os.path.normcase(source))
+    if not files:
+        return None, "No moved files from this cleanup are currently restorable"
+    plan = {
+        "id": _now_id(),
+        "log_id": entry.get("id", ""),
+        "status": "ready",
+        "created_at": utc_iso(),
+        "lib_root": root,
+        "files": files,
+        "file_count": len(files),
+        "collision_adjusted_count": sum(bool(item["collision_adjusted"]) for item in files),
+        "unavailable": unavailable,
+        "unavailable_count": len(unavailable),
+    }
+    with maintenance_lock:
+        duplicate_restore_plans[plan["id"]] = plan
+    return copy.deepcopy(plan), None
+
+
+def apply_duplicate_restore_plan(plan_id):
+    with maintenance_lock:
+        plan = duplicate_restore_plans.get(str(plan_id or ""))
+    if not plan:
+        return None, "Restore plan not found"
+    if plan.get("status") != "ready":
+        return None, "Restore plan has already been applied"
+    root = os.path.realpath(plan.get("lib_root") or LIB_ROOT)
+    applied = []
+    refused = []
+    reserved = set()
+    for item in plan.get("files") or []:
+        source = item.get("source_path", "")
+        destination = item.get("destination_path", "")
+        if not path_is_under(source, root) or not path_is_under(destination, root):
+            refused.append({"source_path": source, "reason": "Restore path is outside the library"})
+            continue
+        if os.path.islink(source) or not os.path.isfile(source):
+            refused.append({"source_path": source, "reason": "Restorable file is no longer present"})
+            continue
+        if not _identity_matches(source, item.get("identity")):
+            refused.append({"source_path": source, "reason": "File changed after the restore preview"})
+            continue
+        if os.path.lexists(destination) or os.path.normcase(destination) in reserved:
+            destination = _unique_restore_destination(
+                item.get("requested_destination_path") or destination,
+                reserved,
+            )
+        try:
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            atomic_quarantine_file(
+                source,
+                destination,
+                root=root,
+                expected_source=item.get("identity"),
+            )
+        except Exception as exc:
+            refused.append({"source_path": source, "reason": str(exc)})
+            continue
+        reserved.add(os.path.normcase(destination))
+        applied.append(
+            {
+                **item,
+                "destination_path": destination,
+                "destination_name": os.path.basename(destination),
+                "collision_adjusted": destination != item.get("requested_destination_path"),
+            }
+        )
+
+    finished_at = utc_iso()
+    index = _read_json(MAINTENANCE_LOG_INDEX, {"logs": []})
+    for entry in index.get("logs") or []:
+        if entry.get("id") == plan.get("log_id"):
+            entry["last_restore_attempt_at"] = finished_at
+            entry["restored_count"] = int(entry.get("restored_count") or 0) + len(applied)
+            entry["restore_refused_count"] = len(refused)
+            if not refused:
+                entry["restored_at"] = finished_at
+            break
+    _write_json(MAINTENANCE_LOG_INDEX, index)
+    with maintenance_lock:
+        plan["status"] = "applied"
+        plan["applied_at"] = finished_at
+    sync_changes = [
+        {"local_path": item.get("source_path"), "update_type": "Deleted", "refresh_scope": "metadata"}
+        for item in applied
+    ] + [
+        {"local_path": item.get("destination_path"), "update_type": "Created", "refresh_scope": "metadata", "prefer_path": True}
+        for item in applied
+    ]
+    sync_result = emby_sync.sync_changes(
+        sync_changes,
+        workflow="duplicates_restore",
+        run_id=plan.get("id"),
+    ) if sync_changes else None
+    return {
+        "plan_id": plan.get("id"),
+        "log_id": plan.get("log_id"),
+        "status": "success" if not refused else "complete_with_issues",
+        "applied": applied,
+        "applied_count": len(applied),
+        "refused": refused,
+        "refused_count": len(refused),
+        "collision_adjusted_count": sum(bool(item.get("collision_adjusted")) for item in applied),
+        "emby_sync": sync_result,
+        "finished_at": finished_at,
+    }, None
 
 
 def _prune_duplicate_apply_runs_locked(now=None):
@@ -2484,6 +2796,8 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
                 "timestamp": utc_iso(),
                 "result": "applied",
                 "file_id": file_id,
+                "group_id": group_id,
+                "kind": item.get("kind", ""),
                 "operation": operation,
                 "old_path": source,
                 "old_name": applied_item["source_name"],

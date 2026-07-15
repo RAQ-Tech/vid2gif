@@ -5,6 +5,8 @@
   let scannerTimer = null;
   let dashboardData = {};
   let scopeInitialized = false;
+  let dashboardFolderPicker = null;
+  const DASHBOARD_SCAN_TASKS_KEY = 'vid2gif_dashboard_scan_tasks';
 
   function byId(id) {
     return document.getElementById(id);
@@ -254,10 +256,15 @@
       const freshnessLabel = freshnessState === 'changed'
         ? `${changedCount} file changes`
         : (freshnessState === 'unchanged' ? 'Files unchanged' : (freshnessState === 'checking' ? 'Checking files' : 'Freshness unknown'));
-      const scanControl = item.scan_available ? `
-        <button class="btn btn-outline-primary btn-sm" type="button" data-dashboard-scan-area="${escapeHtml(item.key)}">
-          <i class="bi bi-search" aria-hidden="true"></i><span>${item.scan_id ? 'Rescan' : 'Scan'}</span>
-        </button>` : '';
+      const scanTasks = item.key === 'video_previews'
+        ? [['video_previews_missing', 'Missing'], ['video_previews_quality', 'Quality']]
+        : (item.key === 'subtitles'
+          ? [['subtitles_missing', 'Missing'], ['subtitles_coverage', 'Coverage']]
+          : [[item.key, item.scan_id ? 'Rescan' : 'Scan']]);
+      const scanControl = item.scan_available ? scanTasks.map(([key, label]) => `
+        <button class="btn btn-outline-primary btn-sm" type="button" data-dashboard-scan-area="${escapeHtml(key)}">
+          <i class="bi bi-search" aria-hidden="true"></i><span>${escapeHtml(label)}</span>
+        </button>`).join('') : '';
       return `
         <article class="dashboard-workstream dashboard-state-${state}">
           <div class="dashboard-workstream-heading">
@@ -454,7 +461,7 @@
     }));
     renderActivity(impactEvents.length ? impactEvents : (data.recent_activity || []));
     if (!scopeInitialized) {
-      const savedScope = localStorage.getItem('vid2gif_dashboard_maintenance_scope');
+      const savedScope = localStorage.getItem('vid2gif_maintenance_scan_source') || localStorage.getItem('vid2gif_dashboard_maintenance_scope');
       const input = byId('dashboardMaintenancePath');
       if (input) input.value = savedScope || data.maintenance_scope || data.lib_root || config.libRoot || '/library';
       scopeInitialized = true;
@@ -470,13 +477,16 @@
     setProgress('dashboardScanProgressBar', run || {progress_percent: 0});
     byId('dashboardCancelScanButton')?.classList.toggle('d-none', !active);
     if (byId('dashboardScanAllButton')) byId('dashboardScanAllButton').disabled = active;
+    document.querySelectorAll('[data-dashboard-scan-task]').forEach((input) => { input.disabled = active; });
     document.querySelectorAll('[data-dashboard-scan-area]').forEach((button) => { button.disabled = active; });
     const wrap = byId('dashboardScanAreas');
     if (!wrap) return;
     const areaData = run?.areas || {};
     const labels = {
-      overview: 'Library Overview', duplicates: 'Duplicates', video_previews: 'Video Previews',
-      subtitles: 'Subtitles', posters: 'Landscape Posters', actor_images: 'Actor Images',
+      overview: 'Library Overview', duplicates: 'Duplicates',
+      video_previews_missing: 'Missing BIFs', video_previews_quality: 'BIF Quality',
+      subtitles_missing: 'Missing Subtitles', subtitles_coverage: 'Subtitle Coverage',
+      posters: 'Landscape Posters', actor_images: 'Actor Images',
     };
     const streamByKey = Object.fromEntries((workstreams || []).map((item) => [item.key, item]));
     wrap.innerHTML = Object.entries(labels).map(([key, label]) => {
@@ -513,10 +523,17 @@
     const input = byId('dashboardMaintenancePath');
     const path = input?.value.trim() || config.libRoot || '/library';
     localStorage.setItem('vid2gif_dashboard_maintenance_scope', path);
+    localStorage.setItem('vid2gif_maintenance_scan_source', path);
+    const selectedAreas = areas || Array.from(document.querySelectorAll('[data-dashboard-scan-task]:checked')).map((item) => item.value);
+    if (!selectedAreas.length) {
+      setMessage('Choose at least one maintenance check.', 'The checks are independent, so only selected items will run.', 'warning');
+      return;
+    }
+    if (!areas) localStorage.setItem(DASHBOARD_SCAN_TASKS_KEY, JSON.stringify(selectedAreas));
     try {
       const response = await fetch('/api/dashboard/maintenance-scans', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, ...(areas ? { areas } : {}) }),
+        body: JSON.stringify({ path, areas: selectedAreas }),
       });
       const data = await readJsonResponse(response);
       renderMaintenanceScan(data.run || {}, dashboardData.workstreams || []);
@@ -546,26 +563,6 @@
       if (data.freshness?.active) scheduleScannerPoll(1000);
     } catch (_err) {
       // Freshness remains unknown; existing identity checks still protect actions.
-    }
-  }
-
-  async function openScopeBrowser(path) {
-    const wrap = byId('dashboardFolderBrowser');
-    if (!wrap) return;
-    wrap.classList.remove('d-none');
-    wrap.innerHTML = '<div class="text-muted small p-3">Loading folders...</div>';
-    try {
-      const response = await fetch(`/api/media-browser?path=${encodeURIComponent(path || byId('dashboardMaintenancePath')?.value || config.libRoot || '/library')}`);
-      const data = await readJsonResponse(response);
-      wrap.innerHTML = `
-        <div class="dashboard-folder-browser-heading"><code>${escapeHtml(data.path || '')}</code><button type="button" class="btn-close" aria-label="Close folder browser" data-dashboard-browser-close></button></div>
-        <div class="dashboard-folder-list">
-          ${data.parent ? `<button type="button" data-dashboard-browser-path="${escapeHtml(data.parent)}"><i class="bi bi-arrow-90deg-up" aria-hidden="true"></i><span>Parent folder</span></button>` : ''}
-          ${(data.folders || []).map((folder) => `<button type="button" data-dashboard-browser-path="${escapeHtml(folder.path)}"><i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`).join('')}
-        </div>
-        <button type="button" class="btn btn-primary btn-sm mt-2" data-dashboard-browser-select="${escapeHtml(data.path || '')}">Use this folder</button>`;
-    } catch (err) {
-      wrap.innerHTML = `<div class="text-danger small p-3">${escapeHtml(err.message)}</div>`;
     }
   }
 
@@ -602,27 +599,28 @@
   };
 
   document.addEventListener('DOMContentLoaded', () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(DASHBOARD_SCAN_TASKS_KEY) || 'null');
+      if (Array.isArray(saved)) {
+        document.querySelectorAll('[data-dashboard-scan-task]').forEach((input) => {
+          input.checked = saved.includes(input.value);
+        });
+      }
+    } catch (_err) {}
+    dashboardFolderPicker = window.vid2gifFolderPicker?.create({
+      inputId: 'dashboardMaintenancePath', buttonId: 'dashboardBrowseButton',
+      panelId: 'dashboardFolderBrowserCollapse', containerId: 'dashboardFolderBrowser',
+      defaultPath: config.libRoot || '/library', storageKey: 'vid2gif_dashboard_maintenance_scope',
+    });
     const refreshButton = byId('dashboardRefreshButton');
     const libraryButton = byId('dashboardLibraryScanButton');
     if (refreshButton) refreshButton.addEventListener('click', refreshDashboard);
     if (libraryButton) libraryButton.addEventListener('click', () => startMaintenanceScan(['overview']));
     byId('dashboardScanAllButton')?.addEventListener('click', () => startMaintenanceScan());
     byId('dashboardCancelScanButton')?.addEventListener('click', cancelMaintenanceScan);
-    byId('dashboardBrowseButton')?.addEventListener('click', () => openScopeBrowser());
     byId('dashboardWorkstreams')?.addEventListener('click', (event) => {
       const button = event.target.closest('[data-dashboard-scan-area]');
       if (button) startMaintenanceScan([button.dataset.dashboardScanArea]);
-    });
-    byId('dashboardFolderBrowser')?.addEventListener('click', (event) => {
-      const pathButton = event.target.closest('[data-dashboard-browser-path]');
-      const selectButton = event.target.closest('[data-dashboard-browser-select]');
-      if (pathButton) openScopeBrowser(pathButton.dataset.dashboardBrowserPath);
-      if (selectButton) {
-        const input = byId('dashboardMaintenancePath');
-        if (input) input.value = selectButton.dataset.dashboardBrowserSelect || '';
-        byId('dashboardFolderBrowser')?.classList.add('d-none');
-      }
-      if (event.target.closest('[data-dashboard-browser-close]')) byId('dashboardFolderBrowser')?.classList.add('d-none');
     });
     refreshDashboard();
     checkFreshness();

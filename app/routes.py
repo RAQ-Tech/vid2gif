@@ -939,6 +939,23 @@ def api_maintenance_duplicates_log(log_id):
     return jsonify({"log": log})
 
 
+@app.route("/api/maintenance/duplicates/logs/<log_id>/restore/plan", methods=["POST"])
+def api_maintenance_duplicates_restore_plan(log_id):
+    plan, err = maintenance.build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": plan})
+
+
+@app.route("/api/maintenance/duplicates/restore", methods=["POST"])
+def api_maintenance_duplicates_restore():
+    data = request.get_json(silent=True) or {}
+    result, err = maintenance.apply_duplicate_restore_plan(data.get("plan_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"result": result})
+
+
 @app.route("/api/maintenance/landscape-posters/status")
 def api_maintenance_landscape_posters_status():
     return jsonify(poster_maintenance.status_payload())
@@ -1279,6 +1296,7 @@ def api_maintenance_subtitles_scan():
         data.get("path"),
         lib_root=LIB_ROOT,
         synchronous=_truthy(data.get("synchronous")),
+        mode=data.get("mode") or "missing",
     )
     if err:
         return jsonify({"error": err}), 400
@@ -1287,7 +1305,9 @@ def api_maintenance_subtitles_scan():
 
 @app.route("/api/maintenance/subtitles/status")
 def api_maintenance_subtitles_status():
-    payload, err = subtitle_maintenance.status_payload(request.args.get("scan_id"))
+    payload, err = subtitle_maintenance.status_payload(
+        request.args.get("scan_id"), request.args.get("mode")
+    )
     if err:
         return jsonify({"error": err}), 404
     return jsonify(payload)

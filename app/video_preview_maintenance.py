@@ -20,6 +20,7 @@ from . import emby_notifications
 from . import emby_sync
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import media_scope
 from . import poster_maintenance
 from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -58,7 +59,7 @@ SCAN_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
 SCAN_TERMINAL_STATUSES = {"success", "failed", "cancelled"}
 SCAN_RETENTION_COUNT = 10
 SCAN_MAX_AGE_SECONDS = 24 * 60 * 60
-ITEM_PAGE_DEFAULT = 25
+ITEM_PAGE_DEFAULT = 10
 ITEM_PAGE_MAX = 100
 LARGE_RESULT_COUNT = 100
 QUALITY_SAMPLE_LIMIT = max(4, _env_int("VIDEO_PREVIEW_QUALITY_SAMPLE_LIMIT", 24))
@@ -284,7 +285,7 @@ def _skip_dir(base, dirname, lib_root):
     path = os.path.join(base, dirname)
     if os.path.islink(path):
         return True
-    if dirname.lower() in {"trailer", "trailers"}:
+    if media_scope.is_non_main_video_dir(dirname):
         return True
     if dirname == QUARANTINE_DIRNAME:
         return True
@@ -310,6 +311,7 @@ def _scan_videos(scan, lib_root):
             filename
             for filename in files
             if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
+            and media_scope.is_main_video_filename(filename)
         ]
         video_stems = [os.path.splitext(filename)[0] for filename in video_files]
         for filename in sorted(video_files, key=str.lower):
@@ -1294,6 +1296,7 @@ def _find_matching_video_for_bif(bif_path, folder_files):
         filename
         for filename in folder_files
         if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
+        and media_scope.is_main_video_filename(filename)
     ]
     owner = _bif_owner_stem(bif_name, [os.path.splitext(name)[0] for name in videos])
     for filename in sorted(videos, key=str.lower):

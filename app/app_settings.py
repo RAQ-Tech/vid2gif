@@ -29,7 +29,11 @@ DUPLICATE_ACCESSORY_POLICIES = {
     "keep_unmatched": "Keep unmatched sidecars",
     "remove_all": "Remove all matched-stem sidecars",
 }
-DEFAULT_DUPLICATE_EXCLUDED_FOLDERS = ("trailer", "trailers")
+DEFAULT_DUPLICATE_EXCLUDED_FOLDERS = (
+    "trailer", "trailers", "extra", "extras", "featurette", "featurettes",
+    "behind the scenes", "deleted scenes", "interviews", "scene", "scenes",
+    "short", "shorts", "sample", "samples",
+)
 DEFAULT_SUBTITLE_EXPECTED_LANGUAGES = ("eng", "en", "en-us", "en-gb")
 DEFAULT_VIDEO_PREVIEW_BIF_WIDTH = 320
 DEFAULT_VIDEO_PREVIEW_BIF_INTERVAL_SECONDS = 10

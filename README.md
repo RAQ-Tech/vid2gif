@@ -145,8 +145,10 @@ tested from the same page before automatic refresh is enabled.
 Duplicate cleanup settings live on the Settings page. Duplicate move
 destinations default to `/library/.vid2gif-duplicates`, can be changed to another
 folder under the mounted library root, and every applied cleanup writes a bounded
-JSONL audit log under `/state/maintenance-logs/duplicates`. Cleanup plans are
-limited to the duplicate groups visible on the current results page.
+JSONL audit log under `/state/maintenance-logs/duplicates`. Review selections
+persist across result pages. Quarantined cleanup runs can be previewed and
+restored from their audit logs; restore name conflicts are adjusted without
+overwriting existing files.
 
 Video preview maintenance separates cleanup from generation. Bad and warning
 BIFs can be quarantined or deleted first; a fresh scan then provides the missing
@@ -158,10 +160,12 @@ status is persisted under `/state`, including the current video and completed
 per-file results. Decoder errors and stalled extraction are bounded to one video
 so a malformed source cannot silently block the rest of a batch.
 
-Subtitle health results can quarantine or permanently delete flagged unexpected
-or unknown-language SRT sidecars. Video files and missing-subtitle findings are
-never cleanup targets, and plans are restricted to explicitly selected subtitle
-files on the visible page.
+Subtitle maintenance provides independent missing/language and timestamp-coverage
+scans. It scans main videos only, excluding conventional trailer, extra,
+featurette, scene, short, interview, and sample folders or filenames. Likely
+incomplete SRT files can be quarantined or permanently deleted; uncertain
+coverage stays review-only. Video files and missing-subtitle findings are never
+cleanup targets, and review selections persist across result pages.
 
 The dashboard tracks maintenance impact from the first launch after this
 feature is installed. It does not backfill bounded historical logs. Distinct

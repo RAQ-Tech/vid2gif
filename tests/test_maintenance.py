@@ -11,6 +11,7 @@ def _reset_maintenance(monkeypatch, metadata_by_name=None, settings_overrides=No
     maintenance.duplicate_scans.clear()
     maintenance.cleanup_plans.clear()
     maintenance.duplicate_apply_runs.clear()
+    maintenance.duplicate_restore_plans.clear()
     metadata_by_name = metadata_by_name or {}
     settings = app_settings.default_settings()
     settings.update(settings_overrides or {})
@@ -304,7 +305,7 @@ def test_duplicate_scan_groups_by_nfo_provider_id(monkeypatch, tmp_path):
     assert {video["name"] for video in scan["groups"][0]["videos"]} == {first.name, second.name}
 
 
-def test_duplicate_scan_skips_trailer_folders(monkeypatch, tmp_path):
+def test_duplicate_scan_skips_trailer_extra_and_sample_media(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
     trailers = movie / "trailers"
@@ -312,11 +313,30 @@ def test_duplicate_scan_skips_trailer_folders(monkeypatch, tmp_path):
     _write(movie / "Movie.2160p.mp4", b"x")
     _write(trailers / "Movie Trailer.1080p.mp4", b"x")
     _write(trailers / "Movie Trailer.2160p.mp4", b"x")
+    _write(movie / "extras" / "Movie Extra.1080p.mp4", b"x")
+    _write(movie / "extras" / "Movie Extra.2160p.mp4", b"x")
+    _write(movie / "Movie-sample.1080p.mp4", b"x")
+    _write(movie / "Movie-sample.2160p.mp4", b"x")
 
     scan = _scan(lib, lib, monkeypatch)
 
     assert scan["scanned_video_count"] == 2
     assert len(scan["groups"]) == 1
+
+
+def test_group_summary_exposes_keeper_options_without_expansion(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie [WEBDL-2160p].mp4", b"a" * 100)
+    _write(movie / "Movie [WEBDL-2160p](1).mp4", b"b" * 100)
+    scan = _scan(lib, lib, monkeypatch)
+
+    page, err = maintenance.groups_payload(scan["id"], limit=10)
+
+    assert err is None
+    assert len(page["groups"][0]["keeper_options"]) == 2
+    assert page["groups"][0]["recommended_keep_name"] == "Movie [WEBDL-2160p].mp4"
+    assert "original filename" in page["groups"][0]["recommended_keep_reason"]
 
 
 def test_duplicate_scan_groups_same_folder_matches_and_ranks_quality(monkeypatch, tmp_path):
@@ -422,6 +442,124 @@ def test_cleanup_plan_moves_duplicate_video_and_renames_unmatched_accessory(monk
         (str(movie / "Movie.1080p.en.srt"), "Created"),
     }
     assert str(quarantine) not in {item["local_path"] for item in changes}
+
+
+def test_copy_marked_keeper_is_canonicalized_and_cleanup_restores_without_overwrite(
+    monkeypatch, tmp_path
+):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    log_dir = tmp_path / "state" / "duplicate-logs"
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_DIR", str(log_dir))
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_INDEX", str(log_dir / "index.json"))
+    original = _write(movie / "Movie [WEBDL-1080p].mkv", b"original")
+    copy_keeper = _write(movie / "Movie [WEBDL-1080p](1).mkv", b"higher quality")
+    copy_sidecar = _write(movie / "Movie [WEBDL-1080p](1).eng.srt", b"subtitle")
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            original.name: {"width": 1920, "height": 1080, "bit_rate": 4_000_000},
+            copy_keeper.name: {"width": 3840, "height": 2160, "bit_rate": 12_000_000},
+        },
+    )
+    summary, err = maintenance.groups_payload(scan["id"])
+    assert err is None
+    assert summary["groups"][0]["recommended_keep_name"] == copy_keeper.name
+    assert "Higher media quality" in summary["groups"][0]["recommended_keep_reason"]
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+            "groups": [],
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    operations = {(item["source_path"], item["destination_path"]): item["operation"] for item in plan["files"]}
+    assert operations[(str(original), str(lib / ".vid2gif-duplicates" / "Movie" / original.name))] == "move"
+    assert operations[(str(copy_keeper), str(original))] == "rename"
+    assert operations[(str(copy_sidecar), str(movie / "Movie [WEBDL-1080p].eng.srt"))] == "rename"
+
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+    assert apply_err is None
+    assert result["refused_count"] == 0
+    assert original.read_bytes() == b"higher quality"
+    assert (movie / "Movie [WEBDL-1080p].eng.srt").read_bytes() == b"subtitle"
+
+    # A user-created file now occupies the old copy name. Restore must retain it
+    # and adjust the keeper's destination rather than overwrite anything.
+    manual = _write(copy_keeper, b"manual file")
+    restore_plan, restore_err = maintenance.build_duplicate_restore_plan(
+        result["log"]["id"], lib_root=str(lib)
+    )
+    assert restore_err is None
+    assert restore_plan["collision_adjusted_count"] == 1
+
+    restored, restore_apply_err = maintenance.apply_duplicate_restore_plan(restore_plan["id"])
+
+    assert restore_apply_err is None
+    assert restored["refused_count"] == 0
+    assert manual.read_bytes() == b"manual file"
+    assert original.read_bytes() == b"original"
+    adjusted = movie / "Movie [WEBDL-1080p](1) (restored 1).mkv"
+    assert adjusted.read_bytes() == b"higher quality"
+    logs = maintenance.list_duplicate_cleanup_logs()
+    assert logs[0]["restore_available"] is False
+    assert logs[0]["restored_count"] == 3
+
+
+def test_copy_keeper_canonicalization_preserves_best_existing_canonical_subtitle(
+    monkeypatch, tmp_path
+):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    original = _write(movie / "Movie [WEBDL-1080p].mkv", b"original")
+    keeper = _write(movie / "Movie [WEBDL-1080p](1).mkv", b"higher quality")
+    good_content = b"1\n00:41:18,160 --> 00:41:20,560\nFinal line\n"
+    good = _write(movie / "Movie [WEBDL-1080p].eng.srt", good_content)
+    bad = _write(
+        movie / "Movie [WEBDL-1080p](1).eng.srt",
+        b"1\n00:27:14,220 --> 00:27:14,540\nOh my god\n",
+    )
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            original.name: {"width": 1920, "height": 1080, "bit_rate": 4_000_000, "duration_seconds": 41.5 * 60},
+            keeper.name: {"width": 3840, "height": 2160, "bit_rate": 12_000_000, "duration_seconds": 41.5 * 60},
+        },
+    )
+
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+            "groups": [],
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    operations = {item["source_path"]: item["operation"] for item in plan["files"]}
+    assert operations[str(original)] == "move"
+    assert operations[str(bad)] == "move"
+    assert operations[str(keeper)] == "rename"
+    assert str(good) not in operations
+
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert apply_err is None
+    assert result["refused_count"] == 0
+    assert original.read_bytes() == b"higher quality"
+    assert good.read_bytes() == good_content
+    assert not bad.exists()
 
 
 def test_cleanup_plan_moves_equivalent_accessory(monkeypatch, tmp_path):
@@ -1191,7 +1329,8 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="previewRunExtractionButton"' in html
     assert 'id="qualityScanButton"' in html
     assert 'id="qualityApplyButton"' in html
-    assert 'id="subtitleScanButton"' in html
+    assert 'id="subtitleMissingScanButton"' in html
+    assert 'id="subtitleCoverageScanButton"' in html
     assert 'id="subtitleItemStatus"' in html
     assert 'id="maintenanceScanButton"' in html
     assert 'id="maintenanceCancelScanButton"' in html
@@ -1201,10 +1340,10 @@ def test_maintenance_page_and_static_assets_render():
     assert "selection: duplicateSelectionPayload()" in script
     assert 'id="duplicateSelectionSummary"' in html
     assert 'id="duplicateReviewSummary"' in html
-    assert 'id="duplicateSelectAllButton"' in html
-    assert 'id="duplicateDeselectPageButton"' in html
-    assert 'id="duplicateExpandPageButton"' in html
-    assert 'id="duplicateCollapsePageButton"' in html
+    assert 'id="duplicateSelectAllCheckbox"' in html
+    assert 'id="duplicateTogglePageButton"' in html
+    assert 'data-maint-keep=' in script
+    assert 'id="maintenanceRestoreSummary"' in html
     assert 'id="duplicateReviewFilter"' in html
     assert 'id="duplicatePageLimit"' in html
     assert 'id="maintenanceApplyStatus"' in html

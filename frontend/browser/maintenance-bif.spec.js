@@ -108,12 +108,14 @@ test('missing BIF selection persists across pages and holds prior failures', asy
   await expect(page.locator('#previewSelectionSummary')).toContainText('28 selected across all result pages');
 
   await page.locator('#previewItems [data-preview-page="next"]').first().click();
+  await page.locator('#previewItems [data-preview-page="next"]').first().click();
   const heldItem = page.getByRole('checkbox', { name: 'Generate BIF for Movie 027.mkv' });
   await expect(heldItem).not.toBeChecked();
   await expect(page.getByText('Previous issue')).toBeVisible();
   await heldItem.check();
   await expect(page.locator('#previewSelectionSummary')).toContainText('29 selected across all result pages');
 
+  await page.locator('#previewItems [data-preview-page="prev"]').first().click();
   await page.locator('#previewItems [data-preview-page="prev"]').first().click();
   await expect(firstItem).not.toBeChecked();
   await page.locator('#previewGenerationPlanButton').click();

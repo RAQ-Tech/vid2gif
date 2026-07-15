@@ -22,6 +22,7 @@ def _reset_subtitles(monkeypatch, settings=None):
     subtitle_maintenance.subtitle_scans.clear()
     subtitle_maintenance.subtitle_plans.clear()
     subtitle_maintenance.subtitle_apply_runs.clear()
+    subtitle_maintenance._subtitle_cache_loaded.clear()
     monkeypatch.setattr(
         subtitle_maintenance.app_settings,
         "load_settings",
@@ -192,7 +193,7 @@ def test_subtitle_scan_flags_only_the_likely_incomplete_srt(monkeypatch, tmp_pat
     )
 
     scan, err = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
     )
     page, page_err = subtitle_maintenance.items_payload(
         scan["id"], status="incomplete"
@@ -207,6 +208,35 @@ def test_subtitle_scan_flags_only_the_likely_incomplete_srt(monkeypatch, tmp_pat
     assert by_path[str(incomplete)]["subtitle_quality"]["status"] == "likely_incomplete"
     assert by_path[str(complete)]["actionable"] is False
     assert by_path[str(complete)]["subtitle_quality"]["status"] == "complete"
+
+
+def test_subtitle_coverage_uncertainty_requires_review_but_is_not_auto_selected(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    subtitle = _write(
+        lib / "Movie" / "Movie.eng.srt",
+        b"1\n00:01:00,000 --> 00:01:02,000\nLine\n",
+    )
+    _reset_subtitles(monkeypatch)
+    monkeypatch.setattr(
+        subtitle_maintenance.subtitle_quality,
+        "probe_media_duration",
+        lambda _path: None,
+    )
+
+    scan, err = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
+    )
+    page, page_err = subtitle_maintenance.items_payload(
+        scan["id"], status="coverage_review"
+    )
+
+    assert err is None
+    assert page_err is None
+    assert scan["counts"]["coverage_review_count"] == 1
+    assert scan["counts"]["actionable_file_count"] == 0
+    assert page["items"][0]["srt_files"][0]["path"] == str(subtitle)
+    assert page["items"][0]["srt_files"][0]["actionable"] is False
 
 
 def test_subtitle_scan_tracks_each_release_in_shared_folder_by_exact_stem(monkeypatch, tmp_path):
@@ -280,6 +310,27 @@ def test_subtitle_scan_skips_quarantine_and_symlink_files(monkeypatch, tmp_path)
     assert scan["counts"]["ok_count"] == 1
 
 
+def test_subtitle_scans_only_main_videos_not_trailers_extras_or_samples(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    _write(lib / "Movie" / "trailers" / "Movie Trailer.mkv")
+    _write(lib / "Movie" / "extras" / "Behind the Scenes.mp4")
+    _write(lib / "Movie" / "Movie-sample.mp4")
+
+    missing = _scan(lib, monkeypatch)
+    _reset_subtitles(monkeypatch)
+    coverage, err = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
+    )
+
+    assert err is None
+    assert missing["mode"] == "missing"
+    assert missing["counts"]["scanned_video_count"] == 1
+    assert coverage["mode"] == "coverage"
+    assert coverage["counts"]["scanned_video_count"] == 1
+    assert coverage["counts"]["coverage_video_count"] == 0
+
+
 def test_subtitle_items_payload_pages_searches_and_caps(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     for index in range(120):
@@ -299,6 +350,38 @@ def test_subtitle_items_payload_pages_searches_and_caps(monkeypatch, tmp_path):
     assert search_err is None
     assert searched["total"] == 1
     assert searched["items"][0]["name"] == "Movie 119.mkv"
+
+
+def test_subtitle_cleanup_selection_spans_result_pages(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    for index in range(12):
+        folder = lib / f"Movie {index:02d}"
+        _write(folder / f"Movie {index:02d}.mkv")
+        _write(folder / f"Movie {index:02d}.nno.srt")
+    scan = _scan(lib, monkeypatch)
+    first_page, err = subtitle_maintenance.items_payload(
+        scan["id"], status="language_review", limit=5
+    )
+    excluded = first_page["items"][0]["srt_files"][0]["id"]
+
+    plan, plan_err = subtitle_maintenance.build_action_plan(
+        {
+            "scan_id": scan["id"],
+            "operation": "quarantine",
+            "selection": {
+                "mode": "all_eligible",
+                "excluded_file_ids": [excluded],
+            },
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    assert plan_err is None
+    assert plan["selection_mode"] == "all_eligible"
+    assert plan["total_actionable_file_count"] == 12
+    assert plan["selected_file_count"] == 11
+    assert excluded not in {item["file_id"] for item in plan["files"]}
 
 
 def test_subtitle_scan_reuses_active_scan_and_can_cancel(monkeypatch, tmp_path):
@@ -416,7 +499,9 @@ def test_subtitle_ui_assets_render():
     assert res.status_code == 200
     assert 'data-maint-tab-hash="subtitles"' in html
     assert 'id="pane-subtitles"' in html
-    assert 'id="subtitleScanButton"' in html
+    assert 'id="subtitleMissingScanButton"' in html
+    assert 'id="subtitleCoverageScanButton"' in html
+    assert 'id="subtitleBrowserCollapse" class="collapse' in html
     assert 'id="subtitleItemStatus"' in html
     assert 'value="review" selected' in html
     assert 'value="incomplete"' in html

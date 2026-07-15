@@ -9,6 +9,7 @@ from . import impact_metrics
 from . import maintenance
 from . import maintenance_scan_store
 from . import task_progress
+from . import media_scope
 from .operation_gate import coordinated_library_operation
 from . import poster_maintenance
 from . import subtitle_maintenance
@@ -23,7 +24,7 @@ from .utils import path_is_under, resolve_case_insensitive
 DASHBOARD_ROOT = os.path.join(STATE_ROOT, "dashboard")
 LIBRARY_INVENTORY_PATH = os.path.join(DASHBOARD_ROOT, "library-inventory.json")
 LIBRARY_SCAN_RETENTION_SECONDS = 24 * 60 * 60
-LIBRARY_FOLDER_LIMITS = (10, 25, 50, 100)
+LIBRARY_FOLDER_LIMITS = (5, 10, 25, 50, 100)
 LIBRARY_FOLDER_SORT_FIELDS = {
     "name",
     "video_count",
@@ -279,18 +280,29 @@ def _preview_summary():
 
 
 def _subtitle_summary():
-    scan = _safe_scan_payload(subtitle_maintenance.status_payload) or {}
-    active = bool(scan.get("active"))
-    missing = scan.get("missing_count") or 0
-    language_review = scan.get("language_review_count") or 0
-    unknown = scan.get("unknown_count") or 0
-    ok = scan.get("ok_count") or 0
-    review = missing + language_review + unknown
+    missing_scan = _safe_scan_payload(
+        lambda: subtitle_maintenance.status_payload(mode="missing")
+    ) or {}
+    coverage_scan = _safe_scan_payload(
+        lambda: subtitle_maintenance.status_payload(mode="coverage")
+    ) or {}
+    active = bool(missing_scan.get("active") or coverage_scan.get("active"))
+    missing = missing_scan.get("missing_count") or 0
+    language_review = missing_scan.get("language_review_count") or 0
+    unknown = missing_scan.get("unknown_count") or 0
+    incomplete = coverage_scan.get("incomplete_count") or 0
+    coverage_review = coverage_scan.get("coverage_review_count") or 0
+    ok = (missing_scan.get("ok_count") or 0) + (coverage_scan.get("ok_count") or 0)
+    review = missing + language_review + unknown + incomplete + coverage_review
     return {
-        "scan": scan,
+        "scan": missing_scan if missing_scan.get("id") else coverage_scan,
+        "missing_scan": missing_scan,
+        "coverage_scan": coverage_scan,
         "missing_count": missing,
         "language_review_count": language_review,
         "unknown_count": unknown,
+        "incomplete_count": incomplete,
+        "coverage_review_count": coverage_review,
         "ok_count": ok,
         "review_count": review,
         "active": active,
@@ -501,6 +513,7 @@ def _scan_library_inventory(scan):
                 for dirname in dirs
                 if not dirname.startswith(".")
                 and dirname not in KNOWN_SKIP_DIRS
+                and not media_scope.is_non_main_video_dir(dirname)
                 and not os.path.islink(os.path.join(base, dirname))
             ],
             key=str.lower,
@@ -509,6 +522,11 @@ def _scan_library_inventory(scan):
         for filename in files:
             full_path = os.path.join(base, filename)
             if os.path.islink(full_path) or not os.path.isfile(full_path):
+                continue
+            if (
+                os.path.splitext(filename)[1].lower() in VIDEO_EXTS
+                and not media_scope.is_main_video_filename(filename)
+            ):
                 continue
             _count_file(root_stats, full_path)
             child_name = _direct_child_name(root_path, full_path)
@@ -752,8 +770,8 @@ def _parse_folder_limit(value):
     try:
         limit = int(value)
     except (TypeError, ValueError):
-        return 25
-    return limit if limit in LIBRARY_FOLDER_LIMITS else 25
+        return 10
+    return limit if limit in LIBRARY_FOLDER_LIMITS else 10
 
 
 def _parse_offset(value):
@@ -763,7 +781,7 @@ def _parse_offset(value):
         return 0
 
 
-def library_folders_payload(offset=0, limit=25, q="", sort="name", direction="asc"):
+def library_folders_payload(offset=0, limit=10, q="", sort="name", direction="asc"):
     inventory, scan = _current_inventory()
     limit = _parse_folder_limit(limit)
     offset = _parse_offset(offset)
@@ -881,10 +899,19 @@ def status_payload():
             "/maintenance#subtitles",
             status=(subtitles["scan"] or {}).get("status", "not_scanned"),
             found=subtitles["review_count"],
-            ready=subtitles["language_review_count"] + subtitles["unknown_count"],
+            ready=(
+                subtitles["language_review_count"]
+                + subtitles["unknown_count"]
+                + subtitles["incomplete_count"]
+                + subtitles["coverage_review_count"]
+            ),
             resolved=0,
             remaining=subtitles["review_count"],
-            detail=f"{subtitles['missing_count']} missing, {subtitles['language_review_count']} language review, {subtitles['unknown_count']} unknown",
+            detail=(
+                f"{subtitles['missing_count']} missing, "
+                f"{subtitles['incomplete_count']} incomplete, "
+                f"{subtitles['coverage_review_count']} coverage review"
+            ),
             action_label="Open subtitles",
             active=subtitles["active"],
         ),

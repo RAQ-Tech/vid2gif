@@ -13,6 +13,7 @@ from . import emby_sync
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import media_scope
 from . import subtitle_quality
 from . import task_progress
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -23,7 +24,7 @@ from .table_sort import sort_records
 from .utils import path_is_under, resolve_case_insensitive
 
 
-ITEM_PAGE_DEFAULT = 25
+ITEM_PAGE_DEFAULT = 10
 ITEM_PAGE_MAX = 100
 LARGE_RESULT_COUNT = 100
 SCAN_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
@@ -56,10 +57,11 @@ LANGUAGE_MODIFIER_TOKENS = {
 SUBTITLE_FILESYSTEM_WORKFLOW = "subtitle_scan.filesystem"
 SUBTITLE_EMBY_WORKFLOW = "subtitle_scan.emby"
 SUBTITLE_QUALITY_WORKFLOW = "subtitle_scan.quality"
+SUBTITLE_SCAN_MODES = {"missing", "coverage"}
 __test__ = False
 
 subtitle_scans = {}
-_subtitle_cache_loaded = False
+_subtitle_cache_loaded = set()
 subtitle_plans = {}
 subtitle_apply_runs = {}
 subtitle_lock = threading.Lock()
@@ -285,7 +287,7 @@ def _skip_dir(base, dirname, lib_root):
     path = os.path.join(base, dirname)
     if os.path.islink(path):
         return True
-    if dirname in KNOWN_SKIP_DIRS:
+    if dirname in KNOWN_SKIP_DIRS or media_scope.is_non_main_video_dir(dirname):
         return True
     settings = app_settings.load_settings()
     move_root = os.path.realpath(settings.get("duplicate_move_root") or "")
@@ -322,6 +324,7 @@ def _scan_videos(scan, settings, lib_root):
             filename
             for filename in files
             if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
+            and media_scope.is_main_video_filename(filename)
         ]
         video_stems = [os.path.splitext(filename)[0] for filename in videos]
         for filename in sorted(videos, key=str.lower):
@@ -346,7 +349,13 @@ def _scan_videos(scan, settings, lib_root):
                     f"Scanned {scanned} videos",
                     stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
                     completed_units=scanned,
-                    remaining_stages=[{"workflow": SUBTITLE_EMBY_WORKFLOW}],
+                    remaining_stages=[{
+                        "workflow": (
+                            SUBTITLE_QUALITY_WORKFLOW
+                            if scan.get("mode") == "coverage"
+                            else SUBTITLE_EMBY_WORKFLOW
+                        )
+                    }],
                     unit_label="videos",
                     scanned_video_count=scanned,
                 )
@@ -354,29 +363,40 @@ def _scan_videos(scan, settings, lib_root):
     return items
 
 
-def _counts(items):
+def _scan_cache_key(mode):
+    return f"subtitles_{mode}"
+
+
+def _counts(items, mode="missing"):
     counts = {
         "scanned_video_count": len(items),
         "missing_count": 0,
         "language_review_count": 0,
         "unknown_count": 0,
         "incomplete_count": 0,
+        "coverage_review_count": 0,
         "ok_count": 0,
         "subtitle_file_count": 0,
+        "actionable_file_count": 0,
         "review_count": 0,
     }
     for item in items:
         status = item.get("status")
         counts["subtitle_file_count"] += len(item.get("srt_files") or [])
+        counts["actionable_file_count"] += sum(
+            bool(subtitle.get("actionable")) for subtitle in item.get("srt_files") or []
+        )
         key = f"{status}_count"
         if key in counts:
             counts[key] += 1
-    counts["review_count"] = (
-        counts["missing_count"]
-        + counts["language_review_count"]
-        + counts["unknown_count"]
-        + counts["incomplete_count"]
-    )
+    if mode == "coverage":
+        counts["review_count"] = counts["incomplete_count"] + counts["coverage_review_count"]
+    else:
+        counts["review_count"] = (
+            counts["missing_count"]
+            + counts["language_review_count"]
+            + counts["unknown_count"]
+        )
     return counts
 
 
@@ -401,6 +421,7 @@ def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progres
         item["video_duration_seconds"] = duration
         item["video_duration_source"] = duration_source
         incomplete = []
+        review = []
         for subtitle in subtitles:
             quality = subtitle_quality.analyze_srt(subtitle.get("path"), duration)
             subtitle["subtitle_quality"] = quality
@@ -414,6 +435,13 @@ def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progres
                     ) if value
                 )
                 incomplete.append(subtitle)
+            elif quality.get("status") != "complete":
+                subtitle["actionable"] = False
+                subtitle["action_reason"] = (
+                    f"{quality.get('label') or 'Subtitle coverage needs review'}; "
+                    "review only, not selected for automatic cleanup"
+                )
+                review.append(subtitle)
         if incomplete:
             item.update(
                 status="incomplete",
@@ -422,6 +450,16 @@ def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progres
                     "likely incomplete based on timestamp coverage"
                 ),
             )
+        elif review:
+            item.update(
+                status="coverage_review",
+                detail=(
+                    f"{len(review)} subtitle file{'s need' if len(review) != 1 else ' needs'} "
+                    "coverage review"
+                ),
+            )
+        else:
+            item.update(status="ok", detail="Subtitle timestamps cover the video duration")
         if progress and (index == total or index % 25 == 0):
             progress(index, total)
     return items
@@ -636,6 +674,7 @@ def public_scan(scan):
     review_count = counts.get("review_count", 0)
     public = {
         "id": scan.get("id", ""),
+        "mode": scan.get("mode", "missing"),
         "path": scan.get("path", ""),
         "status": scan.get("status", ""),
         **task_progress.public_fields(scan),
@@ -656,19 +695,37 @@ def public_scan(scan):
             scan.get("emby_streams"), app_settings.load_settings()
         ),
     }
-    public.update(maintenance_scan_store.public_cache_metadata("subtitles", scan))
+    public.update(
+        maintenance_scan_store.public_cache_metadata(
+            _scan_cache_key(scan.get("mode", "missing")), scan
+        )
+    )
     return public
 
 
-def _ensure_cache_loaded():
-    global _subtitle_cache_loaded
-    if _subtitle_cache_loaded:
+def _ensure_cache_loaded(mode=None):
+    modes = [mode] if mode in SUBTITLE_SCAN_MODES else sorted(SUBTITLE_SCAN_MODES)
+    pending = [value for value in modes if value not in _subtitle_cache_loaded]
+    if not pending:
         return
-    restored = maintenance_scan_store.restore_scan("subtitles")
-    with subtitle_lock:
-        if restored and restored.get("id") not in subtitle_scans:
-            subtitle_scans[restored["id"]] = restored
-        _subtitle_cache_loaded = True
+    for value in pending:
+        restored = maintenance_scan_store.restore_scan(_scan_cache_key(value))
+        restored_from_legacy = False
+        if not restored and value == "missing":
+            restored = maintenance_scan_store.restore_scan("subtitles")
+            restored_from_legacy = bool(restored)
+        with subtitle_lock:
+            if restored and restored.get("id") not in subtitle_scans:
+                restored["mode"] = restored.get("mode") or value
+                subtitle_scans[restored["id"]] = restored
+            _subtitle_cache_loaded.add(value)
+        if restored_from_legacy:
+            maintenance_scan_store.persist_success(
+                _scan_cache_key(value),
+                "subtitles",
+                restored,
+                restored.get("lib_root") or LIB_ROOT,
+            )
 
 
 def _prune_scans_locked(now=None):
@@ -694,11 +751,12 @@ def _prune_scans_locked(now=None):
         subtitle_scans.pop(scan_id, None)
 
 
-def _active_scan_locked():
+def _active_scan_locked(mode=None):
     active = [
         scan
         for scan in subtitle_scans.values()
         if scan.get("status") in SCAN_ACTIVE_STATUSES
+        and (not mode or scan.get("mode", "missing") == mode)
     ]
     if not active:
         return None
@@ -711,46 +769,43 @@ def _active_scan_locked():
 def _run_scan(scan, settings, lib_root):
     try:
         started = time.time()
+        mode = scan.get("mode", "missing")
+        remaining = (
+            [{"workflow": SUBTITLE_EMBY_WORKFLOW}]
+            if mode == "missing"
+            else [{"workflow": SUBTITLE_QUALITY_WORKFLOW}]
+        )
         _set_scan_progress(
             scan,
             1,
             "Scanning subtitle sidecars",
             stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
             completed_units=0,
-            remaining_stages=[
-                {"workflow": SUBTITLE_EMBY_WORKFLOW},
-                {"workflow": SUBTITLE_QUALITY_WORKFLOW},
-            ],
+            remaining_stages=remaining,
             unit_label="videos",
             status="running",
             _started_ts=started,
             started_at=utc_iso(started),
         )
         items = _scan_videos(scan, settings, lib_root)
+        filesystem_scanned_count = len(items)
+        if mode == "coverage":
+            items = [item for item in items if item.get("srt_files")]
+            for item in items:
+                item.update(status="ok", detail="Waiting for timestamp coverage analysis")
+                for subtitle in item.get("srt_files") or []:
+                    subtitle["actionable"] = False
+                    subtitle["action_reason"] = ""
         _set_scan_progress(
             scan,
             60,
-            f"Scanned {len(items)} videos for subtitle sidecars",
+            f"Scanned {filesystem_scanned_count} main videos for subtitle sidecars",
             stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
-            completed_units=len(items),
-            total_units=len(items),
-            remaining_stages=[
-                {"workflow": SUBTITLE_EMBY_WORKFLOW},
-                {"workflow": SUBTITLE_QUALITY_WORKFLOW},
-            ],
+            completed_units=filesystem_scanned_count,
+            total_units=filesystem_scanned_count,
+            remaining_stages=remaining,
             unit_label="videos",
-            scanned_video_count=len(items),
-        )
-        _set_scan_progress(
-            scan,
-            65,
-            f"Matching {len(items)} subtitle records with Emby",
-            stage_workflow=SUBTITLE_EMBY_WORKFLOW,
-            completed_units=0,
-            total_units=len(items),
-            remaining_stages=[{"workflow": SUBTITLE_QUALITY_WORKFLOW}],
-            unit_label="videos",
-            scanned_video_count=len(items),
+            scanned_video_count=filesystem_scanned_count,
         )
         emby_mapping = emby_catalog.enrich_records(
             items,
@@ -762,41 +817,64 @@ def _run_scan(scan, settings, lib_root):
             app_settings.load_settings(),
             before_page=lambda: _check_cancelled(scan),
         )
-        emby_streams = _enrich_subtitle_streams(
-            items,
-            settings,
-            catalog,
-            catalog_summary,
-        )
-        _set_scan_progress(
-            scan,
-            85,
-            f"Checking timestamp coverage for {len(items)} videos",
-            stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
-            completed_units=0,
-            total_units=len(items),
-            remaining_stages=[],
-            unit_label="videos",
-            scanned_video_count=len(items),
-        )
-        _enrich_subtitle_quality(
-            items,
-            catalog,
-            settings,
-            before_item=lambda: _check_cancelled(scan),
-            progress=lambda completed, total: _set_scan_progress(
+        if mode == "missing":
+            _set_scan_progress(
                 scan,
-                85 + int(14 * completed / max(total, 1)),
-                f"Checked subtitle coverage for {completed} of {total} videos",
-                stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
-                completed_units=completed,
-                total_units=total,
+                70,
+                f"Matching {len(items)} subtitle records with Emby",
+                stage_workflow=SUBTITLE_EMBY_WORKFLOW,
+                completed_units=0,
+                total_units=len(items),
                 remaining_stages=[],
                 unit_label="videos",
-                scanned_video_count=len(items),
-            ),
-        )
-        counts = _counts(items)
+                scanned_video_count=filesystem_scanned_count,
+            )
+            emby_streams = _enrich_subtitle_streams(
+                items,
+                settings,
+                catalog,
+                catalog_summary,
+            )
+            final_workflow = SUBTITLE_EMBY_WORKFLOW
+        else:
+            emby_streams = _stream_summary(
+                "not_applicable",
+                "Emby subtitle stream matching is not part of a coverage scan.",
+                settings,
+            )
+            _set_scan_progress(
+                scan,
+                65,
+                f"Checking timestamp coverage for {len(items)} videos with SRT files",
+                stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
+                completed_units=0,
+                total_units=len(items),
+                remaining_stages=[],
+                unit_label="videos",
+                scanned_video_count=filesystem_scanned_count,
+            )
+            _enrich_subtitle_quality(
+                items,
+                catalog,
+                settings,
+                before_item=lambda: _check_cancelled(scan),
+                progress=lambda completed, total: _set_scan_progress(
+                    scan,
+                    65 + int(34 * completed / max(total, 1)),
+                    f"Checked subtitle coverage for {completed} of {total} videos",
+                    stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
+                    completed_units=completed,
+                    total_units=total,
+                    remaining_stages=[],
+                    unit_label="videos",
+                    scanned_video_count=filesystem_scanned_count,
+                ),
+            )
+            final_workflow = SUBTITLE_QUALITY_WORKFLOW
+        counts = _counts(items, mode)
+        counts["scanned_video_count"] = filesystem_scanned_count
+        if mode == "coverage":
+            counts["coverage_video_count"] = len(items)
         for item in items:
             for subtitle in item.get("srt_files") or []:
                 subtitle["emby_parent_item_id"] = item.get("emby_item_id", "")
@@ -812,7 +890,7 @@ def _run_scan(scan, settings, lib_root):
             scanned_video_count=counts["scanned_video_count"],
             emby_mapping=emby_mapping,
             emby_streams=emby_streams,
-            stage_workflow=SUBTITLE_QUALITY_WORKFLOW,
+            stage_workflow=final_workflow,
             completed_units=len(items),
             total_units=len(items),
             remaining_stages=[],
@@ -824,7 +902,7 @@ def _run_scan(scan, settings, lib_root):
         impact_metrics.record_scan(
             scan["id"],
             "subtitles",
-            "subtitles",
+            _scan_cache_key(mode),
             scan["path"],
             [
                 {
@@ -840,12 +918,13 @@ def _run_scan(scan, settings, lib_root):
             timestamp=utc_iso(finished),
         )
         persisted = maintenance_scan_store.persist_success(
-            "subtitles", "subtitles", scan, lib_root
+            _scan_cache_key(mode), "subtitles", scan, lib_root
         )
         if persisted:
             with subtitle_lock:
                 for candidate in subtitle_scans.values():
-                    candidate["_persisted_latest"] = candidate is scan
+                    if candidate.get("mode", "missing") == mode:
+                        candidate["_persisted_latest"] = candidate is scan
     except ScanCancelled:
         finished = time.time()
         _set_scan_progress(
@@ -870,8 +949,11 @@ def _run_scan(scan, settings, lib_root):
         )
 
 
-def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
-    _ensure_cache_loaded()
+def start_scan(path, lib_root=LIB_ROOT, synchronous=False, mode="missing"):
+    mode = str(mode or "missing").strip().lower()
+    if mode not in SUBTITLE_SCAN_MODES:
+        return None, "Choose missing or coverage"
+    _ensure_cache_loaded(mode)
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
@@ -880,6 +962,7 @@ def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
     settings = app_settings.load_settings()
     scan = {
         "id": scan_id,
+        "mode": mode,
         "path": real_path,
         "status": "queued",
         "progress_percent": 0,
@@ -942,8 +1025,11 @@ def cancel_scan(scan_id=None):
     return scan, None
 
 
-def status_payload(scan_id=None):
-    _ensure_cache_loaded()
+def status_payload(scan_id=None, mode=None):
+    mode = str(mode or "").strip().lower()
+    if mode and mode not in SUBTITLE_SCAN_MODES:
+        return None, "Choose missing or coverage"
+    _ensure_cache_loaded(mode or None)
     with subtitle_lock:
         _prune_scans_locked()
         if scan_id:
@@ -951,9 +1037,20 @@ def status_payload(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         elif subtitle_scans:
-            active = _active_scan_locked()
-            successful = [item for item in subtitle_scans.values() if item.get("status") == "success"]
-            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(subtitle_scans.values(), key=lambda item: item.get("_created_ts") or 0))
+            active = _active_scan_locked(mode or None)
+            candidates = [
+                item for item in subtitle_scans.values()
+                if not mode or item.get("mode", "missing") == mode
+            ]
+            successful = [item for item in candidates if item.get("status") == "success"]
+            scan = active or (
+                max(successful, key=lambda item: item.get("_finished_ts") or 0)
+                if successful
+                else (
+                    max(candidates, key=lambda item: item.get("_created_ts") or 0)
+                    if candidates else None
+                )
+            )
         else:
             scan = None
     return {"scan": public_scan(scan)}, None
@@ -973,7 +1070,7 @@ def _coerce_page(offset, limit):
 
 def _filter_items(items, status, query):
     status = str(status or "review").lower()
-    if status not in {"review", "missing", "language_review", "unknown", "incomplete", "ok", "index_mismatch", "all"}:
+    if status not in {"review", "missing", "language_review", "unknown", "incomplete", "coverage_review", "ok", "index_mismatch", "all"}:
         status = "review"
     filtered = list(items)
     if status == "review":
@@ -1074,35 +1171,55 @@ def build_action_plan(payload, lib_root=LIB_ROOT):
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
+    with subtitle_lock:
+        scan = subtitle_scans.get(scan_id)
+    if not scan or scan.get("status") != "success":
+        return None, "Scan is not complete"
     allowed, freshness_error = maintenance_scan_store.action_allowed(
-        "subtitles", scan_id, lib_root
+        _scan_cache_key(scan.get("mode", "missing")), scan_id, lib_root
     )
     if not allowed:
         return None, freshness_error
     operation = str(payload.get("operation") or "quarantine").lower()
     if operation not in {"quarantine", "delete"}:
         return None, "Choose quarantine or delete"
-    visible_ids = payload.get("visible_file_ids")
-    selected_ids = payload.get("selected_file_ids")
-    if not isinstance(visible_ids, list) or not visible_ids:
-        return None, "Visible subtitle files are required"
-    if not isinstance(selected_ids, list) or not selected_ids:
-        return None, "Select at least one subtitle file"
-    visible = {str(value or "") for value in visible_ids if str(value or "")}
-    selected = []
-    for value in selected_ids:
-        file_id = str(value or "")
-        if file_id and file_id not in selected:
-            selected.append(file_id)
-    if any(file_id not in visible for file_id in selected):
-        return None, "Selected subtitles must be visible on the current page"
-    with subtitle_lock:
-        scan = subtitle_scans.get(scan_id)
-    if not scan or scan.get("status") != "success":
-        return None, "Scan is not complete"
     files_by_id = _all_subtitles(scan)
-    if any(file_id not in files_by_id for file_id in visible):
-        return None, "Visible subtitle results are stale"
+    actionable_ids = [
+        file_id for file_id, subtitle in files_by_id.items()
+        if subtitle.get("actionable")
+    ]
+    selection = payload.get("selection")
+    selection_mode = "visible_page"
+    if isinstance(selection, dict) and selection.get("mode") == "all_eligible":
+        selection_mode = "all_eligible"
+        excluded = {str(value or "") for value in selection.get("excluded_file_ids") or []}
+        selected = [file_id for file_id in actionable_ids if file_id not in excluded]
+        visible = set(actionable_ids)
+    elif isinstance(selection, dict) and selection.get("mode") == "explicit":
+        selection_mode = "explicit"
+        selected = list(dict.fromkeys(
+            str(value or "") for value in selection.get("file_ids") or [] if str(value or "")
+        ))
+        visible = set(actionable_ids)
+    else:
+        visible_ids = payload.get("visible_file_ids")
+        selected_ids = payload.get("selected_file_ids")
+        if not isinstance(visible_ids, list) or not visible_ids:
+            return None, "Visible subtitle files are required"
+        if not isinstance(selected_ids, list) or not selected_ids:
+            return None, "Select at least one subtitle file"
+        visible = {str(value or "") for value in visible_ids if str(value or "")}
+        selected = list(dict.fromkeys(
+            str(value or "") for value in selected_ids if str(value or "")
+        ))
+        if any(file_id not in visible for file_id in selected):
+            return None, "Selected subtitles must be visible on the current page"
+        if any(file_id not in files_by_id for file_id in visible):
+            return None, "Visible subtitle results are stale"
+    if not selected:
+        return None, "Select at least one subtitle file"
+    if any(file_id not in actionable_ids for file_id in selected):
+        return None, "Only flagged subtitle files can be changed"
     root = os.path.realpath(lib_root)
     quarantine_root = os.path.realpath(os.path.join(root, SUBTITLE_QUARANTINE_DIRNAME))
     files = []
@@ -1153,6 +1270,9 @@ def build_action_plan(payload, lib_root=LIB_ROOT):
         "lib_root": root,
         "quarantine_root": quarantine_root if operation == "quarantine" else "",
         "visible_file_ids": sorted(visible),
+        "selection_mode": selection_mode,
+        "selected_file_count": len(selected),
+        "total_actionable_file_count": len(actionable_ids),
         "files": files,
         "file_count": len(files),
         "total_size_bytes": sum(item["size_bytes"] for item in files),

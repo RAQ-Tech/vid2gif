@@ -13,6 +13,7 @@ from . import emby_client
 from . import emby_notifications
 from . import impact_metrics
 from . import maintenance_scan_store
+from . import media_scope
 from . import task_progress
 from . import poster_maintenance
 from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
@@ -28,7 +29,7 @@ EXCEPTIONS_PATH = os.path.join(ACTOR_IMAGE_ROOT, "exceptions.json")
 LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "actor-images")
 LOG_INDEX = os.path.join(LOG_DIR, "index.json")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-ITEM_PAGE_DEFAULT = 25
+ITEM_PAGE_DEFAULT = 10
 ITEM_PAGE_MAX = 100
 LARGE_RESULT_COUNT = 100
 SCAN_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
@@ -550,6 +551,15 @@ def _build_items(settings, scan, lib_root, opener=None):
         local_path = _local_item_path(media, scan_path, lib_root, settings)
         if not local_path:
             continue
+        try:
+            relative_parts = os.path.relpath(local_path, scan_path).split(os.sep)[:-1]
+        except ValueError:
+            relative_parts = []
+        if (
+            any(media_scope.is_non_main_video_dir(part) for part in relative_parts)
+            or not media_scope.is_main_video_filename(local_path)
+        ):
+            continue
         for person_ref in media.get("People") or []:
             if str(person_ref.get("Type") or "").lower() not in {"", "actor", "person"}:
                 continue
@@ -950,9 +960,32 @@ def build_import_plan(payload, lib_root=LIB_ROOT):
         return None, "Scan not found"
     if scan.get("status") != "success":
         return None, "Scan is not complete"
+    selection = payload.get("selection")
     requested = payload.get("items")
     selected = {}
-    if requested is None:
+    if isinstance(selection, dict):
+        ready_ids = {
+            str(item.get("id") or "")
+            for item in scan.get("items") or []
+            if item.get("status") == "ready" and item.get("id")
+        }
+        if selection.get("mode") == "all_eligible":
+            excluded = {
+                str(value or "")
+                for value in selection.get("excluded_item_ids") or []
+                if str(value or "")
+            }
+            selected = {item_id: "" for item_id in ready_ids if item_id not in excluded}
+        elif selection.get("mode") == "explicit":
+            item_ids = {
+                str(value or "")
+                for value in selection.get("item_ids") or []
+                if str(value or "")
+            }
+            selected = {item_id: "" for item_id in item_ids}
+        else:
+            return None, "Actor selection mode is invalid"
+    elif requested is None:
         for item in scan.get("items") or []:
             if item.get("status") == "ready":
                 selected[item["id"]] = ""
@@ -1001,6 +1034,8 @@ def build_import_plan(payload, lib_root=LIB_ROOT):
         "status": "ready",
         "created_at": utc_iso(),
         "file_count": len(files),
+        "selected_item_count": len(selected),
+        "total_actionable_item_count": (scan.get("counts") or {}).get("ready_count", 0),
         "files": files,
         "skipped": skipped,
         "lib_root": os.path.realpath(lib_root),
@@ -1019,6 +1054,8 @@ def public_plan(plan):
         "status": plan.get("status", ""),
         "created_at": plan.get("created_at"),
         "file_count": plan.get("file_count", 0),
+        "selected_item_count": plan.get("selected_item_count", 0),
+        "total_actionable_item_count": plan.get("total_actionable_item_count", 0),
         "skipped": list(plan.get("skipped") or []),
         "files": [
             {

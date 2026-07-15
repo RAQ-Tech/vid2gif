@@ -284,7 +284,13 @@ def _live_stage_estimate(task, workflow, now, completed_units, total_units):
 
     if historical_rate is not None and live_rate is not None and expected_units is not None:
         fraction = min(1.0, completed / max(float(expected_units), 1.0))
-        live_weight = min(0.9, max(0.2, fraction))
+        # Once a run has produced a measurable rate, favor it quickly. Hardware,
+        # filesystem cache, and Emby response time can make consecutive scans
+        # several times faster or slower; a history-heavy blend otherwise keeps
+        # displaying minutes after the current run is nearly finished.
+        live_weight = min(0.95, max(0.6, fraction))
+        if max(historical_rate, live_rate) / max(min(historical_rate, live_rate), 0.000001) >= 3:
+            live_weight = max(live_weight, 0.8)
         rate = historical_rate * (1.0 - live_weight) + live_rate * live_weight
         remaining = max(0.0, float(expected_units) - completed)
         confidence = history.get("confidence")

@@ -206,6 +206,50 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     assert "secret" not in str(actor_image_maintenance.public_apply_run(run))
 
 
+def test_actor_plan_selection_spans_result_pages(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = _write(lib / "Movie" / "Movie.mkv")
+    _write(lib / "Movie" / "Movie-performer-Jane Doe-image.jpg", b"image")
+    second_image = _write(lib / "Movie" / "Movie-performer-Janet Doe-image.jpg", b"image-2")
+    _reset_actor_state(monkeypatch, tmp_path)
+    scan, _err = actor_image_maintenance.start_scan(
+        str(lib),
+        lib_root=str(lib),
+        synchronous=True,
+        opener=_fake_scan_opener(movie),
+    )
+    first = next(item for item in scan["items"] if item["status"] == "ready")
+    second = json.loads(json.dumps(first))
+    second.update({"id": "actor-second", "person_id": "p-second", "name": "Janet Doe"})
+    second["recommended_candidate"].update(
+        {
+            "id": "candidate-second",
+            "path": str(second_image),
+            "name": second_image.name,
+            "identity": actor_image_maintenance._file_identity(str(second_image)),
+        }
+    )
+    second["candidates"] = [second["recommended_candidate"]]
+    scan["items"].append(second)
+    scan["counts"] = actor_image_maintenance._counts(scan["items"])
+
+    plan, err = actor_image_maintenance.build_import_plan(
+        {
+            "scan_id": scan["id"],
+            "selection": {
+                "mode": "all_eligible",
+                "excluded_item_ids": [first["id"]],
+            },
+        },
+        lib_root=str(lib),
+    )
+
+    assert err is None
+    assert plan["file_count"] == 1
+    assert plan["files"][0]["item_id"] == "actor-second"
+    assert plan["total_actionable_item_count"] == 2
+
+
 def test_actor_apply_refuses_existing_emby_image(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = _write(lib / "Movie" / "Movie.mkv")

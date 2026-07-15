@@ -73,7 +73,7 @@
       </div>
       <div class="toolbar-row mb-0">
         <button id="dashboardScanAllButton" class="btn btn-primary btn-sm" type="button">
-          <i class="bi bi-search" aria-hidden="true"></i><span>Scan All</span>
+          <i class="bi bi-search" aria-hidden="true"></i><span>Run selected</span>
         </button>
         <button id="dashboardCancelScanButton" class="btn btn-outline-danger btn-sm d-none" type="button">
           <i class="bi bi-stop-fill" aria-hidden="true"></i><span>Cancel</span>
@@ -84,12 +84,35 @@
       <label class="form-label mb-0" for="dashboardMaintenancePath">Library scope</label>
       <div class="input-group input-group-sm">
         <input id="dashboardMaintenancePath" class="form-control" value="{{ lib_root }}" autocomplete="off">
-        <button id="dashboardBrowseButton" class="btn btn-outline-secondary" type="button" title="Browse folders" aria-label="Browse folders">
+        <button id="dashboardBrowseButton" class="btn btn-outline-secondary" type="button" title="Choose folder" aria-label="Choose folder" aria-expanded="false" aria-controls="dashboardFolderBrowserCollapse">
           <i class="bi bi-folder2-open" aria-hidden="true"></i>
+          <span>Choose folder</span>
         </button>
       </div>
     </div>
-    <div id="dashboardFolderBrowser" class="dashboard-folder-browser d-none" aria-live="polite"></div>
+    <div id="dashboardFolderBrowserCollapse" class="collapse">
+      <div id="dashboardFolderBrowser" class="media-browser compact-folder-picker mt-3" aria-live="polite"></div>
+    </div>
+    <fieldset class="dashboard-scan-task-picker mt-3">
+      <legend class="small fw-semibold mb-2">Checks to run</legend>
+      <div class="dashboard-scan-task-grid">
+        {% for key, label in [
+          ('overview', 'Library overview'),
+          ('duplicates', 'Duplicates'),
+          ('video_previews_missing', 'Missing BIFs'),
+          ('video_previews_quality', 'BIF quality'),
+          ('subtitles_missing', 'Missing subtitles'),
+          ('subtitles_coverage', 'Subtitle coverage'),
+          ('posters', 'Landscape posters'),
+          ('actor_images', 'Actor images')
+        ] %}
+        <label class="form-check">
+          <input class="form-check-input" type="checkbox" value="{{ key }}" data-dashboard-scan-task checked>
+          <span class="form-check-label">{{ label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
     <div class="dashboard-scan-progress mt-3">
       <div class="d-flex justify-content-between gap-3 small">
         <strong id="dashboardScanLabel">Ready</strong>

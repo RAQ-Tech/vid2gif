@@ -51,13 +51,13 @@ test('duplicate scan source folder browser opens and collapses like the BIF brow
   await expect(button).toHaveAttribute('aria-expanded', 'false');
   await button.click();
   await expect(button).toHaveAttribute('aria-expanded', 'true');
-  await expect(button).toContainText('Hide Folders');
+  await expect(button).toContainText('Hide folders');
   await expect(browser).toHaveClass(/show/);
   await expect(browser).toContainText('Studio');
 
   await button.click();
   await expect(button).toHaveAttribute('aria-expanded', 'false');
-  await expect(button).toContainText('Browse Folders');
+  await expect(button).toContainText('Choose folder');
   await expect(browser).not.toHaveClass(/show/);
 });
 
@@ -131,11 +131,13 @@ test('duplicate results render and selection persists across pages', async ({ pa
   await expect(page.locator('#duplicateSelectionSummary')).toContainText('29 selected across all result pages');
 
   await page.locator('#maintenanceGroups [data-maint-page="next"]').first().click();
+  await page.locator('#maintenanceGroups [data-maint-page="next"]').first().click();
   const laterGroup = page.locator('[data-maint-group-enabled="group-27"]');
   await expect(laterGroup).toBeChecked();
   await laterGroup.uncheck();
   await expect(page.locator('#duplicateSelectionSummary')).toContainText('28 selected across all result pages');
 
+  await page.locator('#maintenanceGroups [data-maint-page="prev"]').first().click();
   await page.locator('#maintenanceGroups [data-maint-page="prev"]').first().click();
   await expect(firstGroup).not.toBeChecked();
   await page.locator('#maintenancePlanButton').click();
@@ -230,6 +232,11 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
     normalized_name: 'Movie',
     recommended_keep_id: 'video-2160',
     recommended_keep_name: 'Movie.Extended.Release.2160p.Remux.mkv',
+    recommended_keep_reason: 'Higher media quality outweighed the copy-number filename',
+    keeper_options: [
+      {id: 'video-2160', name: 'Movie.Extended.Release.2160p.Remux.mkv', metadata_label: '3840x2160', size_label: '2 KB'},
+      {id: 'video-1080', name: 'Movie.Extended.Release.1080p.WEB-DL.mkv', metadata_label: '1920x1080', size_label: '1 KB'},
+    ],
     video_count: 2,
     accessory_count: 2,
     reclaimable_bytes: 1200,
@@ -364,6 +371,8 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
   await expect(page.locator('#duplicateReviewSummary .duplicate-review-protected strong')).toHaveText('1');
   await expect(page.locator('[data-maint-group-card="group-review"]')).toContainText('2 matching subtitle files differ in size');
   await expect(page.locator('[data-maint-group-card="group-review"] .duplicate-summary-keeper')).toContainText('Movie.Extended.Release.2160p.Remux.mkv');
+  await expect(page.locator('[data-maint-group-card="group-review"] [data-maint-keep]')).toBeVisible();
+  await expect(page.locator('[data-maint-group-card="group-review"] [data-maint-keep] option')).toHaveCount(2);
 
   await page.locator('[data-maint-expand="group-review"]').click();
   await expect(page.locator('[data-maint-operation="srt-2160"]')).toHaveValue('keep');

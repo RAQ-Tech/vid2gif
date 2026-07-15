@@ -1,10 +1,16 @@
 (function () {
   const config = window.vid2gifMaintenanceConfig || {};
   const maintenanceTabHashes = ['overview', 'emby-operations', 'posters', 'duplicates', 'video-previews', 'subtitles', 'actor-images'];
+  const PAGE_SIZE_OPTIONS = [5, 10, 25, 50, 100];
+  const PAGE_SIZE_DEFAULT = 10;
+  let maintenanceFolderPicker = null;
+  let previewFolderPicker = null;
+  let subtitleFolderPicker = null;
+  let actorFolderPicker = null;
   const overviewExpandedFolders = new Set();
   let overviewFolderPage = null;
   let overviewPageOffset = 0;
-  let overviewPageLimit = 25;
+  let overviewPageLimit = PAGE_SIZE_DEFAULT;
   let overviewSearchTimer = null;
   let overviewPollTimer = null;
   const groupState = new Map();
@@ -12,9 +18,10 @@
   let currentScan = null;
   let currentPlan = null;
   let currentApply = null;
+  let currentRestorePlan = null;
   let currentGroupsPage = null;
   let groupPageOffset = 0;
-  let groupPageLimit = 25;
+  let groupPageLimit = PAGE_SIZE_DEFAULT;
   let duplicateReviewFilter = 'all';
   let pollTimer = null;
   let applyPollTimer = null;
@@ -33,11 +40,16 @@
   let previewPollTimer = null;
   let previewItemsPage = null;
   let previewPageOffset = 0;
-  let previewPageLimit = 25;
+  let previewPageLimit = PAGE_SIZE_DEFAULT;
   let previewSort = {column: 'video', direction: 'asc'};
   let previewLastPath = config.previewScanPath || config.libRoot || '/library';
   const PREVIEW_SELECTION_STORAGE_KEY = 'vid2gif_preview_generation_selection_v1';
   const PREVIEW_PAGE_SIZE_STORAGE_KEY = 'vid2gif_preview_page_size';
+  const OVERVIEW_PAGE_SIZE_STORAGE_KEY = 'vid2gif_overview_page_size';
+  const QUALITY_PAGE_SIZE_STORAGE_KEY = 'vid2gif_quality_page_size';
+  const SUBTITLE_PAGE_SIZE_STORAGE_KEY = 'vid2gif_subtitle_page_size';
+  const ACTOR_PAGE_SIZE_STORAGE_KEY = 'vid2gif_actor_page_size';
+  const POSTER_PAGE_SIZE_STORAGE_KEY = 'vid2gif_poster_page_size';
   let previewSelection = {
     scanId: '',
     mode: 'all_eligible',
@@ -54,7 +66,7 @@
   let qualityPollTimer = null;
   let qualityItemsPage = null;
   let qualityPageOffset = 0;
-  let qualityPageLimit = 25;
+  let qualityPageLimit = PAGE_SIZE_DEFAULT;
   let qualitySort = {column: 'bif', direction: 'asc'};
   let qualityPlan = null;
   let qualityApply = null;
@@ -66,10 +78,13 @@
   let subtitlePollTimer = null;
   let subtitleItemsPage = null;
   let subtitlePageOffset = 0;
-  let subtitlePageLimit = 25;
+  let subtitlePageLimit = PAGE_SIZE_DEFAULT;
   let subtitleSort = {column: 'video', direction: 'asc'};
   let subtitleSearchTimer = null;
-  const subtitleSelected = new Set();
+  const SUBTITLE_SELECTION_STORAGE_KEY = 'vid2gif_subtitle_selection_v1';
+  let subtitleSelection = {
+    scanId: '', mode: 'all_eligible', excluded: new Set(), selected: new Set(), total: 0,
+  };
   let subtitlePlan = null;
   let subtitleApply = null;
   let subtitleApplyPollTimer = null;
@@ -77,12 +92,15 @@
   let actorPollTimer = null;
   let actorItemsPage = null;
   let actorPageOffset = 0;
-  let actorPageLimit = 25;
+  let actorPageLimit = PAGE_SIZE_DEFAULT;
   let actorSort = {column: 'actor', direction: 'asc'};
   let actorPlan = null;
   let actorApply = null;
   let actorApplyPollTimer = null;
-  const actorSelected = new Set();
+  const ACTOR_SELECTION_STORAGE_KEY = 'vid2gif_actor_selection_v1';
+  let actorSelection = {
+    scanId: '', mode: 'all_eligible', excluded: new Set(), selected: new Set(), total: 0,
+  };
   let posterPollTimer = null;
   let posterSettingsLoaded = false;
   let posterSettingsPending = 0;
@@ -93,10 +111,14 @@
   const posterSettingInputTimers = new Map();
   let posterScan = null;
   let posterItemsPage = null;
+  let posterPageLimit = PAGE_SIZE_DEFAULT;
   let posterSort = {column: 'background', direction: 'asc'};
   let posterPlan = null;
   let posterApply = null;
-  const posterSelected = new Set();
+  const POSTER_SELECTION_STORAGE_KEY = 'vid2gif_poster_selection_v1';
+  let posterSelection = {
+    scanId: '', mode: 'all_eligible', excluded: new Set(), selected: new Set(), total: 0,
+  };
   const groupDetailGenerations = new Map();
   let maintenanceFreshnessTimer = null;
   let embyOperationsTimer = null;
@@ -104,6 +126,13 @@
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function rememberScanSource(path, pageKey = '') {
+    try {
+      localStorage.setItem('vid2gif_maintenance_scan_source', path);
+      if (pageKey) localStorage.setItem(pageKey, path);
+    } catch (_e) {}
   }
 
   function escapeHtml(value) {
@@ -848,22 +877,24 @@
     if (planButton) {
       planButton.disabled = !currentScan || currentScan.status !== 'success' || !selected || stale || applyActive;
       const label = planButton.querySelector('span');
-      if (label) label.textContent = selected ? `Review ${selected} Selected` : 'Review Selection';
+      if (label) label.textContent = currentPlan ? 'Refresh plan preview' : 'Preview cleanup plan';
     }
-    const selectButton = byId('duplicateSelectAllButton');
-    if (selectButton) {
-      selectButton.disabled = !duplicateSelection.total || applyActive;
-      selectButton.textContent = duplicateSelection.total ? `Select all ${duplicateSelection.total} groups` : 'Select all groups';
+    const master = byId('duplicateSelectAllCheckbox');
+    if (master) {
+      master.disabled = !duplicateSelection.total || applyActive;
+      master.checked = Boolean(duplicateSelection.total && selected === duplicateSelection.total);
+      master.indeterminate = selected > 0 && selected < duplicateSelection.total;
     }
-    const clearButton = byId('duplicateClearSelectionButton');
-    if (clearButton) {
-      clearButton.disabled = !selected || applyActive;
-      clearButton.textContent = 'Deselect all groups';
+    const toggle = byId('duplicateTogglePageButton');
+    if (toggle) {
+      const visible = currentGroupsPage?.groups || [];
+      const allExpanded = Boolean(visible.length && visible.every(group => ensureGroupState(group).expanded));
+      toggle.disabled = !visible.length || applyActive;
+      const label = toggle.querySelector('span');
+      const icon = toggle.querySelector('i');
+      if (label) label.textContent = allExpanded ? 'Collapse page' : 'Expand page';
+      if (icon) icon.className = `bi ${allExpanded ? 'bi-arrows-collapse' : 'bi-arrows-expand'}`;
     }
-    ['duplicateSelectPageButton', 'duplicateDeselectPageButton', 'duplicateExpandPageButton', 'duplicateCollapsePageButton'].forEach(id => {
-      const button = byId(id);
-      if (button) button.disabled = !(currentGroupsPage?.groups || []).length || applyActive;
-    });
     renderDuplicateSelectionSummary();
     renderDuplicateReviewSummary();
   }
@@ -1074,7 +1105,7 @@
   }
 
   function groupOption(video, recommendedId) {
-    const label = `${video.name}${video.metadata_label ? ` - ${video.metadata_label}` : ''}`;
+    const label = `${video.name}${video.metadata_label ? ` - ${video.metadata_label}` : ''}${video.size_label ? ` - ${video.size_label}` : ''}${video.copy_marked ? ' - copy-marked name' : ''}`;
     return `<option value="${escapeHtml(video.id)}"${video.id === recommendedId ? ' selected' : ''}>${escapeHtml(label)}</option>`;
   }
 
@@ -1240,17 +1271,15 @@
     const keeper = hasDetails
       ? (group.videos || []).find(video => video.id === state.keepId)
       : null;
-    const recommended = keeper?.name || group.recommended_keep_name || '';
+    const keeperOptions = (group.keeper_options || group.videos || []);
+    const selectedKeeper = keeper || keeperOptions.find(video => video.id === state.keepId) || {};
+    const recommended = selectedKeeper.name || group.recommended_keep_name || '';
     const detail = expanded
       ? (loading
         ? '<div class="text-muted small mt-3">Loading group details...</div>'
         : (hasDetails
           ? `<div class="maintenance-group-detail">` +
             `<div class="duplicate-group-tools">` +
-            `<label class="form-label mb-0 duplicate-keeper-control">Video to keep` +
-            `<select class="form-select form-select-sm" data-maint-keep="${escapeHtml(group.id)}">` +
-            `${(group.videos || []).map(video => groupOption(video, state.keepId)).join('')}` +
-            `</select><code class="duplicate-keeper-name">${escapeHtml(keeper?.name || '')}</code></label>` +
             `<div class="toolbar-row mb-0">` +
             `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-group-defaults="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>Reset suggested actions</button>` +
             `<button class="btn btn-outline-warning btn-sm" type="button" data-maint-group-sidecars="cleanup" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>${escapeHtml(cleanupActionLabel())} all sidecars</button>` +
@@ -1282,9 +1311,13 @@
       `<div class="maintenance-group-summary">` +
       `<span>${escapeHtml(group.video_count ?? (group.videos || []).length)} videos</span>` +
       `<span>${escapeHtml(group.accessory_count || 0)} sidecar files</span>` +
-      `<span class="duplicate-summary-keeper">Keep: <code>${escapeHtml(recommended)}</code></span>` +
       `<span>Default reclaimable: ${escapeHtml(group.reclaimable_label || '')}</span>` +
       `</div>` +
+      `<label class="form-label duplicate-keeper-control duplicate-collapsed-keeper duplicate-summary-keeper mt-2 mb-0">Video to keep` +
+      `<select class="form-select form-select-sm" data-maint-keep="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>` +
+      `${keeperOptions.map(video => groupOption(video, state.keepId)).join('')}` +
+      `</select><code class="duplicate-keeper-name" title="${escapeHtml(recommended)}">${escapeHtml(recommended)}</code>` +
+      `<span class="small text-muted">${escapeHtml(state.keepId === group.recommended_keep_id ? (group.recommended_keep_reason || 'Automatic recommendation') : 'Manual keeper selection')}</span></label>` +
       `${renderGroupReviewStats(group, state)}` +
       `<div class="duplicate-review-flags">${renderGroupSubtitleSignals(group)}${renderGroupReviewFlags(group)}</div>` +
       `${detail}` +
@@ -1359,50 +1392,11 @@
   }
 
   async function openBrowser(path, show = true) {
-    const browser = byId('maintenanceBrowser');
-    if (!browser) return;
-    if (show) setMaintenanceBrowserOpen(true);
-    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
-    try {
-      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
-      const data = await readJsonResponse(res);
-      if (!res.ok) {
-        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
-        return;
-      }
-      const folders = (data.folders || []).map(folder =>
-        `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-folder="${escapeHtml(folder.path)}">` +
-        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
-      ).join('');
-      const parent = data.parent
-        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
-        : '';
-      browser.innerHTML =
-        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
-        `<div class="media-browser-actions">${parent}` +
-        `<button class="btn btn-primary btn-sm" type="button" data-maint-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
-        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
-    } catch (e) {
-      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
-    }
+    if (show) return maintenanceFolderPicker?.load(path || config.libRoot || '/library');
   }
 
   function setMaintenanceBrowserOpen(open) {
-    const panel = byId('maintenanceBrowserCollapse');
-    const button = byId('maintenanceBrowseButton');
-    if (!panel) return;
-    if (window.bootstrap?.Collapse) {
-      const collapse = window.bootstrap.Collapse.getOrCreateInstance(panel, {toggle: false});
-      if (open) collapse.show();
-      else collapse.hide();
-    } else {
-      panel.classList.toggle('show', open);
-    }
-    if (button) {
-      button.setAttribute('aria-expanded', open ? 'true' : 'false');
-      const label = button.querySelector('span');
-      if (label) label.textContent = open ? 'Hide Folders' : 'Browse Folders';
-    }
+    if (!open && maintenanceFolderPicker?.isOpen()) maintenanceFolderPicker.toggle();
   }
 
   function maintenanceBrowserIsOpen() {
@@ -1410,21 +1404,7 @@
   }
 
   function setPreviewBrowserOpen(open) {
-    const panel = byId('previewBrowserCollapse');
-    const button = byId('previewBrowseButton');
-    if (!panel) return;
-    if (window.bootstrap?.Collapse) {
-      const collapse = window.bootstrap.Collapse.getOrCreateInstance(panel, {toggle: false});
-      if (open) collapse.show();
-      else collapse.hide();
-    } else {
-      panel.classList.toggle('show', open);
-    }
-    if (button) {
-      button.setAttribute('aria-expanded', open ? 'true' : 'false');
-      const label = button.querySelector('span');
-      if (label) label.textContent = open ? 'Hide Folders' : 'Browse Folders';
-    }
+    if (!open && previewFolderPicker?.isOpen()) previewFolderPicker.toggle();
   }
 
   function previewBrowserIsOpen() {
@@ -1447,88 +1427,45 @@
   }
 
   async function openPreviewBrowser(path) {
-    const browser = byId('previewBrowser');
-    if (!browser) return;
-    setPreviewBrowserOpen(true);
-    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
-    try {
-      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
-      const data = await readJsonResponse(res);
-      if (!res.ok) {
-        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
-        return;
-      }
-      const folders = (data.folders || []).map(folder =>
-        `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-folder="${escapeHtml(folder.path)}">` +
-        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
-      ).join('');
-      const parent = data.parent
-        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
-        : '';
-      browser.innerHTML =
-        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
-        `<div class="media-browser-actions">${parent}` +
-        `<button class="btn btn-primary btn-sm" type="button" data-preview-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
-        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
-    } catch (e) {
-      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
-    }
+    return previewFolderPicker?.load(path || config.previewScanPath || config.libRoot || '/library');
   }
 
   async function openSubtitleBrowser(path) {
-    const browser = byId('subtitleBrowser');
-    if (!browser) return;
-    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
-    try {
-      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
-      const data = await readJsonResponse(res);
-      if (!res.ok) {
-        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
-        return;
-      }
-      const folders = (data.folders || []).map(folder =>
-        `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-folder="${escapeHtml(folder.path)}">` +
-        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
-      ).join('');
-      const parent = data.parent
-        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
-        : '';
-      browser.innerHTML =
-        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
-        `<div class="media-browser-actions">${parent}` +
-        `<button class="btn btn-primary btn-sm" type="button" data-subtitle-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
-        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
-    } catch (e) {
-      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
-    }
+    return subtitleFolderPicker?.load(path || config.libRoot || '/library');
   }
 
   async function openActorBrowser(path) {
-    const browser = byId('actorBrowser');
-    if (!browser) return;
-    browser.innerHTML = '<div class="small text-muted">Loading folders...</div>';
-    try {
-      const res = await fetch(`/api/media-browser?path=${encodeURIComponent(path || config.libRoot || '/library')}`);
-      const data = await readJsonResponse(res);
-      if (!res.ok) {
-        browser.innerHTML = `<div class="small text-danger">${escapeHtml(data.error || 'Path not found')}</div>`;
-        return;
-      }
-      const folders = (data.folders || []).map(folder =>
-        `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-folder="${escapeHtml(folder.path)}">` +
-        `<i class="bi bi-folder" aria-hidden="true"></i><span>${escapeHtml(folder.name)}</span></button>`
-      ).join('');
-      const parent = data.parent
-        ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-folder="${escapeHtml(data.parent)}"><i class="bi bi-arrow-up" aria-hidden="true"></i><span>Parent</span></button>`
-        : '';
-      browser.innerHTML =
-        `<div class="media-browser-current"><code title="${escapeHtml(data.path || '')}">${escapeHtml(data.path || '')}</code></div>` +
-        `<div class="media-browser-actions">${parent}` +
-        `<button class="btn btn-primary btn-sm" type="button" data-actor-choose="${escapeHtml(data.path || '')}"><i class="bi bi-check2" aria-hidden="true"></i><span>Use This Folder</span></button></div>` +
-        `<div class="media-browser-files">${folders || '<span class="small text-muted">No folders in this location</span>'}</div>`;
-    } catch (e) {
-      browser.innerHTML = `<div class="small text-danger">${escapeHtml(e.message || 'Browser unavailable')}</div>`;
-    }
+    return actorFolderPicker?.load(path || config.libRoot || '/library');
+  }
+
+  function initFolderPickers() {
+    const create = window.vid2gifFolderPicker?.create;
+    if (!create) return;
+    maintenanceFolderPicker = create({
+      inputId: 'maintenancePath', buttonId: 'maintenanceBrowseButton',
+      panelId: 'maintenanceBrowserCollapse', containerId: 'maintenanceBrowser',
+      defaultPath: config.libRoot || '/library', storageKey: 'vid2gif_duplicate_scan_source',
+      bindButton: false,
+    });
+    previewFolderPicker = create({
+      inputId: 'previewPath', buttonId: 'previewBrowseButton',
+      panelId: 'previewBrowserCollapse', containerId: 'previewBrowser',
+      defaultPath: config.previewScanPath || config.libRoot || '/library',
+      storageKey: 'vid2gif_preview_scan_source', preserveInitialValue: true,
+      bindButton: false, onChoose: persistPreviewPath,
+    });
+    subtitleFolderPicker = create({
+      inputId: 'subtitlePath', buttonId: 'subtitleBrowseButton',
+      panelId: 'subtitleBrowserCollapse', containerId: 'subtitleBrowser',
+      defaultPath: config.libRoot || '/library', storageKey: 'vid2gif_subtitle_scan_source',
+      bindButton: false,
+    });
+    actorFolderPicker = create({
+      inputId: 'actorPath', buttonId: 'actorBrowseButton',
+      panelId: 'actorBrowserCollapse', containerId: 'actorBrowser',
+      defaultPath: config.libRoot || '/library', storageKey: 'vid2gif_actor_scan_source',
+      bindButton: false,
+    });
   }
 
   function stopPolling() {
@@ -1664,6 +1601,7 @@
       setMessage('Choose a folder under the library', '');
       return;
     }
+    rememberScanSource(path, 'vid2gif_duplicate_scan_source');
     stopPolling();
     groupState.clear();
     groupSummaries.clear();
@@ -1803,9 +1741,14 @@
       }
       currentPlan = data.plan;
       renderPlan(currentPlan);
+      const summary = byId('maintenancePlanSummary');
+      summary?.classList.add('maintenance-plan-ready');
+      summary?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      summary?.focus({preventScroll: true});
+      updateDuplicateControls();
       byId('maintenanceApplyButton').disabled = !currentPlan.file_count;
       setMessage(
-        'Review the cleanup plan before applying',
+        'Cleanup plan preview is ready below',
         `${currentPlan.selected_group_count || 0} groups selected across the scan results. ` + (Number(currentPlan.file_count || 0) >= 100
           ? `${currentPlan.file_count} files selected. This can take a while and will continue in the background.`
           : (currentPlan.total_size_label || ''))
@@ -2004,7 +1947,10 @@
     }
     const rows = logs.map(log =>
       `<tr>` +
-      `<td><button class="btn btn-outline-secondary btn-sm" type="button" data-maint-log="${escapeHtml(log.id)}">Open</button></td>` +
+      `<td><div class="toolbar-row mb-0"><button class="btn btn-outline-secondary btn-sm" type="button" data-maint-log="${escapeHtml(log.id)}">Open</button>` +
+      (log.restore_available ? `<button class="btn btn-outline-primary btn-sm" type="button" data-maint-restore-preview="${escapeHtml(log.id)}">Preview restore</button>` : '') +
+      (log.restored_at ? `<span class="badge text-bg-success">Restored ${escapeHtml(log.restored_count || 0)}</span>` : '') +
+      `</div></td>` +
       `<td>${escapeHtml(log.created_at || '')}</td>` +
       `<td>${escapeHtml(log.action || '')}</td>` +
       `<td>${escapeHtml(log.applied_count || 0)} applied, ${escapeHtml(log.refused_count || 0)} refused</td>` +
@@ -2016,6 +1962,65 @@
       `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-duplicate-logs" data-sort-mode="client">` +
       `<thead><tr><th data-column-id="open" data-resizable="false"></th><th data-column-id="time" data-sortable="true">Time</th><th data-column-id="action" data-sortable="true">Action</th><th data-column-id="result" data-sortable="true">Result</th><th data-column-id="size" data-sortable="true">Log size</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>`;
+  }
+
+  function renderDuplicateRestorePlan(plan) {
+    const target = byId('maintenanceRestoreSummary');
+    if (!target) return;
+    target.innerHTML = renderChangePreview({
+      title: 'Restore Preview',
+      files: plan.files || [],
+      metrics: [
+        {label: 'Files restorable', value: plan.file_count || 0},
+        {label: 'Unavailable', value: plan.unavailable_count || 0},
+        {label: 'Collision names adjusted', value: plan.collision_adjusted_count || 0},
+      ],
+      note: 'Changes run in reverse order. Existing files are never overwritten; a restored-number suffix is added when a destination is occupied.',
+      changeForFile: file => ({
+        operation: 'restore',
+        operationLabel: file.original_operation === 'rename' ? 'Undo rename' : 'Restore',
+        source: file.source_path,
+        target: file.destination_path,
+        detail: `${file.size_label || ''}${file.collision_adjusted ? ' · collision-adjusted destination' : ''}`,
+      }),
+    }) + `<div class="toolbar-row mt-3"><button class="btn btn-primary btn-sm" type="button" data-maint-restore-apply="${escapeHtml(plan.id)}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span>Apply restore</span></button></div>`;
+    target.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
+
+  async function previewDuplicateRestore(logId) {
+    setMessage('Building restore preview', 'No files will be changed yet.');
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/logs/${encodeURIComponent(logId)}/restore/plan`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Restore preview could not be built');
+      currentRestorePlan = data.plan;
+      renderDuplicateRestorePlan(currentRestorePlan);
+      setMessage('Restore preview is ready', `${currentRestorePlan.file_count || 0} file(s) can be restored.`);
+    } catch (e) {
+      setMessage('Restore preview could not be built', e.message || '');
+    }
+  }
+
+  async function applyDuplicateRestore(planId) {
+    if (!currentRestorePlan || currentRestorePlan.id !== planId) return;
+    if (!window.confirm(`Restore ${currentRestorePlan.file_count || 0} file(s)? Existing files will not be overwritten.`)) return;
+    try {
+      const res = await fetch('/api/maintenance/duplicates/restore', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plan_id: planId}),
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Restore could not be applied');
+      currentRestorePlan = null;
+      if (byId('maintenanceRestoreSummary')) byId('maintenanceRestoreSummary').innerHTML = '';
+      setMessage('Restore complete', `${data.result?.applied_count || 0} restored, ${data.result?.refused_count || 0} refused, ${data.result?.collision_adjusted_count || 0} collision names adjusted.`);
+      refreshMaintenanceLogs();
+      checkMaintenanceFreshness();
+    } catch (e) {
+      setMessage('Restore could not be applied', e.message || '');
+    }
   }
 
   async function refreshMaintenanceLogs() {
@@ -2363,6 +2368,7 @@
       setPreviewMessage('Choose a folder under the library', '');
       return;
     }
+    rememberScanSource(path, 'vid2gif_preview_scan_source');
     stopPreviewPolling();
     previewItemsPage = null;
     previewPageOffset = 0;
@@ -3229,6 +3235,62 @@
     if (detailEl) detailEl.textContent = detail || '';
   }
 
+  function ensureSubtitleSelection(scan) {
+    if (!scan?.id || subtitleSelection.scanId === scan.id) return;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(SUBTITLE_SELECTION_STORAGE_KEY) || 'null'); } catch (_e) {}
+    const same = saved?.scanId === scan.id;
+    subtitleSelection = {
+      scanId: scan.id,
+      mode: same && saved.mode === 'explicit' ? 'explicit' : 'all_eligible',
+      excluded: new Set(same && Array.isArray(saved.excluded) ? saved.excluded : []),
+      selected: new Set(same && Array.isArray(saved.selected) ? saved.selected : []),
+      total: Number(scan.actionable_file_count || 0),
+    };
+    updateSubtitleSelectionControls();
+  }
+
+  function subtitleFileIsSelected(fileId) {
+    return subtitleSelection.mode === 'all_eligible'
+      ? !subtitleSelection.excluded.has(fileId)
+      : subtitleSelection.selected.has(fileId);
+  }
+
+  function subtitleSelectedCount() {
+    return subtitleSelection.mode === 'all_eligible'
+      ? Math.max(0, subtitleSelection.total - subtitleSelection.excluded.size)
+      : subtitleSelection.selected.size;
+  }
+
+  function subtitleSelectionPayload() {
+    return subtitleSelection.mode === 'all_eligible'
+      ? {mode: 'all_eligible', excluded_file_ids: Array.from(subtitleSelection.excluded)}
+      : {mode: 'explicit', file_ids: Array.from(subtitleSelection.selected)};
+  }
+
+  function updateSubtitleSelectionControls() {
+    const count = subtitleSelectedCount();
+    const summary = byId('subtitleSelectionSummary');
+    if (summary) summary.textContent = `${count} selected across all result pages`;
+    if (byId('subtitlePlanButton')) byId('subtitlePlanButton').disabled = !count;
+  }
+
+  function subtitleSelectionChanged() {
+    subtitlePlan = null;
+    try {
+      localStorage.setItem(SUBTITLE_SELECTION_STORAGE_KEY, JSON.stringify({
+        scanId: subtitleSelection.scanId,
+        mode: subtitleSelection.mode,
+        excluded: Array.from(subtitleSelection.excluded),
+        selected: Array.from(subtitleSelection.selected),
+      }));
+    } catch (_e) {}
+    if (byId('subtitleApplyButton')) byId('subtitleApplyButton').disabled = true;
+    const summary = byId('subtitlePlanSummary');
+    if (summary) summary.innerHTML = '';
+    updateSubtitleSelectionControls();
+  }
+
   function setSubtitleProgress(scan) {
     const state = byId('subtitleScanState');
     const label = byId('subtitleProgressLabel');
@@ -3244,9 +3306,11 @@
     if (missing) missing.textContent = String(scan?.missing_count || 0);
     if (review) review.textContent = String(scan?.review_count || 0);
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
-    const scanButton = byId('subtitleScanButton');
+    const missingScanButton = byId('subtitleMissingScanButton');
+    const coverageScanButton = byId('subtitleCoverageScanButton');
     const cancelButton = byId('subtitleCancelScanButton');
-    if (scanButton) scanButton.disabled = active;
+    if (missingScanButton) missingScanButton.disabled = active;
+    if (coverageScanButton) coverageScanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
     const planButton = byId('subtitlePlanButton');
     if (planButton && scan?.freshness?.status === 'changed') planButton.disabled = true;
@@ -3274,6 +3338,7 @@
   function subtitleStatusBadge(status) {
     const labels = {
       missing: ['Missing', 'text-bg-warning'],
+      coverage_review: ['Coverage review', 'text-bg-warning'],
       language_review: ['Language Review', 'text-bg-danger'],
       unknown: ['Unknown', 'text-bg-info'],
       incomplete: ['Likely Incomplete', 'text-bg-danger'],
@@ -3289,7 +3354,7 @@
     return files.slice(0, 3).map(file => {
       const code = file.language_code || 'unknown';
       const selectable = Boolean(file.actionable);
-      const checked = selectable && subtitleSelected.has(file.id) ? ' checked' : '';
+      const checked = selectable && subtitleFileIsSelected(file.id) ? ' checked' : '';
       const quality = file.subtitle_quality || {};
       const qualityClass = quality.status === 'complete'
         ? 'text-success'
@@ -3381,14 +3446,10 @@
       subtitleItemsPage = data;
       subtitleSort = {column: data.sort || subtitleSort.column, direction: data.direction || subtitleSort.direction};
       subtitlePageOffset = Number(data.offset || 0);
-      subtitleSelected.clear();
-      (data.items || []).forEach(item => (item.srt_files || []).forEach(file => {
-        if (file.actionable) subtitleSelected.add(file.id);
-      }));
       subtitlePlan = null;
       const planButton = byId('subtitlePlanButton');
       const applyButton = byId('subtitleApplyButton');
-      if (planButton) planButton.disabled = !subtitleSelected.size;
+      if (planButton) planButton.disabled = !subtitleSelectedCount();
       if (applyButton) applyButton.disabled = true;
       const summary = byId('subtitlePlanSummary');
       if (summary) summary.innerHTML = '';
@@ -3408,14 +3469,21 @@
     if (!scan) {
       setSubtitleMessage('No subtitle scan yet.', '');
     } else if (scan.status === 'success') {
+      ensureSubtitleSelection(scan);
       const settings = scan.settings || {};
       const streams = scan.emby_streams || {};
+      const coverageMode = scan.mode === 'coverage';
       const streamDetail = ['complete', 'partial'].includes(streams.status)
         ? `Emby streams: ${streams.stream_count || 0}, mismatches: ${streams.index_mismatch_count || 0}.`
         : (streams.message || 'Emby stream details are unavailable.');
       setSubtitleMessage(
-        `${scan.review_count || 0} subtitle review item${(scan.review_count || 0) === 1 ? '' : 's'}`,
-        withEmbyCoverage(`${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. ${streamDetail} Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`, scan)
+        `${coverageMode ? 'Coverage' : 'Missing subtitle'} scan: ${scan.review_count || 0} review item${(scan.review_count || 0) === 1 ? '' : 's'}`,
+        withEmbyCoverage(
+          coverageMode
+            ? `${scan.incomplete_count || 0} likely incomplete, ${scan.coverage_review_count || 0} need coverage review, ${scan.ok_count || 0} complete.`
+            : `${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. ${streamDetail} Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`,
+          scan
+        )
       );
       if (subtitleItemsPage?.scan?.id !== scan.id) {
         loadSubtitleItems(0);
@@ -3462,22 +3530,23 @@
     }
   }
 
-  async function startSubtitleScan() {
+  async function startSubtitleScan(mode = subtitleScan?.mode || 'missing') {
     const path = (byId('subtitlePath')?.value || config.libRoot || '/library').trim();
     if (!path) {
       setSubtitleMessage('Choose a folder under the library', '');
       return;
     }
+    rememberScanSource(path, 'vid2gif_subtitle_scan_source');
     stopSubtitlePolling();
     subtitleItemsPage = null;
     subtitlePageOffset = 0;
-    setSubtitleMessage('Starting subtitle scan', '');
+    setSubtitleMessage(mode === 'coverage' ? 'Starting subtitle coverage scan' : 'Starting missing subtitle scan', '');
     setSubtitleProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
     try {
       const res = await fetch('/api/maintenance/subtitles/scan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path})
+        body: JSON.stringify({path, mode})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -3524,7 +3593,7 @@
       metrics: [
         {label: 'Subtitle files', value: plan.file_count || 0},
         {label: 'Disk data', value: plan.total_size_label || '0 B'},
-        {label: 'Page', value: subtitlePageRangeText(subtitleItemsPage)},
+        {label: 'Selection', value: `${plan.file_count || 0} across all pages`},
         {label: 'Playback deferred', value: plan.emby_playback?.deferred_count || 0}
       ],
       note: plan.operation === 'delete'
@@ -3550,8 +3619,9 @@
         body: JSON.stringify({
           scan_id: subtitleScan.id,
           operation: byId('subtitleAction')?.value || 'quarantine',
+          selection: subtitleSelectionPayload(),
           visible_file_ids: visibleIds,
-          selected_file_ids: Array.from(subtitleSelected)
+          selected_file_ids: visibleIds.filter(subtitleFileIsSelected)
         })
       });
       const data = await readJsonResponse(res);
@@ -3559,7 +3629,7 @@
       subtitlePlan = data.plan;
       renderSubtitlePlan(subtitlePlan);
       byId('subtitleApplyButton').disabled = !subtitlePlan.file_count;
-      setSubtitleMessage('Review the subtitle cleanup plan', `${subtitlePlan.file_count} visible file(s), ${subtitlePlan.total_size_label || '0 B'}`);
+      setSubtitleMessage('Review the subtitle cleanup plan', `${subtitlePlan.file_count} file(s) selected across the scan, ${subtitlePlan.total_size_label || '0 B'}`);
     } catch (e) {
       setSubtitleMessage('Subtitle plan could not be built', e.message || '');
     }
@@ -3587,7 +3657,7 @@
         appendEmbyNotificationNotice('subtitleMessageDetail', notificationFrom(subtitleApply));
         subtitlePlan = null;
         byId('subtitleApplyButton').disabled = true;
-        await startSubtitleScan();
+        await startSubtitleScan(subtitleScan?.mode || 'missing');
       } else {
         setSubtitleMessage('Subtitle cleanup failed', subtitleApply.error || '');
         appendEmbyNotificationNotice('subtitleMessageDetail', notificationFrom(subtitleApply));
@@ -3601,8 +3671,8 @@
   async function applySubtitlePlan() {
     if (!subtitlePlan) return;
     const prompt = subtitlePlan.operation === 'delete'
-      ? `Permanently delete ${subtitlePlan.file_count} visible subtitle file(s)?\n\nThis cannot be undone.`
-      : `Move ${subtitlePlan.file_count} visible subtitle file(s) to quarantine?`;
+      ? `Permanently delete ${subtitlePlan.file_count} selected subtitle file(s)?\n\nThis cannot be undone.`
+      : `Move ${subtitlePlan.file_count} selected subtitle file(s) to quarantine?`;
     if (!window.confirm(prompt)) return;
     byId('subtitleApplyButton').disabled = true;
     try {
@@ -3715,6 +3785,73 @@
       (extra > 0 ? `<div class="text-muted small">${extra} more related video${extra === 1 ? '' : 's'}</div>` : '');
   }
 
+  function ensureActorSelection(scan) {
+    if (!scan?.id) return;
+    if (actorSelection.scanId === scan.id) {
+      actorSelection.total = Number(scan.ready_count || 0);
+      updateActorSelectionControls();
+      return;
+    }
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(ACTOR_SELECTION_STORAGE_KEY) || 'null'); } catch (_e) {}
+    const same = saved?.scanId === scan.id;
+    actorSelection = {
+      scanId: scan.id,
+      mode: same && saved.mode === 'explicit' ? 'explicit' : 'all_eligible',
+      excluded: new Set(same && Array.isArray(saved.excluded) ? saved.excluded : []),
+      selected: new Set(same && Array.isArray(saved.selected) ? saved.selected : []),
+      total: Number(scan.ready_count || 0),
+    };
+    updateActorSelectionControls();
+  }
+
+  function actorItemIsSelected(itemId) {
+    return actorSelection.mode === 'all_eligible'
+      ? !actorSelection.excluded.has(itemId)
+      : actorSelection.selected.has(itemId);
+  }
+
+  function actorSelectedCount() {
+    return actorSelection.mode === 'all_eligible'
+      ? Math.max(0, actorSelection.total - actorSelection.excluded.size)
+      : actorSelection.selected.size;
+  }
+
+  function actorSelectionPayload() {
+    return actorSelection.mode === 'all_eligible'
+      ? {mode: 'all_eligible', excluded_item_ids: Array.from(actorSelection.excluded)}
+      : {mode: 'explicit', item_ids: Array.from(actorSelection.selected)};
+  }
+
+  function updateActorSelectionControls() {
+    const count = actorSelectedCount();
+    const master = byId('actorSelectAllCheckbox');
+    if (master) {
+      master.disabled = !actorSelection.total;
+      master.checked = Boolean(actorSelection.total) && count === actorSelection.total;
+      master.indeterminate = count > 0 && count < actorSelection.total;
+    }
+    const summary = byId('actorSelectionSummary');
+    if (summary) summary.textContent = `${count} of ${actorSelection.total} ready actors selected across all pages`;
+    if (byId('actorPlanButton')) byId('actorPlanButton').disabled = !count || actorScan?.freshness?.status === 'changed';
+  }
+
+  function actorSelectionChanged() {
+    actorPlan = null;
+    try {
+      localStorage.setItem(ACTOR_SELECTION_STORAGE_KEY, JSON.stringify({
+        scanId: actorSelection.scanId,
+        mode: actorSelection.mode,
+        excluded: Array.from(actorSelection.excluded),
+        selected: Array.from(actorSelection.selected),
+      }));
+    } catch (_e) {}
+    if (byId('actorApplyButton')) byId('actorApplyButton').disabled = true;
+    const summary = byId('actorPlanSummary');
+    if (summary) summary.innerHTML = '';
+    updateActorSelectionControls();
+  }
+
   function renderActorItems(page) {
     const target = byId('actorItems');
     if (!target) return;
@@ -3727,7 +3864,7 @@
       return;
     }
     const rows = (page.items || []).map(item => {
-      const checked = actorSelected.has(item.id) || (item.status === 'ready' && !actorSelected.size);
+      const checked = actorItemIsSelected(item.id);
       const selectable = item.status === 'ready';
       return `<tr>` +
         `<td><input class="form-check-input" type="checkbox" data-actor-select="${escapeHtml(item.id)}"${checked && selectable ? ' checked' : ''}${selectable ? '' : ' disabled'}></td>` +
@@ -3766,12 +3903,8 @@
       actorItemsPage = data;
       actorSort = {column: data.sort || actorSort.column, direction: data.direction || actorSort.direction};
       actorPageOffset = Number(data.offset || 0);
-      if (!actorSelected.size && status === 'ready') {
-        (data.items || []).forEach(item => {
-          if (item.status === 'ready') actorSelected.add(item.id);
-        });
-      }
       renderActorItems(data);
+      updateActorSelectionControls();
       if (data.large_result) {
         setActorMessage(`${data.total || 0} actors in this view`, `Large result set loaded ${data.limit || actorPageLimit} items at a time.`);
       }
@@ -3788,6 +3921,7 @@
     if (!scan) {
       setActorMessage('No actor image scan yet.', '');
     } else if (scan.status === 'success') {
+      ensureActorSelection(scan);
       setActorMessage(
         `${scan.missing_actor_count || 0} missing actor image${(scan.missing_actor_count || 0) === 1 ? '' : 's'}`,
         withEmbyCoverage(`${scan.ready_count || 0} ready, ${scan.ambiguous_count || 0} ambiguous, ${scan.no_candidate_count || 0} without local images`, scan)
@@ -3843,11 +3977,11 @@
       setActorMessage('Choose a folder under the library', '');
       return;
     }
+    rememberScanSource(path, 'vid2gif_actor_scan_source');
     stopActorPolling();
     stopActorApplyPolling();
     actorItemsPage = null;
     actorPageOffset = 0;
-    actorSelected.clear();
     actorPlan = null;
     actorApply = null;
     const summary = byId('actorPlanSummary');
@@ -3923,13 +4057,12 @@
       setActorMessage('Run an actor image scan first', '');
       return;
     }
-    const selected = Array.from(actorSelected).map(itemId => ({item_id: itemId}));
     setActorMessage('Building actor image import plan', '');
     try {
       const res = await fetch('/api/maintenance/actor-images/plan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({scan_id: actorScan.id, items: selected})
+        body: JSON.stringify({scan_id: actorScan.id, selection: actorSelectionPayload()})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -3940,7 +4073,7 @@
       renderActorPlan(actorPlan);
       const applyButton = byId('actorApplyButton');
       if (applyButton) applyButton.disabled = !actorPlan.file_count;
-      setActorMessage('Review the actor image import plan before applying', `${actorPlan.file_count || 0} image(s) selected`);
+      setActorMessage('Review the actor image import plan before applying', `${actorPlan.file_count || 0} image(s) selected across the scan`);
     } catch (e) {
       setActorMessage('Actor image import plan could not be built', e.message || '');
     }
@@ -4039,6 +4172,11 @@
         return;
       }
       setActorMessage(status === 'clear' ? 'Actor exception cleared' : 'Actor exception saved', item.name || '');
+      if (status !== 'clear') {
+        actorSelection.excluded.delete(itemId);
+        actorSelection.selected.delete(itemId);
+        actorSelectionChanged();
+      }
       if (actorScan?.id) {
         pollActorScan(actorScan.id);
         loadActorItems(actorPageOffset);
@@ -4166,13 +4304,74 @@
     return `<span class="badge text-bg-secondary">${escapeHtml(status || 'Skipped')}</span>`;
   }
 
+  function ensurePosterSelection(scan) {
+    if (!scan?.id || posterSelection.scanId === scan.id) return;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(POSTER_SELECTION_STORAGE_KEY) || 'null'); } catch (_e) {}
+    const same = saved?.scanId === scan.id;
+    posterSelection = {
+      scanId: scan.id,
+      mode: same && saved.mode === 'explicit' ? 'explicit' : 'all_eligible',
+      excluded: new Set(same && Array.isArray(saved.excluded) ? saved.excluded : []),
+      selected: new Set(same && Array.isArray(saved.selected) ? saved.selected : []),
+      total: Number(scan.eligible_count || 0),
+    };
+    updatePosterSelectionControls();
+  }
+
+  function posterItemIsSelected(itemId) {
+    return posterSelection.mode === 'all_eligible'
+      ? !posterSelection.excluded.has(itemId)
+      : posterSelection.selected.has(itemId);
+  }
+
+  function posterSelectedCount() {
+    return posterSelection.mode === 'all_eligible'
+      ? Math.max(0, posterSelection.total - posterSelection.excluded.size)
+      : posterSelection.selected.size;
+  }
+
+  function posterSelectionPayload() {
+    return posterSelection.mode === 'all_eligible'
+      ? {mode: 'all_eligible', excluded_item_ids: Array.from(posterSelection.excluded)}
+      : {mode: 'explicit', item_ids: Array.from(posterSelection.selected)};
+  }
+
+  function updatePosterSelectionControls() {
+    const count = posterSelectedCount();
+    const master = byId('posterSelectAllCheckbox');
+    if (master) {
+      master.disabled = !posterSelection.total;
+      master.checked = Boolean(posterSelection.total) && count === posterSelection.total;
+      master.indeterminate = count > 0 && count < posterSelection.total;
+    }
+    const summary = byId('posterSelectionSummary');
+    if (summary) summary.textContent = `${count} of ${posterSelection.total} safe updates selected across all pages`;
+    if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !count || posterScan?.freshness?.status === 'changed';
+  }
+
+  function posterSelectionChanged() {
+    posterPlan = null;
+    try {
+      localStorage.setItem(POSTER_SELECTION_STORAGE_KEY, JSON.stringify({
+        scanId: posterSelection.scanId,
+        mode: posterSelection.mode,
+        excluded: Array.from(posterSelection.excluded),
+        selected: Array.from(posterSelection.selected),
+      }));
+    } catch (_e) {}
+    if (byId('posterApplyButton')) byId('posterApplyButton').disabled = true;
+    if (byId('posterPlanSummary')) byId('posterPlanSummary').innerHTML = '';
+    updatePosterSelectionControls();
+  }
+
   function renderPosterItems(page) {
     const wrap = byId('posterRecentItems');
     if (!wrap) return;
     const items = page?.items || [];
     const rows = items.length ? items.map(item =>
       `<tr>` +
-      `<td><input class="form-check-input" type="checkbox" data-poster-item="${escapeHtml(item.id)}"${posterSelected.has(item.id) ? ' checked' : ''}${item.eligible ? '' : ' disabled'} aria-label="Select poster update"></td>` +
+      `<td><input class="form-check-input" type="checkbox" data-poster-item="${escapeHtml(item.id)}"${posterItemIsSelected(item.id) && item.eligible ? ' checked' : ''}${item.eligible ? '' : ' disabled'} aria-label="Select poster update"></td>` +
       `<td>${posterStatusBadge(item.status)}</td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.source)}">${escapeHtml(item.source)}</code></td>` +
       `<td class="path-cell"><code title="${escapeHtml(item.poster)}">${escapeHtml(item.poster)}</code></td>` +
@@ -4186,18 +4385,16 @@
       `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-posters" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || posterSort.column)}" data-current-direction="${escapeHtml(page.direction || posterSort.direction)}">` +
       `<thead><tr><th data-column-id="apply" data-resizable="false">Apply</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="background" data-sortable="true">Background</th><th data-column-id="poster" data-sortable="true">Poster</th><th data-column-id="detail" data-sortable="true">Detail</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
-    if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !posterSelected.size || posterScan?.freshness?.status === 'changed';
+    updatePosterSelectionControls();
   }
 
   async function loadPosterItems(offset = 0) {
     if (!posterScan?.id || posterScan.status !== 'success') return;
     try {
-      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=10&sort=${encodeURIComponent(posterSort.column)}&direction=${encodeURIComponent(posterSort.direction)}`);
+      const res = await fetch(`/api/maintenance/landscape-posters/items?scan_id=${encodeURIComponent(posterScan.id)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(posterPageLimit)}&sort=${encodeURIComponent(posterSort.column)}&direction=${encodeURIComponent(posterSort.direction)}`);
       const data = await readJsonResponse(res);
       posterItemsPage = data;
       posterSort = {column: data.sort || posterSort.column, direction: data.direction || posterSort.direction};
-      posterSelected.clear();
-      (data.items || []).filter(item => item.eligible).forEach(item => posterSelected.add(item.id));
       posterPlan = null;
       if (byId('posterApplyButton')) byId('posterApplyButton').disabled = true;
       if (byId('posterPlanSummary')) byId('posterPlanSummary').innerHTML = '';
@@ -4236,6 +4433,7 @@
     if (analysis?.active) {
       setPosterMessage(analysis.progress_label || 'Analyzing poster artwork', analysis.path || '');
     } else if (analysis?.status === 'success') {
+      ensurePosterSelection(analysis);
       const stale = analysis.freshness?.status === 'changed';
       setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, stale ? 'Library artwork changed after this scan. Rescan before applying updates.' : withEmbyCoverage(`${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous`, analysis));
       if (posterItemsPage?.scan?.id !== analysis.id) loadPosterItems(0);
@@ -4355,16 +4553,16 @@
   }
 
   async function reviewPosterPlan() {
-    if (!posterScan?.id || !posterItemsPage || !posterSelected.size) return;
-    const visible = (posterItemsPage.items || []).map(item => item.id);
+    if (!posterScan?.id || !posterItemsPage || !posterSelectedCount()) return;
     try {
       const res = await fetch('/api/maintenance/landscape-posters/plan', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({scan_id: posterScan.id, visible_item_ids: visible, item_ids: [...posterSelected]})
+        body: JSON.stringify({scan_id: posterScan.id, selection: posterSelectionPayload()})
       });
       const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Poster update plan could not be built');
       posterPlan = data.plan;
-      byId('posterPlanSummary').innerHTML = `<div class="scan-estimate"><i class="bi bi-clipboard-check" aria-hidden="true"></i><div><strong>${escapeHtml(posterPlan.file_count)} poster update${posterPlan.file_count === 1 ? '' : 's'} reviewed</strong><div class="scan-estimate-detail">Only selected items on this visible page will be changed.</div></div></div>`;
+      byId('posterPlanSummary').innerHTML = `<div class="scan-estimate"><i class="bi bi-clipboard-check" aria-hidden="true"></i><div><strong>${escapeHtml(posterPlan.file_count)} poster update${posterPlan.file_count === 1 ? '' : 's'} reviewed</strong><div class="scan-estimate-detail">The preview includes the selection across all result pages.</div></div></div>`;
       byId('posterApplyButton').disabled = false;
     } catch (e) {
       setPosterMessage('Poster update review failed', e.message || '');
@@ -4476,7 +4674,8 @@
     byId('overviewRefreshButton')?.addEventListener('click', startOverviewScan);
     byId('overviewLoadFoldersButton')?.addEventListener('click', () => loadOverviewFolders(0));
     byId('overviewPageLimit')?.addEventListener('change', event => {
-      overviewPageLimit = Number(event.target.value || 25);
+      overviewPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
+      try { localStorage.setItem(OVERVIEW_PAGE_SIZE_STORAGE_KEY, String(overviewPageLimit)); } catch (_e) {}
       loadOverviewFolders(0);
     });
     byId('overviewSort')?.addEventListener('change', () => loadOverviewFolders(0));
@@ -4527,33 +4726,26 @@
     byId('maintenanceCancelScanButton')?.addEventListener('click', cancelScan);
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
-    byId('duplicateSelectAllButton')?.addEventListener('click', () => {
-      duplicateSelection.mode = 'all_eligible';
+    byId('duplicateSelectAllCheckbox')?.addEventListener('change', event => {
+      duplicateSelection.mode = event.target.checked ? 'all_eligible' : 'explicit';
       duplicateSelection.excluded.clear();
       duplicateSelection.selected.clear();
-      groupState.forEach(state => { state.enabled = true; });
+      groupState.forEach(state => { state.enabled = Boolean(event.target.checked); });
       duplicateSelectionChanged();
       renderGroups();
     });
-    byId('duplicateClearSelectionButton')?.addEventListener('click', () => {
-      duplicateSelection.mode = 'explicit';
-      duplicateSelection.excluded.clear();
-      duplicateSelection.selected.clear();
-      groupState.forEach(state => { state.enabled = false; });
-      duplicateSelectionChanged();
-      renderGroups();
+    byId('duplicateTogglePageButton')?.addEventListener('click', () => {
+      const visible = currentGroupsPage?.groups || [];
+      const allExpanded = visible.length && visible.every(group => ensureGroupState(group).expanded);
+      setCurrentPageExpanded(!allExpanded);
     });
-    byId('duplicateSelectPageButton')?.addEventListener('click', () => setCurrentPageGroupSelection(true));
-    byId('duplicateDeselectPageButton')?.addEventListener('click', () => setCurrentPageGroupSelection(false));
-    byId('duplicateExpandPageButton')?.addEventListener('click', () => setCurrentPageExpanded(true));
-    byId('duplicateCollapsePageButton')?.addEventListener('click', () => setCurrentPageExpanded(false));
     byId('duplicateReviewFilter')?.addEventListener('change', event => {
       duplicateReviewFilter = ['all', 'attention', 'ready'].includes(event.target.value) ? event.target.value : 'all';
       groupPageOffset = 0;
       loadGroupsPage(0);
     });
     byId('duplicatePageLimit')?.addEventListener('change', event => {
-      groupPageLimit = [25, 50, 100].includes(Number(event.target.value)) ? Number(event.target.value) : 25;
+      groupPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
       try { localStorage.setItem(DUPLICATE_PAGE_SIZE_STORAGE_KEY, String(groupPageLimit)); } catch (_e) {}
       groupPageOffset = 0;
       loadGroupsPage(0);
@@ -4600,7 +4792,7 @@
       renderPreviewItems(previewItemsPage);
     });
     byId('previewPageLimit')?.addEventListener('change', event => {
-      previewPageLimit = [25, 50, 100].includes(Number(event.target.value)) ? Number(event.target.value) : 25;
+      previewPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
       try { localStorage.setItem(PREVIEW_PAGE_SIZE_STORAGE_KEY, String(previewPageLimit)); } catch (_e) {}
       previewPageOffset = 0;
       loadPreviewItems(0);
@@ -4636,25 +4828,34 @@
       qualityPageOffset = 0;
       loadQualityItems(0);
     });
-    byId('subtitleBrowseButton')?.addEventListener('click', () => {
-      openSubtitleBrowser(byId('subtitlePath')?.value.trim() || config.libRoot || '/library');
+    byId('qualityPageLimit')?.addEventListener('change', event => {
+      qualityPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
+      try { localStorage.setItem(QUALITY_PAGE_SIZE_STORAGE_KEY, String(qualityPageLimit)); } catch (_e) {}
+      qualityPageOffset = 0;
+      loadQualityItems(0);
     });
-    byId('subtitleScanButton')?.addEventListener('click', startSubtitleScan);
+    byId('subtitleBrowseButton')?.addEventListener('click', () => {
+      subtitleFolderPicker?.toggle();
+    });
+    byId('subtitleMissingScanButton')?.addEventListener('click', () => startSubtitleScan('missing'));
+    byId('subtitleCoverageScanButton')?.addEventListener('click', () => startSubtitleScan('coverage'));
     byId('subtitleCancelScanButton')?.addEventListener('click', cancelSubtitleScan);
     byId('subtitlePlanButton')?.addEventListener('click', reviewSubtitlePlan);
     byId('subtitleApplyButton')?.addEventListener('click', applySubtitlePlan);
     byId('subtitleSelectAllButton')?.addEventListener('click', () => {
-      visibleSubtitleFiles().filter(file => file.actionable).forEach(file => subtitleSelected.add(file.id));
-      subtitlePlan = null;
-      byId('subtitlePlanButton').disabled = !subtitleSelected.size;
-      byId('subtitleApplyButton').disabled = true;
+      visibleSubtitleFiles().filter(file => file.actionable).forEach(file => {
+        if (subtitleSelection.mode === 'all_eligible') subtitleSelection.excluded.delete(file.id);
+        else subtitleSelection.selected.add(file.id);
+      });
+      subtitleSelectionChanged();
       renderSubtitleItems(subtitleItemsPage);
     });
     byId('subtitleDeselectAllButton')?.addEventListener('click', () => {
-      subtitleSelected.clear();
-      subtitlePlan = null;
-      byId('subtitlePlanButton').disabled = true;
-      byId('subtitleApplyButton').disabled = true;
+      visibleSubtitleFiles().filter(file => file.actionable).forEach(file => {
+        if (subtitleSelection.mode === 'all_eligible') subtitleSelection.excluded.add(file.id);
+        else subtitleSelection.selected.delete(file.id);
+      });
+      subtitleSelectionChanged();
       renderSubtitleItems(subtitleItemsPage);
     });
     byId('subtitleAction')?.addEventListener('change', () => {
@@ -4668,7 +4869,8 @@
       loadSubtitleItems(0);
     });
     byId('subtitlePageLimit')?.addEventListener('change', event => {
-      subtitlePageLimit = Number(event.target.value || 25);
+      subtitlePageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
+      try { localStorage.setItem(SUBTITLE_PAGE_SIZE_STORAGE_KEY, String(subtitlePageLimit)); } catch (_e) {}
       subtitlePageOffset = 0;
       loadSubtitleItems(0);
     });
@@ -4680,7 +4882,7 @@
       }, 250);
     });
     byId('actorBrowseButton')?.addEventListener('click', () => {
-      openActorBrowser(byId('actorPath')?.value.trim() || config.libRoot || '/library');
+      actorFolderPicker?.toggle();
     });
     byId('actorScanButton')?.addEventListener('click', startActorScan);
     byId('actorCancelScanButton')?.addEventListener('click', cancelActorScan);
@@ -4690,6 +4892,22 @@
     byId('actorItemStatus')?.addEventListener('change', () => {
       actorPageOffset = 0;
       loadActorItems(0);
+    });
+    byId('actorPageLimit')?.addEventListener('change', event => {
+      actorPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
+      try { localStorage.setItem(ACTOR_PAGE_SIZE_STORAGE_KEY, String(actorPageLimit)); } catch (_e) {}
+      actorPageOffset = 0;
+      loadActorItems(0);
+    });
+    byId('actorSelectAllCheckbox')?.addEventListener('change', event => {
+      actorSelection = {
+        ...actorSelection,
+        mode: event.target.checked ? 'all_eligible' : 'explicit',
+        excluded: new Set(),
+        selected: new Set(),
+      };
+      actorSelectionChanged();
+      renderActorItems(actorItemsPage);
     });
     ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval'].forEach(id => {
       const element = byId(id);
@@ -4708,14 +4926,31 @@
     byId('posterPlanButton')?.addEventListener('click', reviewPosterPlan);
     byId('posterApplyButton')?.addEventListener('click', applyPosterPlan);
     byId('posterRefreshButton')?.addEventListener('click', refreshPosterStatus);
+    byId('posterPageLimit')?.addEventListener('change', event => {
+      posterPageLimit = PAGE_SIZE_OPTIONS.includes(Number(event.target.value)) ? Number(event.target.value) : PAGE_SIZE_DEFAULT;
+      try { localStorage.setItem(POSTER_PAGE_SIZE_STORAGE_KEY, String(posterPageLimit)); } catch (_e) {}
+      loadPosterItems(0);
+    });
+    byId('posterSelectAllCheckbox')?.addEventListener('change', event => {
+      posterSelection = {
+        ...posterSelection,
+        mode: event.target.checked ? 'all_eligible' : 'explicit',
+        excluded: new Set(),
+        selected: new Set(),
+      };
+      posterSelectionChanged();
+      renderPosterItems(posterItemsPage);
+    });
     byId('posterRecentItems')?.addEventListener('change', event => {
       const checkbox = event.target.closest('[data-poster-item]');
       if (!checkbox) return;
-      if (checkbox.checked) posterSelected.add(checkbox.dataset.posterItem);
-      else posterSelected.delete(checkbox.dataset.posterItem);
-      posterPlan = null;
-      if (byId('posterApplyButton')) byId('posterApplyButton').disabled = true;
-      if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !posterSelected.size || posterScan?.freshness?.status === 'changed';
+      const itemId = checkbox.dataset.posterItem;
+      if (posterSelection.mode === 'all_eligible') {
+        if (checkbox.checked) posterSelection.excluded.delete(itemId);
+        else posterSelection.excluded.add(itemId);
+      } else if (checkbox.checked) posterSelection.selected.add(itemId);
+      else posterSelection.selected.delete(itemId);
+      posterSelectionChanged();
     });
     byId('posterRecentItems')?.addEventListener('click', event => {
       const button = event.target.closest('[data-poster-page]');
@@ -4864,13 +5099,12 @@
       const checkbox = event.target.closest('[data-subtitle-file]');
       if (!checkbox) return;
       const fileId = checkbox.getAttribute('data-subtitle-file');
-      if (checkbox.checked) subtitleSelected.add(fileId);
-      else subtitleSelected.delete(fileId);
-      subtitlePlan = null;
-      byId('subtitlePlanButton').disabled = !subtitleSelected.size;
-      byId('subtitleApplyButton').disabled = true;
-      const summary = byId('subtitlePlanSummary');
-      if (summary) summary.innerHTML = '';
+      if (subtitleSelection.mode === 'all_eligible') {
+        if (checkbox.checked) subtitleSelection.excluded.delete(fileId);
+        else subtitleSelection.excluded.add(fileId);
+      } else if (checkbox.checked) subtitleSelection.selected.add(fileId);
+      else subtitleSelection.selected.delete(fileId);
+      subtitleSelectionChanged();
     });
 
     byId('actorItems')?.addEventListener('click', event => {
@@ -4897,16 +5131,12 @@
       const selected = event.target.closest('[data-actor-select]');
       if (!selected) return;
       const itemId = selected.getAttribute('data-actor-select');
-      if (selected.checked) {
-        actorSelected.add(itemId);
-      } else {
-        actorSelected.delete(itemId);
-      }
-      actorPlan = null;
-      const applyButton = byId('actorApplyButton');
-      if (applyButton) applyButton.disabled = true;
-      const summary = byId('actorPlanSummary');
-      if (summary) summary.innerHTML = '';
+      if (actorSelection.mode === 'all_eligible') {
+        if (selected.checked) actorSelection.excluded.delete(itemId);
+        else actorSelection.excluded.add(itemId);
+      } else if (selected.checked) actorSelection.selected.add(itemId);
+      else actorSelection.selected.delete(itemId);
+      actorSelectionChanged();
     });
 
     byId('qualityItems')?.addEventListener('click', event => {
@@ -4976,8 +5206,13 @@
 
     byId('maintenanceLogList')?.addEventListener('click', event => {
       const button = event.target.closest('[data-maint-log]');
-      if (!button) return;
-      openMaintenanceLog(button.getAttribute('data-maint-log'));
+      const restore = event.target.closest('[data-maint-restore-preview]');
+      if (button) openMaintenanceLog(button.getAttribute('data-maint-log'));
+      if (restore) previewDuplicateRestore(restore.getAttribute('data-maint-restore-preview'));
+    });
+    byId('maintenanceRestoreSummary')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-maint-restore-apply]');
+      if (button) applyDuplicateRestore(button.getAttribute('data-maint-restore-apply'));
     });
 
     byId('actorLogList')?.addEventListener('click', event => {
@@ -4989,21 +5224,37 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     initMaintenanceTabs();
+    initFolderPickers();
     initEvents();
     try {
-      const savedDuplicatePageLimit = Number(localStorage.getItem(DUPLICATE_PAGE_SIZE_STORAGE_KEY) || 25);
-      groupPageLimit = [25, 50, 100].includes(savedDuplicatePageLimit) ? savedDuplicatePageLimit : 25;
+      const savedDuplicatePageLimit = Number(localStorage.getItem(DUPLICATE_PAGE_SIZE_STORAGE_KEY) || PAGE_SIZE_DEFAULT);
+      groupPageLimit = PAGE_SIZE_OPTIONS.includes(savedDuplicatePageLimit) ? savedDuplicatePageLimit : PAGE_SIZE_DEFAULT;
       if (byId('duplicatePageLimit')) byId('duplicatePageLimit').value = String(groupPageLimit);
     } catch (_e) {
-      groupPageLimit = 25;
+      groupPageLimit = PAGE_SIZE_DEFAULT;
     }
     try {
-      const savedPreviewPageLimit = Number(localStorage.getItem(PREVIEW_PAGE_SIZE_STORAGE_KEY) || 25);
-      previewPageLimit = [25, 50, 100].includes(savedPreviewPageLimit) ? savedPreviewPageLimit : 25;
+      const savedPreviewPageLimit = Number(localStorage.getItem(PREVIEW_PAGE_SIZE_STORAGE_KEY) || PAGE_SIZE_DEFAULT);
+      previewPageLimit = PAGE_SIZE_OPTIONS.includes(savedPreviewPageLimit) ? savedPreviewPageLimit : PAGE_SIZE_DEFAULT;
       if (byId('previewPageLimit')) byId('previewPageLimit').value = String(previewPageLimit);
     } catch (_e) {
-      previewPageLimit = 25;
+      previewPageLimit = PAGE_SIZE_DEFAULT;
     }
+    [
+      ['overviewPageLimit', OVERVIEW_PAGE_SIZE_STORAGE_KEY, value => { overviewPageLimit = value; }],
+      ['qualityPageLimit', QUALITY_PAGE_SIZE_STORAGE_KEY, value => { qualityPageLimit = value; }],
+      ['subtitlePageLimit', SUBTITLE_PAGE_SIZE_STORAGE_KEY, value => { subtitlePageLimit = value; }],
+      ['actorPageLimit', ACTOR_PAGE_SIZE_STORAGE_KEY, value => { actorPageLimit = value; }],
+      ['posterPageLimit', POSTER_PAGE_SIZE_STORAGE_KEY, value => { posterPageLimit = value; }],
+    ].forEach(([id, key, setter]) => {
+      let value = PAGE_SIZE_DEFAULT;
+      try {
+        const saved = Number(localStorage.getItem(key) || PAGE_SIZE_DEFAULT);
+        value = PAGE_SIZE_OPTIONS.includes(saved) ? saved : PAGE_SIZE_DEFAULT;
+      } catch (_e) {}
+      setter(value);
+      if (byId(id)) byId(id).value = String(value);
+    });
     document.addEventListener('vid2gif:table-sort', event => {
       const {tableId, column, direction} = event.detail || {};
       if (!column || !direction) return;
@@ -5012,23 +5263,18 @@
         loadPreviewItems(0);
       } else if (tableId === 'maintenance-quality-bifs') {
         qualitySort = {column, direction};
-        qualityExcludedItems.clear();
-        qualityIncludedItems.clear();
         qualityPlan = null;
         loadQualityItems(0);
       } else if (tableId === 'maintenance-subtitles') {
         subtitleSort = {column, direction};
-        subtitleSelected.clear();
         subtitlePlan = null;
         loadSubtitleItems(0);
       } else if (tableId === 'maintenance-actor-images') {
         actorSort = {column, direction};
-        actorSelected.clear();
         actorPlan = null;
         loadActorItems(0);
       } else if (tableId === 'maintenance-posters') {
         posterSort = {column, direction};
-        posterSelected.clear();
         posterPlan = null;
         loadPosterItems(0);
       }
@@ -5039,9 +5285,6 @@
     setQualityProgress(null);
     setSubtitleProgress(null);
     setActorProgress(null);
-    openBrowser(config.libRoot || '/library', false);
-    openSubtitleBrowser(config.libRoot || '/library');
-    openActorBrowser(config.libRoot || '/library');
     refreshMaintenanceLogs();
     refreshOverviewStatus();
     refreshDuplicateStatus();

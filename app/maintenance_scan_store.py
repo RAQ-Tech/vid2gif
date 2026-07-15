@@ -7,6 +7,7 @@ import threading
 import time
 
 from . import config
+from . import media_scope
 from .progress import utc_iso
 from .utils import path_is_under
 
@@ -17,7 +18,7 @@ AREA_CACHE_KEYS = {
     "overview": ("overview",),
     "duplicates": ("duplicates",),
     "video_previews": ("video_previews_missing", "video_previews_quality"),
-    "subtitles": ("subtitles",),
+    "subtitles": ("subtitles_missing", "subtitles_coverage"),
     "posters": ("posters",),
     "actor_images": ("actor_images",),
 }
@@ -186,11 +187,20 @@ def capture_manifest(area, path, lib_root=None):
         dirs[:] = [
             name for name in dirs
             if name not in SKIP_DIRS
-            and not (area == "video_previews" and name.lower() in {"trailer", "trailers"})
+            and not (
+                area in {"overview", "duplicates", "video_previews", "subtitles", "actor_images"}
+                and media_scope.is_non_main_video_dir(name)
+            )
             and not os.path.islink(os.path.join(base, name))
         ]
         for name in names:
             if not _is_relevant(area, name):
+                continue
+            if (
+                area in {"overview", "duplicates", "video_previews", "subtitles", "actor_images"}
+                and os.path.splitext(name)[1].lower() in VIDEO_EXTS
+                and not media_scope.is_main_video_filename(name)
+            ):
                 continue
             full_path = os.path.join(base, name)
             if os.path.islink(full_path) or not os.path.isfile(full_path):

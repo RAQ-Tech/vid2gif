@@ -34,6 +34,10 @@ def _reset_poster_state(monkeypatch, tmp_path):
     monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(app_path))
     monkeypatch.setattr(app_settings, "LEGACY_EMBY_SETTINGS_PATH", str(state_root / "settings.json"))
     poster_maintenance.poster_runs.clear()
+    poster_maintenance.poster_scans.clear()
+    poster_maintenance.poster_plans.clear()
+    poster_maintenance.poster_apply_runs.clear()
+    monkeypatch.setattr(poster_maintenance, "_poster_cache_loaded", True)
     monkeypatch.setattr(poster_maintenance, "_current_run_id", "")
     poster_maintenance._scheduler_state.clear()
     poster_maintenance._scheduler_state.update(
@@ -158,6 +162,44 @@ def test_poster_analysis_lists_each_video_stem_in_shared_folder(monkeypatch, tmp
     assert scan["counts"]["ambiguous_count"] == 0
     assert page["total"] == 3
     assert {item["status"] for item in page["items"]} == {"eligible"}
+
+    excluded_id = page["items"][0]["id"]
+    plan, plan_err = poster_maintenance.build_poster_plan(
+        {
+            "scan_id": scan["id"],
+            "selection": {
+                "mode": "all_eligible",
+                "excluded_item_ids": [excluded_id],
+            },
+        },
+        lib_root=str(lib),
+    )
+    assert plan_err is None
+    assert plan["file_count"] == 2
+    assert plan["total_actionable_item_count"] == 3
+
+
+def test_poster_analysis_excludes_trailer_and_extra_video_artwork(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Movie"
+    _write(folder / "Movie.mkv")
+    _write(folder / "Movie-background.jpg", b"landscape")
+    _write(folder / "Movie-poster.jpg", b"portrait")
+    _write(folder / "Movie-trailer.mkv")
+    _write(folder / "Movie-trailer-background.jpg", b"landscape")
+    _write(folder / "Movie-trailer-poster.jpg", b"portrait")
+    _write(folder / "extras" / "Feature.mkv")
+    _write(folder / "extras" / "Feature-background.jpg", b"landscape")
+    _write(folder / "extras" / "Feature-poster.jpg", b"portrait")
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    scan, err = poster_maintenance.start_poster_scan(
+        str(lib), synchronous=True, lib_root=str(lib)
+    )
+
+    assert err is None
+    assert scan["counts"]["candidate_count"] == 1
+    assert scan["items"][0]["source"] == os.path.join("Movie", "Movie-background.jpg")
 
 
 def test_disabled_automatic_poster_sync_does_not_load_emby_catalog(monkeypatch, tmp_path):

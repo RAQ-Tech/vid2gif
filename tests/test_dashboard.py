@@ -131,14 +131,14 @@ def test_library_folder_payload_pages_searches_sorts_and_caps(monkeypatch, tmp_p
 
     assert err is None
     assert scan["folder_count"] == 120
-    assert first["limit"] == 25
+    assert first["limit"] == 10
     assert first["total"] == 120
-    assert first["count"] == 25
+    assert first["count"] == 10
     assert first["folders"][0]["name"] == "Folder 119"
     assert first["large_result"] is True
     assert searched["total"] == 1
     assert searched["folders"][0]["name"] == "Folder 119"
-    assert invalid["limit"] == 25
+    assert invalid["limit"] == 10
     assert invalid["sort"] == "name"
     assert invalid["direction"] == "asc"
     assert route_res.status_code == 200

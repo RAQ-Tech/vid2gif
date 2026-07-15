@@ -113,15 +113,20 @@ def test_scan_all_is_sequential_and_continues_after_failure(monkeypatch, tmp_pat
     monkeypatch.setattr(orchestrator, "_library_status", status_for("overview"))
     monkeypatch.setattr(orchestrator.maintenance, "start_duplicate_scan", start_for("duplicates", "failed"))
     monkeypatch.setattr(orchestrator.maintenance, "status_payload", status_for("duplicates", "failed"))
-    monkeypatch.setattr(orchestrator.subtitle_maintenance, "start_scan", start_for("subtitles"))
+    def start_subtitles(path, mode="missing"):
+        calls.append(f"subtitles_{mode}")
+        return {"id": f"subtitles_{mode}", "path": path, "status": "success"}, None
+
+    monkeypatch.setattr(orchestrator.subtitle_maintenance, "start_scan", start_subtitles)
     monkeypatch.setattr(orchestrator.subtitle_maintenance, "status_payload", status_for("subtitles"))
 
     run, error = orchestrator.start(str(library), areas=["overview", "duplicates", "subtitles"], synchronous=True)
 
     assert error is None
-    assert calls == ["overview", "duplicates", "subtitles"]
+    assert calls == ["overview", "duplicates", "subtitles_missing", "subtitles_coverage"]
     assert run["status"] == "complete_with_issues"
-    assert run["areas"]["subtitles"]["status"] == "success"
+    assert run["areas"]["subtitles_missing"]["status"] == "success"
+    assert run["areas"]["subtitles_coverage"]["status"] == "success"
 
 
 def test_full_scan_plan_expands_each_area_into_recorded_operation_stages():

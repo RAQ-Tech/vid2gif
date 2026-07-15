@@ -17,12 +17,30 @@ from .progress import format_duration, utc_iso
 from .utils import path_is_under, resolve_case_insensitive
 
 
-ALLOWED_AREAS = ("overview", "duplicates", "video_previews", "subtitles", "posters", "actor_images")
+SCAN_TASKS = (
+    "overview",
+    "duplicates",
+    "video_previews_missing",
+    "video_previews_quality",
+    "subtitles_missing",
+    "subtitles_coverage",
+    "posters",
+    "actor_images",
+)
+AREA_ALIASES = {
+    "video_previews": ("video_previews_missing", "video_previews_quality"),
+    "subtitles": ("subtitles_missing", "subtitles_coverage"),
+}
+ALLOWED_AREAS = (*SCAN_TASKS, *AREA_ALIASES)
 AREA_LABELS = {
     "overview": "Library Overview",
     "duplicates": "Duplicates",
     "video_previews": "Video Previews",
+    "video_previews_missing": "Missing Video Previews",
+    "video_previews_quality": "Video Preview Quality",
     "subtitles": "Subtitles",
+    "subtitles_missing": "Missing Subtitles",
+    "subtitles_coverage": "Subtitle Coverage",
     "posters": "Landscape Posters",
     "actor_images": "Actor Images",
 }
@@ -30,7 +48,11 @@ AREA_HREFS = {
     "overview": "/maintenance#overview",
     "duplicates": "/maintenance#duplicates",
     "video_previews": "/maintenance#video-previews",
+    "video_previews_missing": "/maintenance#video-previews",
+    "video_previews_quality": "/maintenance#video-previews",
     "subtitles": "/maintenance#subtitles",
+    "subtitles_missing": "/maintenance#subtitles",
+    "subtitles_coverage": "/maintenance#subtitles",
     "posters": "/maintenance#posters",
     "actor_images": "/maintenance#actor-images",
 }
@@ -40,7 +62,8 @@ STEP_WORKFLOWS = {
     "duplicates": "duplicate_scan",
     "video_previews_missing": "video_preview_missing_scan",
     "video_previews_quality": "video_preview_quality_scan",
-    "subtitles": "subtitle_scan",
+    "subtitles_missing": "subtitle_scan",
+    "subtitles_coverage": "subtitle_scan",
     "posters": "poster_scan",
     "actor_images": "actor_image_scan",
 }
@@ -61,9 +84,12 @@ STEP_STAGE_WORKFLOWS = {
         "video_preview_quality_scan.analysis",
         "video_preview_quality_scan.emby",
     ),
-    "subtitles": (
+    "subtitles_missing": (
         "subtitle_scan.filesystem",
         "subtitle_scan.emby",
+    ),
+    "subtitles_coverage": (
+        "subtitle_scan.filesystem",
         "subtitle_scan.quality",
     ),
     "posters": ("poster_scan.filesystem", "poster_scan.emby"),
@@ -141,8 +167,10 @@ def _scan_result_count(scan, area):
     keys = {
         "overview": ("video_count",),
         "duplicates": ("duplicate_group_count",),
-        "video_previews": ("missing_count", "repairable_count"),
-        "subtitles": ("review_count",),
+        "video_previews_missing": ("missing_count",),
+        "video_previews_quality": ("bad_count", "warning_count"),
+        "subtitles_missing": ("review_count",),
+        "subtitles_coverage": ("review_count",),
         "posters": ("eligible_count",),
         "actor_images": ("missing_actor_count",),
     }.get(area, ())
@@ -251,9 +279,7 @@ def _run_step(run, area, start_loader, status_loader, cancel_loader, completed_s
 
 def _execute(run):
     selected = run["selected_areas"]
-    expanded = []
-    for area in selected:
-        expanded.extend(["video_previews_missing", "video_previews_quality"] if area == "video_previews" else [area])
+    expanded = list(selected)
     total_steps = len(expanded)
     run["_expanded_steps"] = expanded
     run["progress_total_steps"] = total_steps
@@ -277,7 +303,7 @@ def _execute(run):
         for step in expanded:
             if run.get("cancel_requested"):
                 break
-            area = "video_previews" if step.startswith("video_previews_") else step
+            area = step
             _update(run, current_area=area)
             if step == "actor_images":
                 settings = actor_image_maintenance._settings()
@@ -303,8 +329,24 @@ def _execute(run):
                 result, err = _run_step(run, area, lambda path: video_preview_maintenance.start_quality_scan(path), video_preview_maintenance.quality_status_payload, video_preview_maintenance.cancel_quality_scan, completed, total_steps, "Checking video preview quality")
                 if result:
                     _area_update(run, area, quality_scan_id=result.get("id"), quality_problem_count=int(result.get("bad_count") or 0) + int(result.get("warning_count") or 0), result_count=int(run["areas"][area].get("missing_count") or 0) + int(result.get("bad_count") or 0) + int(result.get("warning_count") or 0))
-            elif step == "subtitles":
-                result, err = _run_step(run, area, lambda path: subtitle_maintenance.start_scan(path), subtitle_maintenance.status_payload, subtitle_maintenance.cancel_scan, completed, total_steps)
+            elif step == "subtitles_missing":
+                result, err = _run_step(
+                    run, area,
+                    lambda path: subtitle_maintenance.start_scan(path, mode="missing"),
+                    subtitle_maintenance.status_payload,
+                    subtitle_maintenance.cancel_scan,
+                    completed, total_steps,
+                    "Scanning for missing subtitles",
+                )
+            elif step == "subtitles_coverage":
+                result, err = _run_step(
+                    run, area,
+                    lambda path: subtitle_maintenance.start_scan(path, mode="coverage"),
+                    subtitle_maintenance.status_payload,
+                    subtitle_maintenance.cancel_scan,
+                    completed, total_steps,
+                    "Checking subtitle duration coverage",
+                )
             elif step == "posters":
                 result, err = _run_step(run, area, lambda path: poster_maintenance.start_poster_scan(path), _poster_status, poster_maintenance.cancel_poster_scan, completed, total_steps)
             else:
@@ -340,7 +382,7 @@ def start(path=None, areas=None, synchronous=False):
     if not real or not os.path.isdir(real) or os.path.islink(real) or not path_is_under(real, config.LIB_ROOT):
         return None, "Path not found"
     if areas is None:
-        selected = list(ALLOWED_AREAS)
+        selected = list(SCAN_TASKS)
     elif not isinstance(areas, list) or not areas:
         return None, "Select at least one maintenance area"
     else:
@@ -349,8 +391,9 @@ def start(path=None, areas=None, synchronous=False):
             key = str(value or "")
             if key not in ALLOWED_AREAS:
                 return None, f"Unknown maintenance area: {key}"
-            if key not in selected:
-                selected.append(key)
+            for task in AREA_ALIASES.get(key, (key,)):
+                if task not in selected:
+                    selected.append(task)
     with _lock:
         if _current and _current.get("status") in {"queued", "running", "cancelling"}:
             return _public(_current), None
