@@ -1,3 +1,4 @@
+import copy
 import os
 import subprocess
 import time
@@ -11,6 +12,7 @@ def _reset_maintenance(monkeypatch, metadata_by_name=None, settings_overrides=No
     maintenance.duplicate_scans.clear()
     maintenance.cleanup_plans.clear()
     maintenance.duplicate_apply_runs.clear()
+    maintenance.duplicate_refresh_runs.clear()
     maintenance.duplicate_restore_plans.clear()
     metadata_by_name = metadata_by_name or {}
     settings = app_settings.default_settings()
@@ -383,6 +385,8 @@ def test_duplicate_scan_skips_trailer_extra_and_sample_media(monkeypatch, tmp_pa
     _write(trailers / "Movie Trailer.2160p.mp4", b"x")
     _write(movie / "extras" / "Movie Extra.1080p.mp4", b"x")
     _write(movie / "extras" / "Movie Extra.2160p.mp4", b"x")
+    _write(movie / "Movie-extra.1080p.mp4", b"x")
+    _write(movie / "Movie-extra.2160p.mp4", b"x")
     _write(movie / "Movie-sample.1080p.mp4", b"x")
     _write(movie / "Movie-sample.2160p.mp4", b"x")
 
@@ -804,7 +808,7 @@ def test_cleanup_move_reuses_existing_destination_folders(monkeypatch, tmp_path)
     assert (dest_dir / remove.name).read_bytes() == b"b" * 100
 
 
-def test_cleanup_move_refuses_existing_destination_file_and_continues(monkeypatch, tmp_path):
+def test_cleanup_move_skips_group_with_existing_destination_and_continues(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     first = lib / "First"
     second = lib / "Second"
@@ -828,8 +832,9 @@ def test_cleanup_move_refuses_existing_destination_file_and_continues(monkeypatc
 
     assert err is None
     assert result["applied_count"] == 1
-    assert result["refused_count"] == 1
-    assert result["refused"][0]["reason"] == "Destination already exists"
+    assert result["refused_count"] == 0
+    assert result["skipped_changed_group_count"] == 1
+    assert result["skipped_changed_groups"][0]["reason"] == "A quarantine destination is no longer available"
     assert first_remove.exists()
     assert conflict.read_bytes() == b"existing"
     assert not second_remove.exists()
@@ -996,7 +1001,7 @@ def test_cleanup_plan_delete_can_include_only_selected_file(monkeypatch, tmp_pat
     assert sidecar.exists()
 
 
-def test_apply_refuses_file_that_changed_after_scan(monkeypatch, tmp_path):
+def test_apply_skips_whole_group_that_changed_after_plan(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
     keep = _write(movie / "Movie.1080p.mkv", b"a" * 200)
@@ -1021,9 +1026,435 @@ def test_apply_refuses_file_that_changed_after_scan(monkeypatch, tmp_path):
 
     assert err is None
     assert result["applied_count"] == 0
-    assert result["refused_count"] == 1
-    assert result["refused"][0]["reason"] == "File changed after scan"
+    assert result["refused_count"] == 0
+    assert result["skipped_changed_group_count"] == 1
+    assert result["skipped_changed_groups"][0]["group_id"] == scan["groups"][0]["id"]
+    assert remove.name in result["skipped_changed_groups"][0]["modified"]
     assert remove.exists()
+
+
+def test_plan_revalidates_only_selected_folders_and_keeps_safe_groups(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Safe")
+    _write_duplicate_pair(lib, "Changed")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    safe_group = next(group for group in scan["groups"] if group["folder"].endswith("Safe"))
+    changed_group = next(group for group in scan["groups"] if group["folder"].endswith("Changed"))
+    _write(lib / "Changed" / "clearlogo.png", b"new context")
+
+    refresh_calls = []
+    monkeypatch.setattr(
+        maintenance,
+        "start_duplicate_refresh",
+        lambda scan_id, group_ids, synchronous=False: (
+            refresh_calls.append((scan_id, list(group_ids))) or {"id": "refresh-1"},
+            None,
+        ),
+    )
+    plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {
+                "mode": "explicit",
+                "group_ids": [safe_group["id"], changed_group["id"]],
+            },
+        },
+        lib_root=str(lib),
+    )
+
+    assert error is None
+    assert plan["selected_group_count"] == 2
+    assert plan["ready_group_ids"] == [safe_group["id"]]
+    assert plan["ready_group_count"] == 1
+    assert plan["changed_group_count"] == 1
+    assert plan["changed_groups"][0]["group_id"] == changed_group["id"]
+    assert plan["changed_groups"][0]["added"] == ["clearlogo.png"]
+    assert {item["group_id"] for item in plan["files"]} == {safe_group["id"]}
+    assert plan["refresh_run_id"] == "refresh-1"
+    assert refresh_calls == [(scan["id"], [changed_group["id"]])]
+
+
+def test_folder_fingerprint_tracks_direct_context_but_excludes_trailers_and_subfolders(tmp_path):
+    folder = tmp_path / "Movie"
+    subtitle = _write(folder / "Movie.en.srt", b"subtitle")
+    clearlogo = _write(folder / "clearlogo.png", b"logo")
+    _write(folder / ".posters_done", b"done")
+    _write(folder / "library-note.custom", b"context")
+    _write(folder / "Movie-trailer.mkv", b"trailer")
+    _write(folder / "Movie-trailer.en.srt", b"trailer subtitle")
+    _write(folder / "Movie-extra.mkv", b"extra")
+    _write(folder / "Movie-extra.en.srt", b"extra subtitle")
+    _write(folder / "extras" / "behind-the-scenes.mkv", b"extra")
+    original = maintenance._folder_snapshot(str(folder))
+
+    subtitle.write_bytes(b"longer subtitle")
+    clearlogo.unlink()
+    _write(folder / "new-context.unknown", b"new")
+    _write(folder / "Movie-trailer.mkv", b"changed trailer")
+    _write(folder / "extras" / "another-extra.mkv", b"another extra")
+    current = maintenance._folder_snapshot(str(folder))
+    detail = maintenance._folder_change_detail(original, current)
+
+    assert detail == {
+        "added": ["new-context.unknown"],
+        "removed": ["clearlogo.png"],
+        "modified": ["Movie.en.srt"],
+    }
+    assert ".posters_done" in current
+    assert "library-note.custom" in current
+    assert "Movie-trailer.mkv" not in current
+    assert "Movie-trailer.en.srt" not in current
+    assert "Movie-extra.mkv" not in current
+    assert "Movie-extra.en.srt" not in current
+
+
+def test_unrelated_folder_change_does_not_block_selected_group(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Selected")
+    _write_duplicate_pair(lib, "Unrelated")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    selected = next(group for group in scan["groups"] if group["folder"].endswith("Selected"))
+    _write(lib / "Unrelated" / ".posters_done", b"")
+
+    plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {"mode": "explicit", "group_ids": [selected["id"]]},
+        },
+        lib_root=str(lib),
+    )
+
+    assert error is None
+    assert plan["ready_group_count"] == 1
+    assert plan["changed_group_count"] == 0
+    assert plan["file_count"] == 1
+
+
+def test_targeted_refresh_rebuilds_changed_folder_and_marks_saved_review_stale(
+    monkeypatch, tmp_path
+):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Movie")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    maintenance.duplicate_review_store.ensure_groups(scan, [group["id"]])
+    _write(lib / "Movie" / "clearlogo.png", b"logo")
+    _write(lib / "Movie" / "Movie.720p.en.srt", b"new subtitle")
+
+    run, error = maintenance.start_duplicate_refresh(
+        scan["id"], [group["id"]], synchronous=True
+    )
+    refreshed_group = maintenance.duplicate_scans[scan["id"]]["groups"][0]
+    draft = maintenance.review_draft_payload(scan["id"])[0]["review_draft"]
+
+    assert error is None
+    assert run["status"] == "success"
+    assert run["processed_folder_count"] == 1
+    assert refreshed_group["id"] == group["id"]
+    assert refreshed_group["folder_fingerprint"] != group["folder_fingerprint"]
+    assert any(item["name"] == "clearlogo.png" for item in refreshed_group["folder_files"])
+    assert draft["groups"][group["id"]]["requires_review"] is True
+    new_subtitle = next(
+        accessory
+        for video in refreshed_group["videos"]
+        for accessory in video.get("accessories") or []
+        if accessory["name"] == "Movie.720p.en.srt"
+    )
+    assert new_subtitle["id"] in draft["groups"][group["id"]]["include_file_ids"]
+
+
+def test_review_draft_survives_rescan_and_requires_acceptance_after_folder_change(
+    monkeypatch, tmp_path
+):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    keep, remove = _write_duplicate_pair(lib, "Movie")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    first = _scan(lib, lib, monkeypatch)
+    first_group = first["groups"][0]
+    keep_id = next(video["id"] for video in first_group["videos"] if video["path"] == str(keep))
+    remove_id = next(video["id"] for video in first_group["videos"] if video["path"] == str(remove))
+    saved, error = maintenance.patch_review_draft(
+        {
+            "scan_id": first["id"],
+            "selection": {"mode": "explicit", "group_ids": [first_group["id"]]},
+            "groups": [
+                {
+                    "id": first_group["id"],
+                    "enabled": True,
+                    "keep_video_id": keep_id,
+                    "include_file_ids": [remove_id],
+                    "known_file_ids": [remove_id],
+                    "file_operations": [],
+                    "accept_current": True,
+                }
+            ],
+        }
+    )
+    assert error is None
+    assert saved["review_draft"]["saved_group_count"] == 1
+
+    second = _scan(lib, lib, monkeypatch)
+    restored = maintenance.review_draft_payload(second["id"])[0]["review_draft"]
+    second_group = second["groups"][0]
+    restored_state = restored["groups"][second_group["id"]]
+    assert restored["selection"]["mode"] == "explicit"
+    assert restored["selection"]["group_ids"] == [second_group["id"]]
+    assert restored_state["keep_video_id"] == keep_id
+    assert restored_state["requires_review"] is False
+
+    _write(lib / "Movie" / ".posters_done", b"done")
+    third = _scan(lib, lib, monkeypatch)
+    third_group = third["groups"][0]
+    changed_state = maintenance.review_draft_payload(third["id"])[0]["review_draft"]["groups"][third_group["id"]]
+    assert changed_state["keep_video_id"] == keep_id
+    assert changed_state["requires_review"] is True
+
+    blocked_plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": third["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {"mode": "explicit", "group_ids": [third_group["id"]]},
+        },
+        lib_root=str(lib),
+    )
+    assert error is None
+    assert blocked_plan["ready_group_count"] == 0
+    assert blocked_plan["changed_group_count"] == 1
+
+    maintenance.patch_review_draft(
+        {
+            "scan_id": third["id"],
+            "groups": [{"id": third_group["id"], "accept_current": True}],
+        }
+    )
+    accepted_plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": third["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {"mode": "explicit", "group_ids": [third_group["id"]]},
+        },
+        lib_root=str(lib),
+    )
+    assert error is None
+    assert accepted_plan["ready_group_count"] == 1
+
+
+def test_changed_group_shape_uses_safe_defaults_and_requires_review(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Movie")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    maintenance.duplicate_review_store.ensure_groups(scan, [group["id"]])
+
+    reshaped = copy.deepcopy(scan)
+    reshaped_group = reshaped["groups"][0]
+    reshaped_group["id"] = "group-after-split"
+    reshaped_group["review_key"] = "duplicate-review:new-logical-shape"
+    mapped = maintenance.duplicate_review_store.mapped_payload(reshaped)
+    state_for_group = mapped["groups"][reshaped_group["id"]]
+
+    assert state_for_group["requires_review"] is True
+    assert state_for_group["keep_video_id"] == ""
+    assert state_for_group["include_file_ids"] == []
+
+
+def test_only_explicit_acceptance_clears_changed_review_settings(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Movie")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    maintenance.duplicate_review_store.ensure_groups(scan, [group["id"]])
+    scan["groups"][0]["settings_fingerprint"] = "changed-settings"
+    scan["settings_fingerprint"] = "changed-settings"
+
+    maintenance.duplicate_review_store.patch(
+        scan,
+        {"groups": [{"id": group["id"], "enabled": False}]},
+    )
+    still_changed = maintenance.duplicate_review_store.mapped_payload(scan)
+    assert still_changed["groups"][group["id"]]["requires_review"] is True
+
+    maintenance.duplicate_review_store.patch(
+        scan,
+        {"groups": [{"id": group["id"], "accept_current": True}]},
+    )
+    accepted = maintenance.duplicate_review_store.mapped_payload(scan)
+    assert accepted["groups"][group["id"]]["requires_review"] is False
+
+
+def test_live_cleanup_settings_change_excludes_and_refreshes_selected_group(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Movie")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    changed_settings = app_settings.default_settings()
+    changed_settings["duplicate_keeper_rule"] = "largest"
+    monkeypatch.setattr(
+        maintenance.app_settings,
+        "load_settings",
+        lambda: dict(changed_settings),
+    )
+    refresh_calls = []
+    monkeypatch.setattr(
+        maintenance,
+        "start_duplicate_refresh",
+        lambda scan_id, group_ids, synchronous=False: (
+            refresh_calls.append((scan_id, list(group_ids))) or {"id": "settings-refresh"},
+            None,
+        ),
+    )
+
+    plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {"mode": "explicit", "group_ids": [group["id"]]},
+        },
+        lib_root=str(lib),
+    )
+
+    assert error is None
+    assert plan["ready_group_count"] == 0
+    assert plan["changed_group_count"] == 1
+    assert plan["changed_groups"][0]["settings_changed"] is True
+    assert plan["changed_groups"][0]["refresh_required"] is True
+    assert plan["refresh_run_id"] == "settings-refresh"
+    assert refresh_calls == [(scan["id"], [group["id"]])]
+
+
+def test_duplicate_review_draft_routes_persist_and_reset(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _write_duplicate_pair(lib, "Movie")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    monkeypatch.setattr(maintenance.maintenance_scan_store.config, "LIB_ROOT", str(lib))
+    monkeypatch.setattr(routes, "LIB_ROOT", str(lib))
+    scan = _scan(lib, lib, monkeypatch)
+    group = scan["groups"][0]
+    client = routes.app.test_client()
+
+    saved = client.patch(
+        "/api/maintenance/duplicates/review-draft",
+        json={
+            "scan_id": scan["id"],
+            "selection": {"mode": "explicit", "group_ids": [group["id"]]},
+            "groups": [{"id": group["id"], "accept_current": True}],
+        },
+    )
+    maintenance.duplicate_scans.clear()
+    monkeypatch.setattr(maintenance, "_duplicate_cache_loaded", False)
+    fetched = client.get(
+        "/api/maintenance/duplicates/review-draft",
+        query_string={"scan_id": scan["id"]},
+    )
+    reset = client.delete(
+        "/api/maintenance/duplicates/review-draft",
+        query_string={"scan_id": scan["id"]},
+    )
+
+    assert saved.status_code == 200
+    assert saved.get_json()["review_draft"]["saved_group_count"] == 1
+    assert fetched.get_json()["review_draft"]["selection"]["group_ids"] == [group["id"]]
+    assert reset.get_json()["review_draft"]["saved"] is False
+
+
+def test_apply_skips_changed_group_and_still_cleans_safe_group(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _safe_keep, safe_remove = _write_duplicate_pair(lib, "Safe")
+    _changed_keep, changed_remove = _write_duplicate_pair(lib, "Changed")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "delete",
+            "groups": [],
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+        },
+        lib_root=str(lib),
+    )
+    assert error is None
+    changed_remove.write_bytes(b"changed after preview")
+    monkeypatch.setattr(
+        maintenance,
+        "start_duplicate_refresh",
+        lambda *args, **kwargs: ({"id": "apply-refresh"}, None),
+    )
+
+    result, error = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert error is None
+    assert result["applied_count"] == 1
+    assert result["skipped_changed_group_count"] == 1
+    assert not safe_remove.exists()
+    assert changed_remove.exists()
+    assert result["refresh_run_id"] == "apply-refresh"
+
+
+def test_partial_plan_apply_quarantine_smoke_reconciles_safe_group(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    state = tmp_path / "state"
+    _safe_keep, safe_remove = _write_duplicate_pair(lib, "Safe")
+    _changed_keep, changed_remove = _write_duplicate_pair(lib, "Changed")
+    monkeypatch.setattr(maintenance.duplicate_review_store.config, "STATE_ROOT", str(state))
+    scan = _scan(lib, lib, monkeypatch)
+    safe_group = next(group for group in scan["groups"] if group["folder"].endswith("Safe"))
+    changed_group = next(group for group in scan["groups"] if group["folder"].endswith("Changed"))
+    _write(lib / "Changed" / "clearlogo.png", b"new context")
+    monkeypatch.setattr(
+        maintenance,
+        "start_duplicate_refresh",
+        lambda *args, **kwargs: ({"id": "refresh-smoke"}, None),
+    )
+
+    plan, error = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "groups": [],
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+        },
+        lib_root=str(lib),
+    )
+
+    assert error is None
+    assert plan["ready_group_ids"] == [safe_group["id"]]
+    assert plan["changed_groups"][0]["group_id"] == changed_group["id"]
+    assert plan["changed_groups"][0]["added"] == ["clearlogo.png"]
+
+    result, error = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+
+    assert error is None
+    assert result["applied_count"] == 1
+    assert result["skipped_changed_group_count"] == 0
+    assert not safe_remove.exists()
+    assert (lib / ".vid2gif-duplicates" / "Safe" / safe_remove.name).is_file()
+    assert changed_remove.exists()
+    remaining = maintenance.duplicate_scans[scan["id"]]["groups"]
+    assert [group["review_key"] for group in remaining] == [changed_group["review_key"]]
+    draft = maintenance.review_draft_payload(scan["id"])[0]["review_draft"]
+    assert safe_group["id"] not in draft["groups"]
 
 
 def test_maintenance_scan_route_rejects_prefix_sibling(monkeypatch, tmp_path):

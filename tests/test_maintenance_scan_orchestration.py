@@ -59,6 +59,40 @@ def test_freshness_ignores_unrelated_files_and_detects_relevant_changes(monkeypa
     assert video.exists()
 
 
+def test_partial_scan_reconciliation_preserves_unrelated_freshness(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    library = tmp_path / "library"
+    video = _write(library / "Movie" / "Movie.mkv", b"video")
+    monkeypatch.setattr(config, "STATE_ROOT", str(state))
+    monkeypatch.setattr(config, "LIB_ROOT", str(library))
+    scan = {
+        "id": "duplicates-partial",
+        "path": str(library),
+        "status": "success",
+        "finished_at": "2026-01-01T00:00:00+00:00",
+        "groups": [],
+    }
+    assert maintenance_scan_store.persist_success(
+        "duplicates", "duplicates", scan, str(library)
+    )
+    _write(library / "Other" / "Other.srt", b"external change")
+    assert maintenance_scan_store._check_cache("duplicates", force=True)["status"] == "changed"
+
+    scan["reconciled"] = True
+    assert maintenance_scan_store.update_persisted_scan(
+        "duplicates",
+        scan,
+        str(library),
+        accepted_paths=[str(video)],
+    )
+    payload = maintenance_scan_store.load_latest("duplicates")
+
+    assert payload["scan"]["reconciled"] is True
+    assert payload["freshness"]["status"] == "changed"
+    assert maintenance_scan_store.action_allowed("duplicates", scan["id"])[0] is False
+    assert maintenance_scan_store.library_root_allowed("duplicates", scan["id"])[0] is True
+
+
 def test_scan_cache_is_not_restored_or_actionable_after_library_mount_changes(monkeypatch, tmp_path):
     state = tmp_path / "state"
     library = tmp_path / "library"

@@ -314,6 +314,75 @@ def action_allowed(cache_key, scan_id, lib_root=None):
     return True, ""
 
 
+def library_root_allowed(cache_key, scan_id, lib_root=None):
+    """Allow scoped revalidation while still rejecting a replaced library mount."""
+    payload = load_latest(cache_key)
+    if not payload or str((payload.get("scan") or {}).get("id") or "") != str(scan_id or ""):
+        return True, ""
+    if not _library_root_matches(payload, lib_root):
+        return False, "The mounted library changed after this scan. Rescan before creating an action plan."
+    return True, ""
+
+
+def update_persisted_scan(
+    cache_key,
+    scan,
+    lib_root=None,
+    removed_paths=None,
+    accepted_paths=None,
+):
+    """Persist a reconciled scan without accepting unrelated library changes."""
+    if not isinstance(scan, dict) or scan.get("status") != "success":
+        return False
+    with _file_lock:
+        payload = load_latest(cache_key)
+        if not payload or str((payload.get("scan") or {}).get("id") or "") != str(scan.get("id") or ""):
+            return False
+        if not _library_root_matches(payload, lib_root):
+            return False
+        root = os.path.realpath(payload.get("path") or scan.get("path") or lib_root or config.LIB_ROOT)
+        manifest = dict(payload.get("manifest") or {})
+
+        def relative_key(path):
+            try:
+                real = os.path.realpath(str(path or ""))
+                if not path_is_under(real, root):
+                    return None
+                return os.path.relpath(real, root).replace(os.sep, "/")
+            except (OSError, TypeError, ValueError):
+                return None
+
+        for path in removed_paths or []:
+            key = relative_key(path)
+            if key:
+                manifest.pop(key, None)
+        for path in accepted_paths or []:
+            key = relative_key(path)
+            if not key:
+                continue
+            if not os.path.isfile(path) or os.path.islink(path) or not _is_relevant(payload.get("area"), os.path.basename(path)):
+                manifest.pop(key, None)
+                continue
+            try:
+                value = os.stat(path, follow_symlinks=False)
+            except OSError:
+                manifest.pop(key, None)
+                continue
+            manifest[key] = [
+                int(value.st_size),
+                int(getattr(value, "st_mtime_ns", value.st_mtime * 1_000_000_000)),
+            ]
+
+        payload["scan"] = _json_safe(copy.deepcopy(scan))
+        payload["manifest"] = manifest
+        payload["saved_at"] = utc_iso()
+        try:
+            _atomic_write_gzip(_path(cache_key), payload)
+        except (OSError, TypeError, ValueError):
+            return False
+    return True
+
+
 def _check_cache(cache_key, force=False):
     with _file_lock:
         return _check_cache_locked(cache_key, force=force)

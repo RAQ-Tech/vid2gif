@@ -689,6 +689,37 @@ th[aria-sort="descending"] .table-sort-icon {
   background: var(--bs-body-bg);
 }
 
+.maintenance-group.duplicate-group-review-required {
+  border-color: var(--bs-danger-border-subtle);
+  box-shadow: inset 4px 0 0 var(--bs-danger);
+  background: color-mix(in srgb, var(--bs-danger-bg-subtle) 35%, var(--bs-body-bg));
+}
+
+.duplicate-changed-files {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.duplicate-changed-files code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-review-required-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--bs-danger-border-subtle);
+  border-radius: 6px;
+  background: var(--bs-danger-bg-subtle);
+  color: var(--bs-danger-text-emphasis);
+}
+
 .maintenance-group-heading,
 .maintenance-group-summary {
   display: flex;

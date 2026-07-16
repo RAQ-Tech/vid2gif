@@ -9,6 +9,7 @@ import threading
 import time
 
 from . import app_settings
+from . import duplicate_review_store
 from . import emby_catalog
 from . import emby_playback
 from . import emby_sync
@@ -50,6 +51,8 @@ DUPLICATE_SCAN_MAX_AGE_SECONDS = 24 * 60 * 60
 DUPLICATE_APPLY_RETENTION_COUNT = 10
 DUPLICATE_APPLY_MAX_AGE_SECONDS = 24 * 60 * 60
 DUPLICATE_APPLY_LARGE_FILE_COUNT = 100
+DUPLICATE_REFRESH_RETENTION_COUNT = 10
+DUPLICATE_REFRESH_MAX_AGE_SECONDS = 24 * 60 * 60
 FFPROBE_TIMEOUT_SECONDS = max(1, _env_int("FFPROBE_TIMEOUT_SECONDS", 30))
 DUPLICATE_DISCOVERY_WORKFLOW = "duplicate_scan.discovery"
 DUPLICATE_ANALYSIS_WORKFLOW = "duplicate_scan.analysis"
@@ -60,6 +63,7 @@ duplicate_scans = {}
 _duplicate_cache_loaded = False
 cleanup_plans = {}
 duplicate_apply_runs = {}
+duplicate_refresh_runs = {}
 duplicate_restore_plans = {}
 maintenance_lock = threading.Lock()
 
@@ -657,6 +661,95 @@ def _balanced_group_key(path):
     return (folder, "stem", normalize_duplicate_name(stem))
 
 
+def _settings_fingerprint(settings):
+    public = public_duplicate_settings(settings)
+    return _hash_text(json.dumps(public, sort_keys=True, separators=(",", ":")))[:24]
+
+
+def _logical_group_key(path, settings):
+    settings = settings or duplicate_settings()
+    mode = settings.get("grouping_mode") or "balanced"
+    folder = os.path.normcase(os.path.realpath(os.path.dirname(path)))
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if mode == "folder":
+        return (folder, "folder")
+    if mode == "strict":
+        return (folder, "stem", normalize_duplicate_name(stem))
+    return _balanced_group_key(path)
+
+
+def _group_review_key(path, settings, lib_root):
+    folder = os.path.realpath(os.path.dirname(path))
+    try:
+        relative_folder = os.path.relpath(folder, os.path.realpath(lib_root))
+    except (OSError, ValueError):
+        relative_folder = folder
+    logical = list(_logical_group_key(path, settings))[1:]
+    value = {
+        "folder": os.path.normcase(relative_folder).replace(os.sep, "/"),
+        "mode": str((settings or {}).get("grouping_mode") or "balanced"),
+        "logical": logical,
+    }
+    return "duplicate-review:" + _hash_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":"))
+    )[:24]
+
+
+def _folder_snapshot(folder):
+    snapshot = {}
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return snapshot
+    for entry in entries:
+        path = os.path.join(folder, entry)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        scope_name = entry
+        non_main = False
+        while scope_name:
+            if media_scope.is_non_main_video_filename(scope_name):
+                non_main = True
+                break
+            stem = os.path.splitext(scope_name)[0]
+            if stem == scope_name:
+                break
+            scope_name = stem
+        if non_main:
+            continue
+        try:
+            value = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue
+        snapshot[entry] = [
+            int(value.st_size),
+            int(getattr(value, "st_mtime_ns", value.st_mtime * 1_000_000_000)),
+        ]
+    return dict(sorted(snapshot.items(), key=lambda item: item[0].lower()))
+
+
+def _folder_fingerprint(snapshot):
+    return _hash_text(json.dumps(snapshot or {}, sort_keys=True, separators=(",", ":")))[:32]
+
+
+def _folder_change_detail(original, current):
+    original = original or {}
+    current = current or {}
+    original_names = set(original)
+    current_names = set(current)
+    return {
+        "added": sorted(current_names - original_names, key=str.lower),
+        "removed": sorted(original_names - current_names, key=str.lower),
+        "modified": sorted(
+            (
+                name for name in original_names & current_names
+                if original.get(name) != current.get(name)
+            ),
+            key=str.lower,
+        ),
+    }
+
+
 def _candidate_groups(videos, settings=None):
     settings = settings or duplicate_settings()
     mode = settings.get("grouping_mode") or "balanced"
@@ -1001,6 +1094,7 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
 
     folder = os.path.dirname(videos[0]["path"])
     folder_files = find_folder_context_files(folder, videos, lib_root)
+    folder_snapshot = _folder_snapshot(folder)
     normalized_name = normalize_duplicate_name(os.path.splitext(videos[0]["name"])[0])
     impact_issue_id = "duplicate:" + hashlib.sha256(
         "|".join(sorted(video["id"] for video in videos)).encode("utf-8")
@@ -1008,6 +1102,10 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
     return {
         "id": group_id,
         "impact_issue_id": impact_issue_id,
+        "review_key": _group_review_key(videos[0]["path"], settings, lib_root),
+        "settings_fingerprint": _settings_fingerprint(settings),
+        "folder_snapshot": folder_snapshot,
+        "folder_fingerprint": _folder_fingerprint(folder_snapshot),
         "folder": folder,
         "normalized_name": normalized_name,
         "videos": videos,
@@ -1106,10 +1204,19 @@ def _public_file(item):
     return public
 
 
-def _public_group(group):
+def _public_group(group, review_state=None):
     review_flags = _group_review_flags(group)
+    review_state = copy.deepcopy(review_state or {
+        "saved": False,
+        "requires_review": False,
+        "status": "default",
+        "reason": "",
+    })
     return {
         "id": group.get("id", ""),
+        "review_key": group.get("review_key", ""),
+        "folder_fingerprint": group.get("folder_fingerprint", ""),
+        "review_state": review_state,
         "folder": group.get("folder", ""),
         "normalized_name": group.get("normalized_name", ""),
         "videos": [_public_file(video) for video in group.get("videos") or []],
@@ -1121,17 +1228,23 @@ def _public_group(group):
         "accessory_count": group.get("accessory_count", 0),
         "folder_file_count": group.get("folder_file_count", 0),
         "default_action_counts": _group_default_action_counts(group),
-        "needs_review": bool(review_flags),
+        "needs_review": bool(review_flags or review_state.get("requires_review")),
         "review_flags": review_flags,
         "subtitle_signals": _group_subtitle_signals(group),
     }
 
 
-def _public_group_summary(group):
+def _public_group_summary(group, review_state=None):
     videos = group.get("videos") or []
     recommended_id = group.get("recommended_keep_id", "")
     recommended = next((video for video in videos if video.get("id") == recommended_id), {})
     review_flags = _group_review_flags(group)
+    review_state = copy.deepcopy(review_state or {
+        "saved": False,
+        "requires_review": False,
+        "status": "default",
+        "reason": "",
+    })
     has_noncopy = any(not _copy_name_penalty(video.get("name")) for video in videos)
     recommended_is_copy = bool(_copy_name_penalty(recommended.get("name")))
     if recommended_is_copy and has_noncopy:
@@ -1142,6 +1255,9 @@ def _public_group_summary(group):
         recommended_reason = "Best match under the configured keeper rule"
     return {
         "id": group.get("id", ""),
+        "review_key": group.get("review_key", ""),
+        "folder_fingerprint": group.get("folder_fingerprint", ""),
+        "review_state": review_state,
         "folder": group.get("folder", ""),
         "normalized_name": group.get("normalized_name", ""),
         "recommended_keep_id": recommended_id,
@@ -1163,7 +1279,7 @@ def _public_group_summary(group):
         "reclaimable_bytes": group.get("reclaimable_bytes", 0),
         "reclaimable_label": group.get("reclaimable_label", ""),
         "default_action_counts": _group_default_action_counts(group),
-        "needs_review": bool(review_flags),
+        "needs_review": bool(review_flags or review_state.get("requires_review")),
         "review_flags": review_flags,
         "subtitle_signals": _group_subtitle_signals(group),
     }
@@ -1184,6 +1300,7 @@ def public_scan(scan, include_groups=False):
         for path in (item.get("video_paths") or [])
         if path
     }
+    review_draft = duplicate_review_store.mapped_payload(scan) if scan.get("status") == "success" else {}
     public = {
         "id": scan.get("id", ""),
         "path": scan.get("path", ""),
@@ -1206,21 +1323,59 @@ def public_scan(scan, include_groups=False):
         "protected_distinct_video_count": len(protected_video_paths),
         "default_action_counts": default_action_counts,
         "review_group_count": sum(1 for group in groups if _group_review_flags(group)),
+        "saved_review_group_count": review_draft.get("saved_group_count", 0),
+        "review_required_count": review_draft.get("review_required_count", 0),
+        "attention_group_count": sum(
+            1
+            for group in groups
+            if _group_review_flags(group)
+            or ((review_draft.get("groups") or {}).get(group.get("id")) or {}).get("requires_review")
+        ),
         "emby_mapping": emby_catalog.public_summary(
             scan.get("emby_mapping"), app_settings.load_settings()
         ),
     }
     if include_groups:
-        public["groups"] = [_public_group(group) for group in scan.get("groups") or []]
+        public["groups"] = [
+            _public_group(group, duplicate_review_store.group_state(scan, group, review_draft))
+            for group in scan.get("groups") or []
+        ]
     public.update(maintenance_scan_store.public_cache_metadata("duplicates", scan))
     return public
+
+
+def _upgrade_duplicate_scan_groups(scan):
+    if not isinstance(scan, dict):
+        return scan
+    settings = scan.get("settings") or duplicate_settings()
+    if not scan.get("settings_fingerprint"):
+        scan["settings_fingerprint"] = _settings_fingerprint(settings)
+    lib_root = os.path.realpath(scan.get("lib_root") or LIB_ROOT)
+    for group in scan.get("groups") or []:
+        videos = list(group.get("videos") or [])
+        if not videos:
+            continue
+        folder = group.get("folder") or os.path.dirname(videos[0].get("path", ""))
+        if not group.get("review_key"):
+            group["review_key"] = _group_review_key(videos[0].get("path", ""), settings, lib_root)
+        if not group.get("settings_fingerprint"):
+            group["settings_fingerprint"] = _settings_fingerprint(settings)
+        if not isinstance(group.get("folder_snapshot"), dict):
+            # A pre-fingerprint cached scan has no trustworthy folder baseline.
+            # Force one targeted refresh instead of silently blessing current files.
+            group["folder_snapshot"] = {}
+        if not group.get("folder_fingerprint"):
+            group["folder_fingerprint"] = "legacy-scan-needs-refresh"
+    return scan
 
 
 def _ensure_duplicate_cache_loaded():
     global _duplicate_cache_loaded
     if _duplicate_cache_loaded:
         return
-    restored = maintenance_scan_store.restore_scan("duplicates")
+    restored = _upgrade_duplicate_scan_groups(
+        maintenance_scan_store.restore_scan("duplicates")
+    )
     with maintenance_lock:
         if restored and restored.get("id") not in duplicate_scans:
             duplicate_scans[restored["id"]] = restored
@@ -1499,6 +1654,7 @@ def start_duplicate_scan(path, lib_root=LIB_ROOT, synchronous=False):
         "reclaimable_bytes": 0,
         "lib_root": os.path.realpath(lib_root),
         "settings": settings,
+        "settings_fingerprint": _settings_fingerprint(settings),
     }
     with maintenance_lock:
         _prune_duplicate_scans_locked()
@@ -1583,11 +1739,21 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT, review
             return None, "Scan is not complete"
         groups = list(scan.get("groups") or [])
 
+    review_draft = duplicate_review_store.mapped_payload(scan)
+    review_states = review_draft.get("groups") or {}
     review = str(review or "all").strip().lower()
     if review == "attention":
-        groups = [group for group in groups if _group_review_flags(group)]
+        groups = [
+            group for group in groups
+            if _group_review_flags(group)
+            or (review_states.get(group.get("id")) or {}).get("requires_review")
+        ]
     elif review == "ready":
-        groups = [group for group in groups if not _group_review_flags(group)]
+        groups = [
+            group for group in groups
+            if not _group_review_flags(group)
+            and not (review_states.get(group.get("id")) or {}).get("requires_review")
+        ]
     else:
         review = "all"
 
@@ -1605,7 +1771,10 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT, review
         "previous_offset": max(0, offset - limit) if offset > 0 else None,
         "large_result": total >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
         "review": review,
-        "groups": [_public_group_summary(group) for group in page],
+        "groups": [
+            _public_group_summary(group, review_states.get(group.get("id")))
+            for group in page
+        ],
     }, None
 
 
@@ -1647,7 +1816,385 @@ def group_payload(scan_id, group_id, keep_video_id=""):
             for video in projected.get("videos") or []
             if video.get("id") != keep_video_id
         ]
-    return {"group": _public_group(projected)}, None
+    review_draft = duplicate_review_store.mapped_payload(scan)
+    return {
+        "group": _public_group(
+            projected,
+            (review_draft.get("groups") or {}).get(group.get("id")),
+        )
+    }, None
+
+
+def review_draft_payload(scan_id):
+    _ensure_duplicate_cache_loaded()
+    with maintenance_lock:
+        scan = duplicate_scans.get(str(scan_id or ""))
+    if not scan:
+        return None, "Scan not found"
+    if scan.get("status") != "success":
+        return None, "Scan is not complete"
+    return {"review_draft": duplicate_review_store.mapped_payload(scan)}, None
+
+
+def patch_review_draft(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    scan_id = str(payload.get("scan_id") or "")
+    _ensure_duplicate_cache_loaded()
+    with maintenance_lock:
+        scan = duplicate_scans.get(scan_id)
+    if not scan:
+        return None, "Scan not found"
+    if scan.get("status") != "success":
+        return None, "Scan is not complete"
+    return {"review_draft": duplicate_review_store.patch(scan, payload)}, None
+
+
+def delete_review_draft(scan_id):
+    _ensure_duplicate_cache_loaded()
+    with maintenance_lock:
+        scan = duplicate_scans.get(str(scan_id or ""))
+    if not scan:
+        return None, "Scan not found"
+    duplicate_review_store.delete(scan)
+    return {"review_draft": duplicate_review_store.mapped_payload(scan)}, None
+
+
+def _prune_duplicate_refresh_runs_locked(now=None):
+    now = now or time.time()
+    terminal = sorted(
+        (
+            run for run in duplicate_refresh_runs.values()
+            if run.get("status") in SCAN_TERMINAL_STATUSES
+        ),
+        key=lambda item: item.get("_finished_ts") or item.get("_created_ts") or 0,
+        reverse=True,
+    )
+    for run in terminal[DUPLICATE_REFRESH_RETENTION_COUNT:]:
+        duplicate_refresh_runs.pop(run.get("id"), None)
+    for run in terminal:
+        finished = run.get("_finished_ts") or run.get("_created_ts") or now
+        if now - finished > DUPLICATE_REFRESH_MAX_AGE_SECONDS:
+            duplicate_refresh_runs.pop(run.get("id"), None)
+
+
+def _set_refresh_progress(run, percent, label, **values):
+    with maintenance_lock:
+        task_progress.update_scan(run, "duplicate_refresh", percent, label, **values)
+
+
+def _public_refresh_run(run):
+    if not run:
+        return None
+    return {
+        "id": run.get("id", ""),
+        "scan_id": run.get("scan_id", ""),
+        "status": run.get("status", ""),
+        "active": run.get("status") in SCAN_ACTIVE_STATUSES,
+        **task_progress.public_fields(run),
+        "error": run.get("error", ""),
+        "folder_count": run.get("folder_count", 0),
+        "processed_folder_count": run.get("processed_folder_count", 0),
+        "refreshed_group_count": run.get("refreshed_group_count", 0),
+        "removed_group_count": run.get("removed_group_count", 0),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "result": copy.deepcopy(run.get("result")) if run.get("status") == "success" else None,
+    }
+
+
+def _direct_main_videos(folder):
+    videos = []
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return videos
+    for entry in entries:
+        path = os.path.join(folder, entry)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        if os.path.splitext(entry)[1].lower() not in VIDEO_EXTS:
+            continue
+        if media_scope.is_main_video_filename(entry):
+            videos.append(os.path.realpath(path))
+    return sorted(videos, key=str.lower)
+
+
+def _rebuilt_folder_groups(scan, folder, lib_root):
+    settings = scan.get("settings") or duplicate_settings()
+    videos = _direct_main_videos(folder)
+    protected_sets = {
+        item["id"]: item for item in _related_release_sets(videos) if item.get("id")
+    }
+    protected_paths = {
+        os.path.normcase(os.path.realpath(path))
+        for item in protected_sets.values()
+        for path in item.get("video_paths") or []
+    }
+    groups = []
+    group_index = 1
+    for paths in _candidate_groups(videos, settings=settings):
+        actionable_paths = [
+            path for path in paths
+            if os.path.normcase(os.path.realpath(path)) not in protected_paths
+        ]
+        built, built_protected = _build_groups(
+            actionable_paths, group_index, lib_root, settings
+        )
+        groups.extend(built)
+        group_index += len(built)
+        for item in built_protected:
+            if item.get("id"):
+                protected_sets[item["id"]] = item
+
+    group_videos = [video for group in groups for video in group.get("videos") or []]
+    emby_catalog.enrich_records(
+        group_videos,
+        app_settings.load_settings(),
+        lambda video: video.get("path"),
+    )
+    for video in group_videos:
+        for accessory in video.get("accessories") or []:
+            accessory["emby_parent_item_id"] = video.get("emby_item_id", "")
+            accessory["emby_parent_item_type"] = video.get("emby_item_type", "")
+    return groups, list(protected_sets.values())
+
+
+def _run_duplicate_refresh(run):
+    started = time.time()
+    _set_refresh_progress(
+        run,
+        0,
+        "Preparing changed folders",
+        status="running",
+        _started_ts=started,
+        started_at=utc_iso(started),
+    )
+    try:
+        scan_id = run.get("scan_id")
+        with maintenance_lock:
+            live_scan = duplicate_scans.get(scan_id)
+            scan = copy.deepcopy(live_scan) if live_scan else None
+        if not scan or scan.get("status") != "success":
+            raise RuntimeError("Scan not found")
+        lib_root = os.path.realpath(scan.get("lib_root") or LIB_ROOT)
+        refresh_scan = copy.deepcopy(scan)
+        refresh_scan["settings"] = copy.deepcopy(run.get("settings") or duplicate_settings())
+        refresh_scan["settings_fingerprint"] = str(
+            run.get("settings_fingerprint") or _settings_fingerprint(refresh_scan["settings"])
+        )
+        folders = list(run.get("folders") or [])
+        original_groups = list(scan.get("groups") or [])
+        original_by_folder = {}
+        for group in original_groups:
+            original_by_folder.setdefault(
+                os.path.normcase(os.path.realpath(group.get("folder") or "")), []
+            ).append(group)
+
+        replacements = {}
+        replacement_protected = {}
+        refreshed_ids = []
+        removed_ids = []
+        removed_review_keys = []
+        used_ids = {str(group.get("id") or "") for group in original_groups}
+        for index, folder in enumerate(folders, start=1):
+            folder_key = os.path.normcase(os.path.realpath(folder))
+            _set_refresh_progress(
+                run,
+                int(90 * (index - 1) / max(len(folders), 1)),
+                f"Refreshing folder {index} of {len(folders)}",
+                processed_folder_count=index - 1,
+                current_path=folder,
+            )
+            rebuilt, protected = _rebuilt_folder_groups(refresh_scan, folder, lib_root)
+            old_groups = original_by_folder.get(folder_key, [])
+            old_by_key = {group.get("review_key"): group for group in old_groups}
+            matched_old_ids = set()
+            for group in rebuilt:
+                old = old_by_key.get(group.get("review_key"))
+                if old:
+                    group["id"] = old.get("id")
+                    matched_old_ids.add(old.get("id"))
+                else:
+                    base = f"group-refresh-{_hash_text(group.get('review_key'))[:12]}"
+                    candidate = base
+                    suffix = 2
+                    while candidate in used_ids:
+                        candidate = f"{base}-{suffix}"
+                        suffix += 1
+                    group["id"] = candidate
+                    used_ids.add(candidate)
+                refreshed_ids.append(group.get("id"))
+            removed_ids.extend(
+                group.get("id") for group in old_groups
+                if group.get("id") not in matched_old_ids
+            )
+            removed_review_keys.extend(
+                group.get("review_key") for group in old_groups
+                if group.get("id") not in matched_old_ids and group.get("review_key")
+            )
+            replacements[folder_key] = rebuilt
+            replacement_protected[folder_key] = protected
+            _set_refresh_progress(
+                run,
+                int(90 * index / max(len(folders), 1)),
+                f"Refreshed folder {index} of {len(folders)}",
+                processed_folder_count=index,
+                current_path="",
+            )
+
+        refreshed_folder_keys = set(replacements)
+        with maintenance_lock:
+            live_scan = duplicate_scans.get(scan_id)
+            if not live_scan:
+                raise RuntimeError("Scan not found")
+            updated_groups = [
+                group for group in live_scan.get("groups") or []
+                if os.path.normcase(os.path.realpath(group.get("folder") or "")) not in refreshed_folder_keys
+            ]
+            for folder in folders:
+                updated_groups.extend(
+                    replacements.get(os.path.normcase(os.path.realpath(folder)), [])
+                )
+            updated_groups.sort(
+                key=lambda group: (
+                    str(group.get("folder") or "").lower(),
+                    str(group.get("normalized_name") or "").lower(),
+                )
+            )
+            protected_sets = [
+                item for item in live_scan.get("protected_distinct_sets") or []
+                if os.path.normcase(os.path.realpath(item.get("folder") or "")) not in refreshed_folder_keys
+            ]
+            for items in replacement_protected.values():
+                protected_sets.extend(items)
+            live_scan["groups"] = updated_groups
+            live_scan["protected_distinct_sets"] = protected_sets
+            live_scan["settings"] = copy.deepcopy(refresh_scan["settings"])
+            live_scan["settings_fingerprint"] = refresh_scan["settings_fingerprint"]
+            live_scan["reclaimable_bytes"] = sum(
+                int(group.get("reclaimable_bytes") or 0) for group in updated_groups
+            )
+            scan_for_persistence = live_scan
+        duplicate_review_store.ensure_groups(
+            scan_for_persistence,
+            refreshed_ids,
+            require_review=True,
+            review_reason="This duplicate group was rebuilt from changed folder contents",
+        )
+        maintenance_scan_store.update_persisted_scan(
+            "duplicates", scan_for_persistence, lib_root
+        )
+        duplicate_review_store.remove_review_keys(scan_for_persistence, removed_review_keys)
+        finished = time.time()
+        result = {
+            "scan": public_scan(scan_for_persistence),
+            "refreshed_group_ids": refreshed_ids,
+            "removed_group_ids": removed_ids,
+            "refreshed_group_count": len(refreshed_ids),
+            "removed_group_count": len(removed_ids),
+        }
+        _set_refresh_progress(
+            run,
+            100,
+            "Changed folders refreshed",
+            status="success",
+            result=result,
+            refreshed_group_count=len(refreshed_ids),
+            removed_group_count=len(removed_ids),
+            processed_folder_count=len(folders),
+            current_path="",
+            _finished_ts=finished,
+            finished_at=utc_iso(finished),
+        )
+    except Exception as exc:
+        finished = time.time()
+        _set_refresh_progress(
+            run,
+            100,
+            "Changed-folder refresh failed",
+            status="failed",
+            error=str(exc),
+            current_path="",
+            _finished_ts=finished,
+            finished_at=utc_iso(finished),
+        )
+
+
+def start_duplicate_refresh(scan_id, group_ids, synchronous=False):
+    scan_id = str(scan_id or "")
+    with maintenance_lock:
+        scan = duplicate_scans.get(scan_id)
+        if not scan:
+            return None, "Scan not found"
+        groups_by_id = {group.get("id"): group for group in scan.get("groups") or []}
+        folders = sorted(
+            {
+                os.path.realpath(groups_by_id[group_id].get("folder"))
+                for group_id in group_ids or []
+                if group_id in groups_by_id and groups_by_id[group_id].get("folder")
+            },
+            key=str.lower,
+        )
+        if not folders:
+            return None, "No changed folders to refresh"
+        for existing in duplicate_refresh_runs.values():
+            if (
+                existing.get("scan_id") == scan_id
+                and existing.get("status") in SCAN_ACTIVE_STATUSES
+                and set(existing.get("folders") or []) == set(folders)
+            ):
+                return existing, None
+        _prune_duplicate_refresh_runs_locked()
+        created = time.time()
+        settings = duplicate_settings()
+        run = {
+            "id": _now_id(),
+            "scan_id": scan_id,
+            "status": "queued",
+            "progress_percent": 0,
+            "progress_label": "Queued changed-folder refresh",
+            "error": "",
+            "folders": folders,
+            "folder_count": len(folders),
+            "processed_folder_count": 0,
+            "refreshed_group_count": 0,
+            "removed_group_count": 0,
+            "settings": settings,
+            "settings_fingerprint": _settings_fingerprint(settings),
+            "_created_ts": created,
+            "created_at": utc_iso(created),
+            "started_at": None,
+            "finished_at": None,
+        }
+        duplicate_refresh_runs[run["id"]] = run
+    if synchronous:
+        _run_duplicate_refresh(run)
+    else:
+        threading.Thread(
+            target=_run_duplicate_refresh,
+            args=(run,),
+            daemon=True,
+            name=f"vid2gif-duplicate-refresh-{run['id']}",
+        ).start()
+    return run, None
+
+
+def duplicate_refresh_status(refresh_id=None):
+    with maintenance_lock:
+        _prune_duplicate_refresh_runs_locked()
+        if refresh_id:
+            run = duplicate_refresh_runs.get(str(refresh_id or ""))
+        elif duplicate_refresh_runs:
+            run = max(
+                duplicate_refresh_runs.values(),
+                key=lambda item: item.get("_created_ts") or 0,
+            )
+        else:
+            run = None
+    if not run:
+        return None, "Refresh run not found"
+    return {"refresh": _public_refresh_run(run)}, None
 
 
 def _group_overrides(payload):
@@ -1781,7 +2328,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, freshness_error = maintenance_scan_store.action_allowed(
+    allowed, freshness_error = maintenance_scan_store.library_root_allowed(
         "duplicates", scan_id, lib_root
     )
     if not allowed:
@@ -1801,6 +2348,8 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     if scan.get("status") != "success":
         return None, "Scan is not complete"
     groups_by_id = {group.get("id"): group for group in scan.get("groups") or []}
+    settings = duplicate_settings()
+    current_settings_fingerprint = _settings_fingerprint(settings)
 
     def unique_group_ids(values):
         result = []
@@ -1832,7 +2381,92 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     if any(group_id not in groups_by_id for group_id in overrides):
         return None, "Group overrides are stale"
 
-    settings = scan.get("settings") or duplicate_settings()
+    requested_selected_group_ids = list(selected_group_ids)
+    review_draft = duplicate_review_store.mapped_payload(scan)
+    review_states = review_draft.get("groups") or {}
+    for group_id, saved_state in review_states.items():
+        if not saved_state.get("saved"):
+            continue
+        group = groups_by_id.get(group_id) or {}
+        keep_video_id = str(
+            saved_state.get("keep_video_id") or group.get("recommended_keep_id") or ""
+        )
+        known_file_ids = {
+            str(item) for item in saved_state.get("known_file_ids") or [] if str(item or "")
+        }
+        included_file_ids = {
+            str(item) for item in saved_state.get("include_file_ids") or [] if str(item or "")
+        }
+        for video in group.get("videos") or []:
+            candidates = [*(video.get("accessories") or [])]
+            if video.get("id") != keep_video_id:
+                candidates.insert(0, video)
+            for item in candidates:
+                file_id = str(item.get("id") or "")
+                if (
+                    file_id
+                    and file_id not in known_file_ids
+                    and item.get("default_selected") is not False
+                    and item.get("default_operation") != "keep"
+                ):
+                    included_file_ids.add(file_id)
+        saved_override = {
+            "id": group_id,
+            "keep_video_id": keep_video_id,
+            "include_file_ids": sorted(included_file_ids),
+            "file_operations": copy.deepcopy(saved_state.get("file_operations") or []),
+        }
+        saved_override.update(overrides.get(group_id) or {})
+        overrides[group_id] = saved_override
+    current_snapshots = {}
+    changed_groups = []
+    stale_group_ids = []
+    ready_group_ids = []
+    for group_id in requested_selected_group_ids:
+        group = groups_by_id[group_id]
+        folder = os.path.realpath(group.get("folder") or "")
+        folder_key = os.path.normcase(folder)
+        if folder_key not in current_snapshots:
+            current_snapshots[folder_key] = _folder_snapshot(folder)
+        current_snapshot = current_snapshots[folder_key]
+        current_fingerprint = _folder_fingerprint(current_snapshot)
+        scanned_fingerprint = str(group.get("folder_fingerprint") or "")
+        review_state = review_states.get(group_id) or {}
+        folder_changed = current_fingerprint != scanned_fingerprint
+        settings_changed = str(group.get("settings_fingerprint") or "") != current_settings_fingerprint
+        review_required = bool(review_state.get("requires_review"))
+        if folder_changed or settings_changed or review_required:
+            detail = _folder_change_detail(group.get("folder_snapshot"), current_snapshot)
+            reason = (
+                "Files in this folder changed after the duplicate scan"
+                if folder_changed
+                else (
+                    "Duplicate cleanup settings changed after this group was scanned"
+                    if settings_changed
+                    else review_state.get("reason") or "This saved review must be confirmed again"
+                )
+            )
+            changed_groups.append(
+                {
+                    "group_id": group_id,
+                    "review_key": group.get("review_key", ""),
+                    "folder": folder,
+                    "label": group.get("normalized_name") or "Duplicate group",
+                    "reason": reason,
+                    "added": detail["added"],
+                    "removed": detail["removed"],
+                    "modified": detail["modified"],
+                    "refresh_required": folder_changed or settings_changed,
+                    "review_required": review_required,
+                    "settings_changed": settings_changed,
+                }
+            )
+            if folder_changed or settings_changed:
+                stale_group_ids.append(group_id)
+            continue
+        ready_group_ids.append(group_id)
+    selected_group_ids = ready_group_ids
+
     move_root, move_err = _validate_move_root(_effective_move_root(settings, lib_root), lib_root)
     if action == "move" and move_err:
         return None, move_err
@@ -1840,8 +2474,12 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
     plan_id = _now_id()
     used_destinations = set()
     files = []
-    selected_group_set = set(selected_group_ids)
+    selected_group_set = set(requested_selected_group_ids)
     skipped_groups = [group_id for group_id in groups_by_id if group_id not in selected_group_set]
+    skipped_groups.extend(
+        group_id for group_id in requested_selected_group_ids
+        if group_id not in ready_group_ids and group_id not in skipped_groups
+    )
     manual_review = []
     impact_groups = []
     lib_real = os.path.realpath(lib_root)
@@ -2052,11 +2690,24 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "lib_root": lib_real,
         "move_root": move_root if action == "move" else "",
         "configured_move_root": move_root,
-        "visible_group_ids": selected_group_ids,
-        "visible_group_count": len(selected_group_ids),
+        "visible_group_ids": requested_selected_group_ids,
+        "visible_group_count": len(requested_selected_group_ids),
         "selection_mode": selection_mode,
-        "selected_group_ids": selected_group_ids,
-        "selected_group_count": len(selected_group_ids),
+        "selected_group_ids": requested_selected_group_ids,
+        "selected_group_count": len(requested_selected_group_ids),
+        "ready_group_ids": ready_group_ids,
+        "ready_group_count": len(ready_group_ids),
+        "changed_groups": changed_groups,
+        "changed_group_count": len(changed_groups),
+        "revalidation_checked_count": len(requested_selected_group_ids),
+        "group_snapshots": [
+            {
+                "group_id": group_id,
+                "folder": groups_by_id[group_id].get("folder", ""),
+                "folder_fingerprint": groups_by_id[group_id].get("folder_fingerprint", ""),
+            }
+            for group_id in ready_group_ids
+        ],
         "total_group_count": len(groups_by_id),
         "files": files,
         "file_count": len(files),
@@ -2068,9 +2719,21 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
         "settings": settings,
         "playback_targets": playback_targets,
         "emby_playback": playback,
+        "refresh_run_id": "",
     }
     with maintenance_lock:
         cleanup_plans[plan_id] = plan
+    if stale_group_ids:
+        duplicate_review_store.ensure_groups(
+            scan,
+            stale_group_ids,
+            overrides,
+            require_review=True,
+            review_reason="Files in this folder changed after the duplicate scan",
+        )
+        refresh_run, _refresh_error = start_duplicate_refresh(scan_id, stale_group_ids)
+        if refresh_run:
+            plan["refresh_run_id"] = refresh_run.get("id", "")
     return public_plan(plan), None
 
 
@@ -2090,6 +2753,12 @@ def public_plan(plan):
         "selection_mode": plan.get("selection_mode", "visible_page"),
         "selected_group_ids": list(plan.get("selected_group_ids") or []),
         "selected_group_count": plan.get("selected_group_count", plan.get("visible_group_count", 0)),
+        "ready_group_ids": list(plan.get("ready_group_ids") or []),
+        "ready_group_count": plan.get("ready_group_count", 0),
+        "changed_groups": copy.deepcopy(plan.get("changed_groups") or []),
+        "changed_group_count": plan.get("changed_group_count", 0),
+        "revalidation_checked_count": plan.get("revalidation_checked_count", 0),
+        "refresh_run_id": plan.get("refresh_run_id", ""),
         "total_group_count": plan.get("total_group_count", plan.get("visible_group_count", 0)),
         "file_count": plan.get("file_count", 0),
         "total_size_bytes": plan.get("total_size_bytes", 0),
@@ -2158,6 +2827,7 @@ def _write_cleanup_log(plan, result, records):
         "missing_count": result.get("missing_count", 0),
         "refused_count": result.get("refused_count", 0),
         "deferred_count": result.get("deferred_count", 0),
+        "skipped_changed_group_count": result.get("skipped_changed_group_count", 0),
         "deferred_bytes": result.get("deferred_bytes", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "move_root": plan.get("move_root", ""),
@@ -2492,6 +3162,9 @@ def _public_apply_result(result):
         "missing_count": result.get("missing_count", 0),
         "refused_count": result.get("refused_count", 0),
         "deferred_count": result.get("deferred_count", 0),
+        "skipped_changed_groups": copy.deepcopy(result.get("skipped_changed_groups") or []),
+        "skipped_changed_group_count": result.get("skipped_changed_group_count", 0),
+        "refresh_run_id": result.get("refresh_run_id", ""),
         "deferred_bytes": result.get("deferred_bytes", 0),
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "total_applied_label": result.get("total_applied_label", "0 B"),
@@ -2527,6 +3200,7 @@ def public_apply_run(run):
         "missing_count": run.get("missing_count", 0),
         "refused_count": run.get("refused_count", 0),
         "deferred_count": run.get("deferred_count", 0),
+        "skipped_changed_group_count": run.get("skipped_changed_group_count", 0),
         "current_path": run.get("current_path", ""),
         "current_name": run.get("current_name", ""),
         "error": run.get("error", ""),
@@ -2670,6 +3344,93 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
     log_records = []
     total = 0
     files = list(plan.get("files") or [])
+    current_folder_snapshots = {}
+    skipped_changed_groups = []
+    skipped_group_ids = set()
+    refresh_group_ids = set()
+    for expected in plan.get("group_snapshots") or []:
+        group_id = str(expected.get("group_id") or "")
+        folder = os.path.realpath(expected.get("folder") or "")
+        folder_key = os.path.normcase(folder)
+        if folder_key not in current_folder_snapshots:
+            current_folder_snapshots[folder_key] = _folder_snapshot(folder)
+        current = current_folder_snapshots[folder_key]
+        current_fingerprint = _folder_fingerprint(current)
+        if current_fingerprint == str(expected.get("folder_fingerprint") or ""):
+            continue
+        detail = _folder_change_detail({}, current)
+        with maintenance_lock:
+            scan = duplicate_scans.get(str(plan.get("scan_id") or ""))
+            group = next(
+                (
+                    item for item in (scan or {}).get("groups") or []
+                    if item.get("id") == group_id
+                ),
+                {},
+            )
+        if group:
+            detail = _folder_change_detail(group.get("folder_snapshot"), current)
+        skipped_group_ids.add(group_id)
+        refresh_group_ids.add(group_id)
+        skipped_changed_groups.append(
+            {
+                "group_id": group_id,
+                "folder": folder,
+                "reason": "Files in this folder changed after the cleanup preview",
+                "added": detail["added"],
+                "removed": detail["removed"],
+                "modified": detail["modified"],
+            }
+        )
+    files_by_group = {}
+    for item in files:
+        files_by_group.setdefault(str(item.get("group_id") or ""), []).append(item)
+    for group_id, group_files in files_by_group.items():
+        if group_id in skipped_group_ids:
+            continue
+        cleanup_sources = {
+            os.path.normcase(os.path.realpath(item.get("source_path") or ""))
+            for item in group_files
+            if item.get("operation") in {"move", "delete"} and item.get("source_path")
+        }
+        preflight_reason = ""
+        for item in group_files:
+            source = item.get("source_path") or ""
+            if not source or not _identity_matches(source, item.get("identity")):
+                preflight_reason = "A planned source file changed after the cleanup preview"
+                break
+            destination = item.get("destination_path") or ""
+            if item.get("operation") == "move" and destination and os.path.lexists(destination):
+                preflight_reason = "A quarantine destination is no longer available"
+                break
+            if (
+                item.get("operation") == "rename"
+                and destination
+                and os.path.lexists(destination)
+                and os.path.normcase(os.path.realpath(destination)) not in cleanup_sources
+            ):
+                preflight_reason = "A rename destination is no longer available"
+                break
+        if preflight_reason:
+            skipped_group_ids.add(group_id)
+            if "source file changed" in preflight_reason:
+                refresh_group_ids.add(group_id)
+            skipped_changed_groups.append(
+                {
+                    "group_id": group_id,
+                    "folder": os.path.dirname(group_files[0].get("source_path") or ""),
+                    "reason": preflight_reason,
+                    "added": [],
+                    "removed": [],
+                    "modified": [],
+                }
+            )
+    if skipped_group_ids:
+        files = [item for item in files if item.get("group_id") not in skipped_group_ids]
+    log_records.extend(
+        {"type": "group", "result": "skipped_changed", **item}
+        for item in skipped_changed_groups
+    )
     file_count = len(files)
     if apply_run:
         started = time.time()
@@ -2682,6 +3443,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             progress_label=f"Processing 0 of {file_count} files",
             file_count=file_count,
             deferred_count=0,
+            skipped_changed_group_count=len(skipped_changed_groups),
         )
 
     playback_targets = list(plan.get("playback_targets") or [])
@@ -2899,6 +3661,11 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
     reconciled_scan, resolved_group_ids, scan_reconciled = _reconcile_duplicate_scan_after_apply(
         plan, applied
     )
+    refresh_run = None
+    if refresh_group_ids:
+        refresh_run, _refresh_error = start_duplicate_refresh(
+            plan.get("scan_id"), list(refresh_group_ids)
+        )
     result = {
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
@@ -2911,6 +3678,9 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
         "missing_count": len(missing),
         "refused_count": len(refused),
         "deferred_count": len(deferred),
+        "skipped_changed_groups": skipped_changed_groups,
+        "skipped_changed_group_count": len(skipped_changed_groups),
+        "refresh_run_id": (refresh_run or {}).get("id", ""),
         "deferred_bytes": sum(int(item.get("size_bytes") or 0) for item in deferred),
         "total_applied_bytes": total,
         "total_applied_label": format_size(total),
@@ -2991,6 +3761,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
             missing_count=len(missing),
             refused_count=len(refused),
             deferred_count=len(deferred),
+            skipped_changed_group_count=len(skipped_changed_groups),
             current_path="",
             current_name="",
             _finished_ts=finished,
@@ -3018,6 +3789,7 @@ def _reconcile_duplicate_scan_after_apply(plan, applied):
 
     updated_groups = []
     resolved_group_ids = []
+    resolved_review_keys = []
     for group in original_groups:
         group_id = group.get("id")
         if group_id not in affected_group_ids:
@@ -3033,10 +3805,14 @@ def _reconcile_duplicate_scan_after_apply(plan, applied):
         ]
         if len(existing_video_paths) < 2:
             resolved_group_ids.append(group_id)
+            if group.get("review_key"):
+                resolved_review_keys.append(group.get("review_key"))
             continue
         rebuilt, _protected = _build_groups(existing_video_paths, 0, lib_root, settings)
         if not rebuilt:
             resolved_group_ids.append(group_id)
+            if group.get("review_key"):
+                resolved_review_keys.append(group.get("review_key"))
             continue
         replacement = rebuilt[0]
         replacement["id"] = group_id
@@ -3054,7 +3830,15 @@ def _reconcile_duplicate_scan_after_apply(plan, applied):
             int(group.get("reclaimable_bytes") or 0) for group in updated_groups
         )
         scan_for_persistence = live_scan
-    persisted = maintenance_scan_store.persist_success(
-        "duplicates", "duplicates", scan_for_persistence, lib_root
+    maintenance_scan_store.update_persisted_scan(
+        "duplicates",
+        scan_for_persistence,
+        lib_root,
+        removed_paths=[item.get("source_path") for item in applied if item.get("source_path")],
+        accepted_paths=[
+            item.get("destination_path") for item in applied
+            if item.get("operation") == "rename" and item.get("destination_path")
+        ],
     )
-    return public_scan(scan_for_persistence), resolved_group_ids, bool(persisted)
+    duplicate_review_store.remove_review_keys(scan_for_persistence, resolved_review_keys)
+    return public_scan(scan_for_persistence), resolved_group_ids, True

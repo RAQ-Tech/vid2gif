@@ -898,6 +898,22 @@ def api_maintenance_duplicates_group(group_id):
     return jsonify(payload)
 
 
+@app.route("/api/maintenance/duplicates/review-draft", methods=["GET", "PATCH", "DELETE"])
+def api_maintenance_duplicates_review_draft():
+    if request.method == "PATCH":
+        payload, err = maintenance.patch_review_draft(request.get_json(silent=True) or {})
+    else:
+        scan_id = request.args.get("scan_id")
+        if request.method == "DELETE":
+            payload, err = maintenance.delete_review_draft(scan_id)
+        else:
+            payload, err = maintenance.review_draft_payload(scan_id)
+    if err:
+        status = 404 if err == "Scan not found" else 400
+        return jsonify({"error": err}), status
+    return jsonify(payload)
+
+
 @app.route("/api/maintenance/duplicates/plan", methods=["POST"])
 def api_maintenance_duplicates_plan():
     plan, err = maintenance.build_duplicate_cleanup_plan(
@@ -921,6 +937,14 @@ def api_maintenance_duplicates_apply():
 @app.route("/api/maintenance/duplicates/apply/status")
 def api_maintenance_duplicates_apply_status():
     payload, err = maintenance.duplicate_apply_status(request.args.get("apply_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/duplicates/refresh/status")
+def api_maintenance_duplicates_refresh_status():
+    payload, err = maintenance.duplicate_refresh_status(request.args.get("refresh_id"))
     if err:
         return jsonify({"error": err}), 404
     return jsonify(payload)

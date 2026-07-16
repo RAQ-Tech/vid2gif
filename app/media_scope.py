@@ -34,7 +34,8 @@ NON_MAIN_VIDEO_DIR_NAMES = frozenset(
 )
 
 _NON_MAIN_FILENAME_RE = re.compile(
-    r"(?:^|[\s._-])(?:trailer|sample|featurette|interview)(?:[\s._-]*\d+)?"
+    r"(?:^|[\s._-])(?:trailer|sample|featurette|interview|extras?|"
+    r"behind[\s._-]+the[\s._-]+scenes?|deleted[\s._-]+scenes?)(?:[\s._-]*\d+)?"
     r"(?:[\s._-]+(?:4320p|2160p|1440p|1080p|720p|576p|540p|480p|360p|4k|8k|uhd|fhd|hd|webdl|webrip|bluray|x264|x265|h264|h265|hevc))*$",
     re.IGNORECASE,
 )

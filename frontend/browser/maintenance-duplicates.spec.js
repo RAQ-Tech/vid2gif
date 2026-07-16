@@ -24,6 +24,10 @@ const groups = Array.from({ length: 30 }, (_value, index) => ({
   normalized_name: `Movie ${String(index).padStart(3, '0')}`,
   recommended_keep_id: `keep-${index}`,
   recommended_keep_name: `Movie ${String(index).padStart(3, '0')}.1080p.mkv`,
+  keeper_options: [
+    {id: `keep-${index}`, name: `Movie ${String(index).padStart(3, '0')}.1080p.mkv`, metadata_label: '1920×1080'},
+    {id: `remove-${index}`, name: `Movie ${String(index).padStart(3, '0')}.720p.mkv`, metadata_label: '1280×720'},
+  ],
   video_count: 2,
   accessory_count: 0,
   reclaimable_bytes: 1000,
@@ -32,6 +36,33 @@ const groups = Array.from({ length: 30 }, (_value, index) => ({
   needs_review: false,
   review_flags: [],
 }));
+
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/maintenance/duplicates/review-draft*', async route => {
+    const request = route.request();
+    const body = request.method() === 'PATCH' ? request.postDataJSON() : {};
+    const scanId = body.scan_id || new URL(request.url()).searchParams.get('scan_id') || scan.id;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        review_draft: {
+          scan_id: scanId,
+          saved: request.method() === 'PATCH',
+          selection: body.selection || {mode: 'all_eligible', excluded_group_ids: [], group_ids: []},
+          groups: {},
+          saved_group_count: 0,
+          review_required_count: 0,
+        },
+      }),
+    });
+  });
+  await page.route('**/api/maintenance/duplicates/refresh/status*', route => route.fulfill({
+    status: 404,
+    contentType: 'application/json',
+    body: JSON.stringify({error: 'Refresh run not found'}),
+  }));
+});
 
 test('duplicate scan source folder browser opens and collapses like the BIF browser', async ({ page }) => {
   await page.route('**/api/media-browser?*', route => route.fulfill({
@@ -63,6 +94,12 @@ test('duplicate scan source folder browser opens and collapses like the BIF brow
 
 test('duplicate results render and selection persists across pages', async ({ page }) => {
   let planRequest = null;
+  const reviewPatches = [];
+  page.on('request', request => {
+    if (request.method() === 'PATCH' && request.url().includes('/api/maintenance/duplicates/review-draft')) {
+      reviewPatches.push(request.postDataJSON());
+    }
+  });
   await page.route('**/api/maintenance/duplicates/status*', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -96,6 +133,20 @@ test('duplicate results render and selection persists across pages', async ({ pa
       }),
     });
   });
+  await page.route('**/api/maintenance/duplicates/groups/group-0?*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      group: {
+        ...groups[0],
+        videos: [
+          {id: 'keep-0', name: 'Movie 000.1080p.mkv', kind: 'video', default_selected: true, default_operation: 'move', accessories: []},
+          {id: 'remove-0', name: 'Movie 000.720p.mkv', kind: 'video', default_selected: true, default_operation: 'move', accessories: []},
+        ],
+        folder_files: [],
+      },
+    }),
+  }));
   await page.route('**/api/maintenance/duplicates/plan', async route => {
     planRequest = route.request().postDataJSON();
     return route.fulfill({
@@ -125,6 +176,11 @@ test('duplicate results render and selection persists across pages', async ({ pa
   await expect(page.locator('#maintenanceGroups')).toContainText('Movie 000');
   await expect(page.locator('#duplicateSelectionSummary')).toContainText('30 selected across all result pages');
 
+  await page.locator('[data-maint-keep="group-0"]').selectOption('remove-0');
+  await expect.poll(() => reviewPatches.some(body =>
+    body.groups?.some(group => group.id === 'group-0' && group.keep_video_id === 'remove-0')
+  )).toBeTruthy();
+
   const firstGroup = page.locator('[data-maint-group-enabled="group-0"]');
   await expect(firstGroup).toBeChecked();
   await firstGroup.uncheck();
@@ -147,8 +203,106 @@ test('duplicate results render and selection persists across pages', async ({ pa
     mode: 'all_eligible',
     excluded_group_ids: ['group-0', 'group-27'],
   });
-  expect(planRequest.groups).toEqual([]);
+  expect(planRequest.groups).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      id: 'group-0',
+      enabled: false,
+      keep_video_id: 'remove-0',
+    }),
+  ]));
   await expect(page.getByText('Across all pages', { exact: true })).toBeVisible();
+});
+
+test('stale library warning creates a safe partial plan and refreshes changed folders live', async ({ page }) => {
+  const staleScan = {
+    ...scan,
+    id: 'duplicate-scan-partial-refresh',
+    duplicate_group_count: 2,
+    default_action_counts: {keep: 2, cleanup: 2, rename: 0},
+    freshness: {status: 'changed', added: 1, removed: 0, changed: 0},
+  };
+  const pageGroups = groups.slice(0, 2).map((group, index) => ({
+    ...group,
+    review_key: `review-${index}`,
+    folder_fingerprint: `fingerprint-${index}`,
+    review_state: {saved: false, requires_review: false, status: 'default', reason: ''},
+  }));
+  let refreshRequests = 0;
+  let planBuilt = false;
+  await page.route('**/api/maintenance/duplicates/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({scan: staleScan}),
+  }));
+  await page.route('**/api/maintenance/duplicates/apply/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({apply: null}),
+  }));
+  await page.route('**/api/maintenance/duplicates/groups?*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      scan: staleScan, offset: 0, limit: 10, total: 2, count: 2,
+      has_previous: false, has_next: false, next_offset: null, previous_offset: null,
+      large_result: false, review: 'all', groups: pageGroups,
+    }),
+  }));
+  await page.route('**/api/maintenance/duplicates/plan', route => {
+    planBuilt = true;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({plan: {
+      id: 'partial-plan', scan_id: staleScan.id, action: 'move', status: 'ready',
+      move_root: '/library/.vid2gif-duplicates', selection_mode: 'all_eligible',
+      selected_group_count: 2, ready_group_count: 1, changed_group_count: 1,
+      total_group_count: 2, file_count: 1, total_size_label: '1000 B',
+      skipped_groups: [pageGroups[1].id], manual_review: [], files: [],
+      refresh_run_id: 'changed-folder-refresh',
+      changed_groups: [{
+        group_id: pageGroups[1].id,
+        label: pageGroups[1].normalized_name,
+        reason: 'Files in this folder changed after the duplicate scan',
+        added: ['clearlogo.png'], removed: [], modified: [], refresh_required: true,
+      }],
+      }}),
+    });
+  });
+  await page.route('**/api/maintenance/duplicates/refresh/status*', route => {
+    if (!planBuilt) {
+      return route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({error: 'Refresh run not found'}),
+      });
+    }
+    refreshRequests += 1;
+    const complete = refreshRequests >= 3;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({refresh: {
+        id: 'changed-folder-refresh', scan_id: staleScan.id,
+        status: complete ? 'success' : 'running',
+        progress_percent: complete ? 100 : 50,
+        progress_label: complete ? 'Changed folders refreshed' : 'Refreshing folder 1 of 1',
+        folder_count: 1, processed_folder_count: complete ? 1 : 0,
+        refreshed_group_count: complete ? 1 : 0, removed_group_count: 0,
+        result: complete ? {scan: staleScan, refreshed_group_ids: [pageGroups[1].id], removed_group_ids: []} : null,
+      }}),
+    });
+  });
+
+  await page.goto('/maintenance#duplicates');
+  await expect(page.locator('#maintenanceMessageTitle')).toContainText('Library files changed');
+  await expect(page.locator('#maintenancePlanButton')).toBeEnabled();
+  await page.locator('#maintenancePlanButton').click();
+
+  await expect(page.locator('#maintenancePlanSummary')).toContainText('Ready now');
+  await expect(page.locator('#maintenancePlanSummary')).toContainText('1 selected group excluded');
+  await expect(page.locator('#maintenancePlanSummary')).toContainText('Added: clearlogo.png');
+  await expect(page.locator(`[data-maint-group-card="${pageGroups[1].id}"]`)).toHaveClass(/duplicate-group-review-required/);
+  await expect(page.locator('#maintenanceApplyButton')).toBeEnabled();
+  await expect(page.locator('#maintenanceRefreshStatus')).toBeVisible();
+  await expect.poll(() => refreshRequests, {timeout: 5000}).toBeGreaterThanOrEqual(3);
+  await expect(page.locator('#maintenanceRefreshBadge')).toHaveText('success');
 });
 
 test('active duplicate quarantine resumes live progress polling', async ({ page }) => {

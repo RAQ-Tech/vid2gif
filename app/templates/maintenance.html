@@ -1134,6 +1134,12 @@
             <button id="duplicateTogglePageButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>
               <i class="bi bi-arrows-expand" aria-hidden="true"></i><span>Expand page</span>
             </button>
+            <button id="duplicateResetReviewButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>
+              <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span>Reset saved review</span>
+            </button>
+            <span id="duplicateReviewSaveState" class="settings-save-state text-muted">
+              <i class="bi bi-cloud-check" aria-hidden="true"></i><span>Review choices save to application state</span>
+            </span>
           </div>
           <div class="toolbar-row mt-2">
             <label class="form-label mb-0 compact-control" for="duplicateReviewFilter">
@@ -1166,6 +1172,24 @@
         </div>
 
         <div id="maintenancePlanSummary" class="maintenance-plan-summary mt-3" tabindex="-1" aria-live="polite"></div>
+
+        <div id="maintenanceRefreshStatus" class="generation-status mt-3 d-none" aria-live="polite">
+          <div class="generation-status-heading">
+            <div>
+              <div class="fw-semibold">Refreshing changed duplicate folders</div>
+              <div id="maintenanceRefreshProgressLabel" class="small text-muted">Waiting to start</div>
+            </div>
+            <span id="maintenanceRefreshBadge" class="badge text-bg-secondary">Idle</span>
+          </div>
+          <div class="progress mt-3" role="progressbar" aria-label="Changed duplicate folder refresh progress" aria-valuemin="0" aria-valuemax="100">
+            <div id="maintenanceRefreshProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+          <div class="generation-status-meta mt-2">
+            <span id="maintenanceRefreshCounts">0 of 0 folders</span>
+            <span id="maintenanceRefreshProgressPercent">0%</span>
+          </div>
+          <div id="maintenanceRefreshResults" class="generation-results mt-3"></div>
+        </div>
 
         <div id="maintenanceGroups" class="maintenance-groups mt-3">
           <div class="text-muted text-center py-4">Duplicate groups will appear here after a scan.</div>

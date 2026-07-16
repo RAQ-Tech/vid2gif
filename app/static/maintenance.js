@@ -26,6 +26,12 @@
   let duplicateReviewFilter = 'all';
   let pollTimer = null;
   let applyPollTimer = null;
+  let duplicateRefreshPollTimer = null;
+  let currentDuplicateRefresh = null;
+  let duplicateReviewDraftScanId = '';
+  let duplicateReviewSaveTimer = null;
+  let duplicateReviewSavePromise = null;
+  const duplicateReviewDraftByGroup = new Map();
   const DUPLICATE_SELECTION_STORAGE_KEY = 'vid2gif_duplicate_cleanup_selection_v1';
   const DUPLICATE_PAGE_SIZE_STORAGE_KEY = 'vid2gif_duplicate_page_size';
   let duplicateSelection = {
@@ -805,6 +811,148 @@
     };
   }
 
+  function setDuplicateReviewSaveState(label, state = 'saved') {
+    const target = byId('duplicateReviewSaveState');
+    if (!target) return;
+    const icon = state === 'saving' ? 'bi-cloud-arrow-up' : (state === 'error' ? 'bi-exclamation-triangle' : 'bi-cloud-check');
+    target.className = `settings-save-state ${state === 'error' ? 'text-danger' : 'text-muted'}`;
+    target.innerHTML = `<i class="bi ${icon}" aria-hidden="true"></i><span>${escapeHtml(label)}</span>`;
+  }
+
+  function applyDuplicateReviewDraft(reviewDraft, {preserveState = false} = {}) {
+    if (!reviewDraft || reviewDraft.scan_id !== currentScan?.id) return;
+    duplicateReviewDraftByGroup.clear();
+    Object.entries(reviewDraft.groups || {}).forEach(([groupId, value]) => {
+      duplicateReviewDraftByGroup.set(groupId, value || {});
+    });
+    const selection = reviewDraft.selection || {};
+    duplicateSelection.mode = selection.mode === 'explicit' ? 'explicit' : 'all_eligible';
+    duplicateSelection.excluded = new Set(selection.excluded_group_ids || []);
+    duplicateSelection.selected = new Set(selection.group_ids || []);
+    if (preserveState) {
+      groupState.forEach((state, groupId) => {
+        const saved = duplicateReviewDraftByGroup.get(groupId) || {};
+        state.enabled = duplicateGroupIsSelected(groupId);
+        state.reviewRequired = Boolean(saved.requires_review);
+        state.reviewReason = saved.reason || '';
+        state.acceptCurrentPending = false;
+      });
+    } else {
+      groupState.clear();
+    }
+    saveDuplicateSelection();
+    const reset = byId('duplicateResetReviewButton');
+    if (reset) reset.disabled = !reviewDraft.saved;
+    setDuplicateReviewSaveState(
+      reviewDraft.saved
+        ? `${reviewDraft.saved_group_count || 0} group review${reviewDraft.saved_group_count === 1 ? '' : 's'} saved`
+        : 'Review choices save to application state'
+    );
+    updateDuplicateControls();
+  }
+
+  async function hydrateDuplicateReviewDraft(scanId, {reload = false} = {}) {
+    if (!scanId || currentScan?.id !== scanId) return;
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/review-draft?scan_id=${encodeURIComponent(scanId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Saved review unavailable');
+      if (currentScan?.id !== scanId) return;
+      duplicateReviewDraftScanId = scanId;
+      applyDuplicateReviewDraft(data.review_draft);
+      if (reload && currentGroupsPage) await loadGroupsPage(groupPageOffset);
+      else renderGroups();
+    } catch (error) {
+      setDuplicateReviewSaveState(error.message || 'Saved review unavailable', 'error');
+    }
+  }
+
+  function duplicateDraftGroupPayload(groupId, state) {
+    const group = groupSummaries.get(groupId);
+    if (!group || !state) return null;
+    const hasDetails = Boolean((group.videos || []).length);
+    const candidates = hasDetails ? groupCandidateFiles(group, state) : [];
+    const payload = {
+      id: groupId,
+      review_key: group.review_key || '',
+      enabled: Boolean(state.enabled),
+      keep_video_id: state.keepId || group.recommended_keep_id || '',
+      accept_current: Boolean(state.acceptCurrentPending)
+    };
+    if (hasDetails) {
+      payload.include_file_ids = candidates.filter(file => state.includedFileIds.has(file.id)).map(file => file.id);
+      payload.known_file_ids = candidates.map(file => file.id);
+      payload.file_operations = candidates
+        .map(file => ({file_id: file.id, operation: state.fileOperations?.get(file.id) || 'default'}))
+        .filter(item => item.operation !== 'default');
+    }
+    return payload;
+  }
+
+  async function flushDuplicateReviewDraft() {
+    if (duplicateReviewSaveTimer) {
+      clearTimeout(duplicateReviewSaveTimer);
+      duplicateReviewSaveTimer = null;
+    }
+    if (!currentScan?.id || currentScan.status !== 'success') return null;
+    if (duplicateReviewSavePromise) await duplicateReviewSavePromise;
+    const groups = [];
+    groupState.forEach((state, groupId) => {
+      if (!state.dirty && !state.acceptCurrentPending) return;
+      const payload = duplicateDraftGroupPayload(groupId, state);
+      if (payload) groups.push(payload);
+    });
+    setDuplicateReviewSaveState('Saving review choices…', 'saving');
+    duplicateReviewSavePromise = (async () => {
+      const res = await fetch('/api/maintenance/duplicates/review-draft', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          scan_id: currentScan.id,
+          selection: duplicateSelectionPayload(),
+          groups
+        })
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Review choices could not be saved');
+      applyDuplicateReviewDraft(data.review_draft, {preserveState: true});
+      groups.forEach(item => {
+        const state = groupState.get(item.id);
+        if (state) state.acceptCurrentPending = false;
+      });
+      return data.review_draft;
+    })();
+    try {
+      return await duplicateReviewSavePromise;
+    } catch (error) {
+      setDuplicateReviewSaveState(error.message || 'Review choices could not be saved', 'error');
+      return null;
+    } finally {
+      duplicateReviewSavePromise = null;
+    }
+  }
+
+  function scheduleDuplicateReviewDraftSave() {
+    clearTimeout(duplicateReviewSaveTimer);
+    duplicateReviewSaveTimer = setTimeout(() => flushDuplicateReviewDraft(), 350);
+  }
+
+  async function resetDuplicateReviewDraft() {
+    if (!currentScan?.id) return;
+    if (!window.confirm('Reset every saved duplicate selection and file choice for this scan source?')) return;
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/review-draft?scan_id=${encodeURIComponent(currentScan.id)}`, {method: 'DELETE'});
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Saved review could not be reset');
+      applyDuplicateReviewDraft(data.review_draft);
+      currentGroupsPage = null;
+      await loadGroupsPage(0);
+      setMessage('Saved duplicate review reset', 'Current scan recommendations are selected again.');
+    } catch (error) {
+      setMessage('Saved review could not be reset', error.message || '');
+    }
+  }
+
   function ensureDuplicateSelection(scanId, total) {
     if (duplicateSelection.scanId !== scanId) {
       duplicateSelection = duplicateSelectionFromStorage(scanId, total);
@@ -812,6 +960,8 @@
       groupSummaries.clear();
       currentGroupsPage = null;
       groupPageOffset = 0;
+      duplicateReviewDraftByGroup.clear();
+      duplicateReviewDraftScanId = '';
       invalidatePlan();
     } else {
       duplicateSelection.total = Number(total || duplicateSelection.total || 0);
@@ -876,13 +1026,17 @@
 
   function updateDuplicateControls() {
     const selected = duplicateSelectedCount();
-    const stale = currentScan?.freshness?.status === 'changed';
     const applyActive = ['queued', 'running'].includes(currentApply?.status || '');
     const planButton = byId('maintenancePlanButton');
     if (planButton) {
-      planButton.disabled = !currentScan || currentScan.status !== 'success' || !selected || stale || applyActive;
+      planButton.disabled = !currentScan || currentScan.status !== 'success' || !selected || applyActive;
       const label = planButton.querySelector('span');
       if (label) label.textContent = currentPlan ? 'Refresh plan preview' : 'Preview cleanup plan';
+    }
+    const resetReview = byId('duplicateResetReviewButton');
+    if (resetReview) {
+      resetReview.disabled = !currentScan || currentScan.status !== 'success' ||
+        !(Number(currentScan.saved_review_group_count || 0) || duplicateReviewDraftByGroup.size);
     }
     const master = byId('duplicateSelectAllCheckbox');
     if (master) {
@@ -907,6 +1061,7 @@
   function duplicateSelectionChanged() {
     invalidatePlan();
     saveDuplicateSelection();
+    scheduleDuplicateReviewDraftSave();
     updateDuplicateControls();
     updateSelectedSize();
   }
@@ -927,13 +1082,24 @@
       };
     }
     if (!groupState.has(group.id)) {
+      const draft = duplicateReviewDraftByGroup.get(group.id) || group.review_state || {};
+      const planChange = (currentPlan?.changed_groups || []).find(item => item.group_id === group.id) || {};
+      const savedOperations = new Map(
+        (draft.file_operations || []).map(item => [item.file_id, item.operation])
+      );
       groupState.set(group.id, {
         enabled: duplicateGroupIsSelected(group.id),
-        keepId: group.recommended_keep_id,
-        includedFileIds: new Set(),
-        fileOperations: new Map(),
+        keepId: draft.keep_video_id || group.recommended_keep_id,
+        includedFileIds: new Set(draft.include_file_ids || []),
+        fileOperations: savedOperations,
+        draftKnownFileIds: new Set(draft.known_file_ids || []),
+        draftIncludedFileIds: new Set(draft.include_file_ids || []),
+        draftRestored: Boolean(draft.saved),
+        reviewRequired: Boolean(draft.requires_review || planChange.group_id),
+        reviewReason: draft.reason || planChange.reason || '',
+        acceptCurrentPending: false,
         candidateSignature: '',
-        dirty: false,
+        dirty: Boolean(draft.saved),
         expanded: false,
         loading: false,
         projectionPending: false,
@@ -955,8 +1121,23 @@
     const signature = candidates.map(file => file.id).join('|');
     if (state.candidateSignature !== signature) {
       state.candidateSignature = signature;
-      state.includedFileIds = new Set(candidates.filter(defaultSelected).map(file => file.id));
-      state.fileOperations = new Map();
+      if (state.draftRestored) {
+        state.includedFileIds = new Set(
+          candidates
+            .filter(file => state.draftKnownFileIds.has(file.id)
+              ? state.draftIncludedFileIds.has(file.id)
+              : defaultSelected(file))
+            .map(file => file.id)
+        );
+        state.fileOperations = new Map(
+          Array.from(state.fileOperations.entries()).filter(([fileId]) =>
+            candidates.some(file => file.id === fileId)
+          )
+        );
+      } else {
+        state.includedFileIds = new Set(candidates.filter(defaultSelected).map(file => file.id));
+        state.fileOperations = new Map();
+      }
     }
     return state;
   }
@@ -1034,7 +1215,7 @@
       `<span class="duplicate-review-stat duplicate-review-keep"><strong>${escapeHtml(totals.keep)}</strong><small>Keep</small></span>` +
       `<span class="duplicate-review-stat duplicate-review-cleanup"><strong>${escapeHtml(totals.cleanup)}</strong><small>${escapeHtml(cleanupLabel)}</small></span>` +
       `<span class="duplicate-review-stat duplicate-review-rename"><strong>${escapeHtml(totals.rename)}</strong><small>Rename sidecars</small></span>` +
-      `<span class="duplicate-review-stat duplicate-review-attention"><strong>${escapeHtml(currentScan.review_group_count || 0)}</strong><small>Groups flagged</small></span>` +
+      `<span class="duplicate-review-stat duplicate-review-attention"><strong>${escapeHtml(currentScan.attention_group_count == null ? Number(currentScan.review_group_count || 0) + Number(currentScan.review_required_count || 0) : Number(currentScan.attention_group_count || 0))}</strong><small>Groups flagged</small></span>` +
       `<span class="duplicate-review-stat duplicate-review-protected" title="Same-title videos with different release evidence or runtimes are never added to cleanup"><strong>${escapeHtml(currentScan.protected_distinct_set_count || 0)}</strong><small>Distinct sets protected</small></span>` +
       `</div><div class="small text-muted mt-2">These are the current choices. You only need to expand groups that are flagged or that you want to override.</div>`;
   }
@@ -1071,6 +1252,7 @@
     const state = groupState.get(groupId);
     if (state) state.dirty = true;
     invalidatePlan();
+    scheduleDuplicateReviewDraftSave();
     updateSelectedSize();
   }
 
@@ -1300,6 +1482,7 @@
       if (groupDetailGenerations.get(groupId) !== generation) return;
       const latest = groupState.get(groupId);
       if (latest) latest.loading = false;
+      if (latest?.dirty) scheduleDuplicateReviewDraftSave();
       renderGroups();
       updateSelectedSize();
     }
@@ -1322,6 +1505,7 @@
       (data.groups || []).forEach(group => {
         const existing = groupSummaries.get(group.id) || {};
         groupSummaries.set(group.id, {...existing, ...group});
+        if (group.review_state?.saved) duplicateReviewDraftByGroup.set(group.id, group.review_state);
         duplicateSelection.reclaimableById.set(group.id, Number(group.reclaimable_bytes || 0));
         duplicateSelection.actionCountsById.set(group.id, normalizedActionCounts(group.default_action_counts));
       });
@@ -1353,10 +1537,13 @@
       `</div>`;
   }
 
-  function renderGroupReviewFlags(group) {
+  function renderGroupReviewFlags(group, state) {
     const flags = group.review_flags || [];
-    if (!flags.length) return '<span class="badge text-bg-success">No quick-review flags</span>';
-    return flags.map(flag =>
+    const reviewRequired = state?.reviewRequired
+      ? `<span class="badge text-bg-danger" title="This folder changed after it was reviewed">Review required · ${escapeHtml(state.reviewReason || 'Folder changed')}</span>`
+      : '';
+    if (!flags.length) return reviewRequired || '<span class="badge text-bg-success">No quick-review flags</span>';
+    return reviewRequired + flags.map(flag =>
       `<span class="badge text-bg-warning" title="Review this group before applying">${escapeHtml(flag.label || 'Review recommended')}</span>`
     ).join('');
   }
@@ -1383,6 +1570,10 @@
     const keeperOptions = (group.keeper_options || group.videos || []);
     const selectedKeeper = keeper || keeperOptions.find(video => video.id === state.keepId) || {};
     const recommended = selectedKeeper.name || group.recommended_keep_name || '';
+    const reviewRequiredMessage = state.reviewRequired
+      ? `<div class="duplicate-review-required-message"><span><strong>Review required.</strong> ${escapeHtml(state.reviewReason || 'Files in this folder changed.')}</span>` +
+        `<button class="btn btn-danger btn-sm" type="button" data-maint-accept-review="${escapeHtml(group.id)}">Accept current folder</button></div>`
+      : '';
     const detail = expanded
       ? (loading
         ? '<div class="text-muted small mt-3">Loading group details...</div>'
@@ -1402,7 +1593,7 @@
             `</div></div>`
           : '<div class="text-muted small mt-3">Open this group to load file details.</div>'))
       : '';
-    return `<section class="maintenance-group" data-maint-group-card="${escapeHtml(group.id)}">` +
+    return `<section class="maintenance-group${state.reviewRequired ? ' duplicate-group-review-required' : ''}" data-maint-group-card="${escapeHtml(group.id)}">` +
       `<div class="maintenance-group-heading">` +
       `<div class="form-check">` +
       `<input class="form-check-input" type="checkbox" data-maint-group-enabled="${escapeHtml(group.id)}" id="enabled-${escapeHtml(group.id)}"${state.enabled ? ' checked' : ''}>` +
@@ -1428,7 +1619,8 @@
       `</select><code class="duplicate-keeper-name" title="${escapeHtml(recommended)}">${escapeHtml(recommended)}</code>` +
       `<span class="small text-muted">${escapeHtml(state.keepId === group.recommended_keep_id ? (group.recommended_keep_reason || 'Automatic recommendation') : 'Manual keeper selection')}</span></label>` +
       `${renderGroupReviewStats(group, state)}` +
-      `<div class="duplicate-review-flags">${renderGroupSubtitleSignals(group)}${renderGroupReviewFlags(group)}</div>` +
+      `<div class="duplicate-review-flags">${renderGroupSubtitleSignals(group)}${renderGroupReviewFlags(group, state)}</div>` +
+      `${reviewRequiredMessage}` +
       `${detail}` +
       `</section>`;
   }
@@ -1486,6 +1678,34 @@
     state.dirty = true;
     markGroupDirty(groupId);
     renderGroups();
+  }
+
+  async function acceptCurrentDuplicateFolder(groupId) {
+    const state = groupState.get(groupId);
+    if (!state) return;
+    setDuplicateReviewSaveState('Accepting current folder…', 'saving');
+    try {
+      if (duplicateReviewSavePromise) await duplicateReviewSavePromise;
+      const groupPayload = duplicateDraftGroupPayload(groupId, state) || {id: groupId};
+      groupPayload.accept_current = true;
+      const res = await fetch('/api/maintenance/duplicates/review-draft', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          scan_id: currentScan.id,
+          selection: duplicateSelectionPayload(),
+          groups: [groupPayload]
+        })
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Current folder could not be accepted');
+      applyDuplicateReviewDraft(data.review_draft, {preserveState: true});
+      invalidatePlan();
+      renderGroups();
+      updateDuplicateControls();
+    } catch (error) {
+      setDuplicateReviewSaveState(error.message || 'Current folder could not be accepted', 'error');
+    }
   }
 
   function setGroupSidecarActions(groupId, action) {
@@ -1664,7 +1884,13 @@
       if (scan.duplicate_group_count && currentGroupsPage?.scan?.id !== scan.id) {
         loadGroupsPage(0);
       }
-      if (stale) setMessage('Duplicate results are out of date', 'Library files changed after this scan. Rescan before creating a cleanup plan.');
+      if (duplicateReviewDraftScanId !== scan.id) hydrateDuplicateReviewDraft(scan.id, {reload: false});
+      if (stale) {
+        setMessage(
+          'Library files changed after this scan',
+          'Selected duplicate folders will be rechecked before cleanup. Unchanged groups can still proceed; changed folders will refresh automatically.'
+        );
+      }
     } else if (scan.status === 'failed') {
       setMessage('Scan failed', scan.error || '');
     } else if (scan.status === 'cancelled') {
@@ -1805,11 +2031,30 @@
     if (!summary) return;
     const action = plan.action === 'delete' ? 'Delete' : 'Move';
     const unchangedCount = (plan.manual_review || []).length + (plan.skipped_groups || []).length;
+    const readyCount = plan.ready_group_count == null ? Number(plan.selected_group_count || 0) : Number(plan.ready_group_count || 0);
+    const changedGroups = plan.changed_groups || [];
+    const refreshingChangedGroups = changedGroups.filter(group => group.refresh_required).length;
+    const changedDetail = changedGroups.length
+      ? `<div class="alert alert-warning mt-3 mb-0"><strong>${escapeHtml(changedGroups.length)} selected group${changedGroups.length === 1 ? '' : 's'} excluded for re-review.</strong>` +
+        `<div class="small mt-1">The safe plan below remains usable. ${refreshingChangedGroups ? `${refreshingChangedGroups} changed folder${refreshingChangedGroups === 1 ? ' is' : 's are'} refreshing automatically.` : 'Accept the current folder state after reviewing the highlighted groups.'}</div>` +
+        `<div class="duplicate-changed-files">${changedGroups.map(group => {
+          const names = [
+            ...(group.added || []).map(name => `Added: ${name}`),
+            ...(group.removed || []).map(name => `Removed: ${name}`),
+            ...(group.modified || []).map(name => `Modified: ${name}`)
+          ];
+          return `<div><strong>${escapeHtml(group.label || 'Duplicate group')}</strong> · ${escapeHtml(group.reason || 'Review required')}` +
+            `${names.length ? `<div><code>${names.map(escapeHtml).join(' · ')}</code></div>` : ''}</div>`;
+        }).join('')}</div></div>`
+      : '';
     summary.innerHTML = renderChangePreview({
       title: 'Cleanup Plan',
       files: plan.files || [],
       metrics: [
-        {label: 'Selection', value: plan.selection_mode === 'all_eligible' ? 'Across all pages' : 'Individual groups', detail: `${plan.selected_group_count || 0} of ${plan.total_group_count || 0} groups`},
+        {label: 'Selection', value: plan.selection_mode === 'all_eligible' ? 'Across all pages' : 'Individual groups'},
+        {label: 'Selected', value: plan.selected_group_count || 0, detail: `${plan.total_group_count || 0} total groups`},
+        {label: 'Ready now', value: readyCount, detail: `${plan.changed_group_count || 0} changed and excluded`},
+        {label: 'Unselected', value: Math.max(0, Number(plan.total_group_count || 0) - Number(plan.selected_group_count || 0))},
         {label: 'Files affected', value: plan.file_count || 0},
         {label: 'Disk data', value: plan.total_size_label || '0 B'},
         {label: 'Operations', value: operationSummary(plan.files)},
@@ -1826,9 +2071,90 @@
         target: file.destination_path || '',
         detail: `${file.kind || 'file'}${file.size_label ? `, ${file.size_label}` : ''}`
       })
-    });
+    }) + changedDetail;
     const selected = byId('maintenanceSelectedSize');
     if (selected) selected.textContent = plan.total_size_label || '0 B';
+  }
+
+  function stopDuplicateRefreshPolling() {
+    if (duplicateRefreshPollTimer) {
+      clearInterval(duplicateRefreshPollTimer);
+      duplicateRefreshPollTimer = null;
+    }
+  }
+
+  function renderDuplicateRefreshStatus(refresh) {
+    const panel = byId('maintenanceRefreshStatus');
+    if (!panel) return;
+    if (!refresh) {
+      panel.classList.add('d-none');
+      return;
+    }
+    panel.classList.remove('d-none');
+    const badge = byId('maintenanceRefreshBadge');
+    if (badge) {
+      badge.className = `badge ${duplicateApplyBadgeClass(refresh.status)}`;
+      badge.textContent = refresh.status || 'Idle';
+    }
+    const label = byId('maintenanceRefreshProgressLabel');
+    const counts = byId('maintenanceRefreshCounts');
+    const percent = byId('maintenanceRefreshProgressPercent');
+    const results = byId('maintenanceRefreshResults');
+    if (label) label.textContent = refresh.progress_label || 'Refreshing changed folders';
+    if (counts) counts.textContent = `${refresh.processed_folder_count || 0} of ${refresh.folder_count || 0} folders`;
+    if (percent) percent.textContent = window.vid2gifProgress.valueLabel(refresh);
+    window.vid2gifProgress.apply(byId('maintenanceRefreshProgressBar'), refresh);
+    if (results) {
+      results.textContent = refresh.status === 'success'
+        ? `${refresh.refreshed_group_count || 0} current groups refreshed; ${refresh.removed_group_count || 0} stale groups removed.`
+        : (refresh.status === 'failed'
+          ? (refresh.error || 'Changed-folder refresh failed')
+          : 'Only folders excluded from the cleanup plan are being re-analyzed.');
+    }
+  }
+
+  async function handleDuplicateRefresh(refresh) {
+    currentDuplicateRefresh = refresh;
+    renderDuplicateRefreshStatus(refresh);
+    if (!refresh || ['queued', 'running'].includes(refresh.status || '')) return;
+    stopDuplicateRefreshPolling();
+    if (refresh.status === 'success' && refresh.result?.scan) {
+      currentScan = refresh.result.scan;
+      duplicateSelection.total = Number(currentScan.duplicate_group_count || 0);
+      duplicateReviewDraftScanId = '';
+      currentGroupsPage = null;
+      groupSummaries.clear();
+      groupState.clear();
+      setProgress(currentScan);
+      await hydrateDuplicateReviewDraft(currentScan.id, {reload: false});
+      await loadGroupsPage(0);
+      setMessage(
+        'Changed duplicate folders refreshed',
+        `${refresh.refreshed_group_count || 0} current groups are ready for re-review. The existing safe cleanup plan is unchanged.`
+      );
+    } else if (refresh.status === 'failed') {
+      setMessage('Changed-folder refresh failed', `${refresh.error || ''} The safe cleanup plan remains usable.`);
+    }
+  }
+
+  async function pollDuplicateRefresh(refreshId) {
+    if (!refreshId) return;
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/refresh/status?refresh_id=${encodeURIComponent(refreshId)}`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Changed-folder refresh status unavailable');
+      await handleDuplicateRefresh(data.refresh);
+    } catch (error) {
+      stopDuplicateRefreshPolling();
+      setMessage('Changed-folder refresh status unavailable', error.message || 'The safe cleanup plan remains usable.');
+    }
+  }
+
+  function startDuplicateRefreshPolling(refreshId) {
+    if (!refreshId) return;
+    stopDuplicateRefreshPolling();
+    pollDuplicateRefresh(refreshId);
+    duplicateRefreshPollTimer = setInterval(() => pollDuplicateRefresh(refreshId), 1000);
   }
 
   async function reviewPlan() {
@@ -1839,6 +2165,7 @@
     const action = byId('maintenanceAction')?.value || 'move';
     setMessage('Building cleanup plan', '');
     try {
+      await flushDuplicateReviewDraft();
       const res = await fetch('/api/maintenance/duplicates/plan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1855,16 +2182,25 @@
         return;
       }
       currentPlan = data.plan;
+      (currentPlan.changed_groups || []).forEach(changed => {
+        const state = groupState.get(changed.group_id);
+        if (state) {
+          state.reviewRequired = true;
+          state.reviewReason = changed.reason || 'Files in this folder changed.';
+        }
+      });
       renderPlan(currentPlan);
+      renderGroups();
       const summary = byId('maintenancePlanSummary');
       summary?.classList.add('maintenance-plan-ready');
       summary?.scrollIntoView({behavior: 'smooth', block: 'start'});
       summary?.focus({preventScroll: true});
       updateDuplicateControls();
       byId('maintenanceApplyButton').disabled = !currentPlan.file_count;
+      if (currentPlan.refresh_run_id) startDuplicateRefreshPolling(currentPlan.refresh_run_id);
       setMessage(
         'Cleanup plan preview is ready below',
-        `${currentPlan.selected_group_count || 0} groups selected across the scan results. ` + (Number(currentPlan.file_count || 0) >= 100
+        `${currentPlan.ready_group_count == null ? currentPlan.selected_group_count || 0 : currentPlan.ready_group_count || 0} of ${currentPlan.selected_group_count || 0} selected groups are ready; ${currentPlan.changed_group_count || 0} changed groups were excluded. ` + (Number(currentPlan.file_count || 0) >= 100
           ? `${currentPlan.file_count} files selected. This can take a while and will continue in the background.`
           : (currentPlan.total_size_label || ''))
       );
@@ -1909,7 +2245,7 @@
     if (results) {
       const result = apply.result || {};
       results.textContent = apply.status === 'success'
-        ? `${result.applied_count || apply.applied_count || 0} applied, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
+        ? `${result.applied_count || apply.applied_count || 0} applied, ${result.skipped_changed_group_count || apply.skipped_changed_group_count || 0} changed groups skipped, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
         : (apply.status === 'failed' ? (apply.error || 'Cleanup failed') : 'Progress updates automatically while cleanup runs.');
     }
   }
@@ -1962,7 +2298,7 @@
       const result = apply.result || {};
       setMessage(
         `${result.applied_count || apply.applied_count || 0} files processed`,
-        `${result.total_applied_label || '0 B'} cleaned, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
+        `${result.total_applied_label || '0 B'} cleaned, ${result.skipped_changed_group_count || apply.skipped_changed_group_count || 0} changed groups skipped, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
       );
       refreshMaintenanceLogs();
       currentPlan = null;
@@ -1973,6 +2309,7 @@
       updateDuplicateControls();
       if (button) button.disabled = true;
       if (!reconciled) checkMaintenanceFreshness();
+      if (result.refresh_run_id) startDuplicateRefreshPolling(result.refresh_run_id);
       return;
     }
     if (apply.status === 'failed') {
@@ -2015,15 +2352,32 @@
     }
   }
 
+  async function refreshDuplicateRefreshStatus() {
+    try {
+      const res = await fetch('/api/maintenance/duplicates/refresh/status');
+      if (res.status === 404) return;
+      const data = await readJsonResponse(res);
+      if (!res.ok || !data.refresh) return;
+      await handleDuplicateRefresh(data.refresh);
+      if (['queued', 'running'].includes(data.refresh.status || '')) {
+        startDuplicateRefreshPolling(data.refresh.id);
+      }
+    } catch (_e) {
+      // Latest changed-folder refresh hydration is best effort.
+    }
+  }
+
   async function applyPlan() {
     if (!currentPlan) {
       setMessage('Review a cleanup plan first', '');
       return;
     }
     const counts = operationCounts(currentPlan.files);
+    const readyCount = currentPlan.ready_group_count == null ? Number(currentPlan.selected_group_count || 0) : Number(currentPlan.ready_group_count || 0);
+    const scope = `${readyCount} ready group(s); ${currentPlan.changed_group_count || 0} changed group(s) excluded.\n\n`;
     const confirmation = currentPlan.action === 'delete'
-      ? `Permanently delete ${counts.delete || 0} file(s) and apply ${Number(currentPlan.file_count || 0) - Number(counts.delete || 0)} other change(s), totaling ${currentPlan.total_size_label || '0 B'}?\n\nThis cannot be undone by vid2gif.`
-      : `Apply ${currentPlan.file_count} file change(s), totaling ${currentPlan.total_size_label || '0 B'}?\n\nMoved files will go to:\n${currentPlan.move_root || 'the configured quarantine'}`;
+      ? `${scope}Permanently delete ${counts.delete || 0} file(s) and apply ${Number(currentPlan.file_count || 0) - Number(counts.delete || 0)} other change(s), totaling ${currentPlan.total_size_label || '0 B'}?\n\nThis cannot be undone by vid2gif.`
+      : `${scope}Apply ${currentPlan.file_count} file change(s), totaling ${currentPlan.total_size_label || '0 B'}?\n\nMoved files will go to:\n${currentPlan.move_root || 'the configured quarantine'}`;
     if (!window.confirm(confirmation)) {
       return;
     }
@@ -4916,6 +5270,7 @@
     byId('maintenanceCancelScanButton')?.addEventListener('click', cancelScan);
     byId('maintenancePlanButton')?.addEventListener('click', reviewPlan);
     byId('maintenanceApplyButton')?.addEventListener('click', applyPlan);
+    byId('duplicateResetReviewButton')?.addEventListener('click', resetDuplicateReviewDraft);
     byId('duplicateSelectAllCheckbox')?.addEventListener('change', event => {
       duplicateSelection.mode = event.target.checked ? 'all_eligible' : 'explicit';
       duplicateSelection.excluded.clear();
@@ -5168,6 +5523,11 @@
       const expand = event.target.closest('[data-maint-expand]');
       const defaults = event.target.closest('[data-maint-group-defaults]');
       const sidecars = event.target.closest('[data-maint-group-sidecars]');
+      const acceptReview = event.target.closest('[data-maint-accept-review]');
+      if (acceptReview) {
+        acceptCurrentDuplicateFolder(acceptReview.getAttribute('data-maint-accept-review'));
+        return;
+      }
       if (defaults) {
         resetGroupSuggestedActions(defaults.getAttribute('data-maint-group-defaults'));
         return;
@@ -5487,6 +5847,7 @@
     refreshOverviewStatus();
     refreshDuplicateStatus();
     refreshDuplicateApplyStatus();
+    refreshDuplicateRefreshStatus();
     refreshPreviewStatus();
     refreshGenerationStatus();
     refreshQualityStatus();
@@ -5518,6 +5879,7 @@
       clearTimeout(posterPollTimer);
       clearTimeout(posterSearchTimer);
       clearTimeout(maintenanceFreshnessTimer);
+      stopDuplicateRefreshPolling();
       clearTimeout(embyOperationsTimer);
       if (posterSettingsPending || posterSettingsFailures.size) {
         event.preventDefault();
