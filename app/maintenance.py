@@ -441,6 +441,19 @@ def _file_payload(path, kind, lib_root, parent_video_id=""):
     identity = _stat_identity(path)
     if not identity:
         return None
+    created_at = ""
+    created_at_source = ""
+    try:
+        stat = os.stat(path, follow_symlinks=False)
+        created_ts = getattr(stat, "st_birthtime", None)
+        if created_ts:
+            created_at = utc_iso(created_ts)
+            created_at_source = "filesystem_birth_time"
+        elif os.name == "nt" and stat.st_ctime:
+            created_at = utc_iso(stat.st_ctime)
+            created_at_source = "windows_creation_time"
+    except OSError:
+        pass
     name = os.path.basename(path)
     stem, ext = os.path.splitext(name)
     return {
@@ -453,6 +466,8 @@ def _file_payload(path, kind, lib_root, parent_video_id=""):
         "size_bytes": identity["size"],
         "size_label": format_size(identity["size"]),
         "modified_at": utc_iso(os.path.getmtime(path)),
+        "created_at": created_at,
+        "created_at_source": created_at_source,
         "identity": identity,
         "parent_video_id": parent_video_id,
     }
@@ -528,6 +543,43 @@ def find_accessory_files(video_path, lib_root):
             accessories.append(item)
     accessories.sort(key=lambda item: item["name"].lower())
     return accessories
+
+
+def find_folder_context_files(folder, videos, lib_root):
+    represented_paths = set()
+    for video in videos or []:
+        if video.get("path"):
+            represented_paths.add(os.path.normcase(os.path.realpath(video["path"])))
+        for accessory in video.get("accessories") or []:
+            if accessory.get("path"):
+                represented_paths.add(os.path.normcase(os.path.realpath(accessory["path"])))
+
+    context_files = []
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return context_files
+    for entry in entries:
+        full_path = os.path.join(folder, entry)
+        if os.path.islink(full_path) or not os.path.isfile(full_path):
+            continue
+        if os.path.normcase(os.path.realpath(full_path)) in represented_paths:
+            continue
+        item = _file_payload(full_path, "folder_file", lib_root)
+        if not item:
+            continue
+        item.update(
+            {
+                "role": "marker" if entry.lower() == ".posters_done" else "folder_file",
+                "renameable": False,
+                "default_operation": "keep",
+                "default_selected": False,
+                "default_reason": "Folder-level context is shown but excluded from duplicate cleanup",
+            }
+        )
+        context_files.append(item)
+    context_files.sort(key=lambda item: item["name"].lower())
+    return context_files
 
 
 def _scan_cancel_requested(scan):
@@ -940,15 +992,15 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
     remove_ids = [video["id"] for video in videos[1:]]
     _annotate_group_defaults(videos, recommended, settings, lib_root)
     reclaimable = 0
-    accessory_count = 0
+    accessory_count = sum(len(video.get("accessories") or []) for video in videos)
     for video in videos[1:]:
         reclaimable += video.get("size_bytes") or 0
         for item in video.get("accessories") or []:
-            accessory_count += 1
             if item.get("default_operation") in {"move", "delete"}:
                 reclaimable += item.get("size_bytes") or 0
 
     folder = os.path.dirname(videos[0]["path"])
+    folder_files = find_folder_context_files(folder, videos, lib_root)
     normalized_name = normalize_duplicate_name(os.path.splitext(videos[0]["name"])[0])
     impact_issue_id = "duplicate:" + hashlib.sha256(
         "|".join(sorted(video["id"] for video in videos)).encode("utf-8")
@@ -959,11 +1011,13 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
         "folder": folder,
         "normalized_name": normalized_name,
         "videos": videos,
+        "folder_files": folder_files,
         "recommended_keep_id": recommended["id"],
         "remove_ids": remove_ids,
         "reclaimable_bytes": reclaimable,
         "reclaimable_label": format_size(reclaimable),
         "accessory_count": accessory_count,
+        "folder_file_count": len(folder_files),
         "keeper_rule": settings.get("keeper_rule") or "quality",
     }
 
@@ -1024,6 +1078,8 @@ def _public_file(item):
         "size_bytes": item.get("size_bytes", 0),
         "size_label": item.get("size_label", ""),
         "modified_at": item.get("modified_at", ""),
+        "created_at": item.get("created_at", ""),
+        "created_at_source": item.get("created_at_source", ""),
         "parent_video_id": item.get("parent_video_id", ""),
         "role": item.get("role", ""),
         "suffix": item.get("suffix", ""),
@@ -1057,11 +1113,13 @@ def _public_group(group):
         "folder": group.get("folder", ""),
         "normalized_name": group.get("normalized_name", ""),
         "videos": [_public_file(video) for video in group.get("videos") or []],
+        "folder_files": [_public_file(item) for item in group.get("folder_files") or []],
         "recommended_keep_id": group.get("recommended_keep_id", ""),
         "remove_ids": list(group.get("remove_ids") or []),
         "reclaimable_bytes": group.get("reclaimable_bytes", 0),
         "reclaimable_label": group.get("reclaimable_label", ""),
         "accessory_count": group.get("accessory_count", 0),
+        "folder_file_count": group.get("folder_file_count", 0),
         "default_action_counts": _group_default_action_counts(group),
         "needs_review": bool(review_flags),
         "review_flags": review_flags,
@@ -1101,6 +1159,7 @@ def _public_group_summary(group):
         ],
         "video_count": len(videos),
         "accessory_count": group.get("accessory_count", 0),
+        "folder_file_count": group.get("folder_file_count", 0),
         "reclaimable_bytes": group.get("reclaimable_bytes", 0),
         "reclaimable_label": group.get("reclaimable_label", ""),
         "default_action_counts": _group_default_action_counts(group),

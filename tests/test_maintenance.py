@@ -174,6 +174,74 @@ def test_duplicate_scan_groups_four_copy_suffixes_together(monkeypatch, tmp_path
     assert keeper["name"] == "Movie [WEBDL-2160p].mp4"
 
 
+def test_duplicate_group_shows_all_folder_files_as_locked_context(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    keep = _write(movie / "Movie.2160p.mkv", b"4k")
+    remove = _write(movie / "Movie.1080p.mkv", b"hd")
+    matching_sidecar = _write(movie / "Movie.2160p.eng.srt", b"subtitle")
+    clearlogo = _write(movie / "clearlogo.png", b"logo")
+    marker = _write(movie / ".posters_done", b"")
+    other_video = _write(movie / "Another Title.mkv", b"other")
+
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            keep.name: {"width": 3840, "height": 2160, "duration_seconds": 1200},
+            remove.name: {"width": 1920, "height": 1080, "duration_seconds": 1200},
+            other_video.name: {"width": 1280, "height": 720, "duration_seconds": 600},
+        },
+    )
+    group = scan["groups"][0]
+    payload, err = maintenance.group_payload(scan["id"], group["id"])
+
+    assert err is None
+    public_group = payload["group"]
+    assert public_group["accessory_count"] == 1
+    assert public_group["folder_file_count"] == 3
+    assert {item["name"] for item in public_group["folder_files"]} == {
+        ".posters_done",
+        "Another Title.mkv",
+        "clearlogo.png",
+    }
+    assert all(item["default_operation"] == "keep" for item in public_group["folder_files"])
+    assert all(item["default_selected"] is False for item in public_group["folder_files"])
+    assert next(item for item in public_group["folder_files"] if item["name"] == ".posters_done")["role"] == "marker"
+    assert matching_sidecar.name in {
+        item["name"]
+        for video in public_group["videos"]
+        for item in video["accessories"]
+    }
+    assert all("created_at" in item and "created_at_source" in item for item in public_group["folder_files"])
+
+    plan, plan_err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "explicit", "group_ids": [group["id"]]},
+            "groups": [
+                {
+                    "id": group["id"],
+                    "keep_video_id": maintenance._path_id(str(keep), str(lib)),
+                    "remove_video_ids": [maintenance._path_id(str(remove), str(lib))],
+                    "include_file_ids": [
+                        maintenance._path_id(str(remove), str(lib)),
+                        *[item["id"] for item in public_group["folder_files"]],
+                    ],
+                }
+            ],
+        },
+        lib_root=str(lib),
+    )
+
+    assert plan_err is None
+    assert [item["source_path"] for item in plan["files"]] == [str(remove)]
+    assert str(clearlogo) not in {item["source_path"] for item in plan["files"]}
+    assert str(marker) not in {item["source_path"] for item in plan["files"]}
+
+
 def test_group_projection_reselects_copy_when_keeper_changes(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"

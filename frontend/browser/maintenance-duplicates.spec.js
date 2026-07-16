@@ -413,6 +413,132 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
   ]));
 });
 
+test('side-by-side review stacks duplicate candidates and keeps complete folder context visible', async ({ page }) => {
+  const compareScan = {
+    ...scan,
+    id: 'duplicate-scan-side-by-side',
+    duplicate_group_count: 1,
+    reclaimable_bytes: 3500,
+    reclaimable_label: '3.4 KB',
+    default_action_counts: {keep: 1, cleanup: 2, rename: 0},
+    review_group_count: 1,
+  };
+  const summary = {
+    id: 'group-side-by-side',
+    folder: '/library/Movie',
+    normalized_name: 'Movie',
+    recommended_keep_id: 'video-2160',
+    recommended_keep_name: 'Movie.2160p.Remux.mkv',
+    recommended_keep_reason: 'Best match under the configured keeper rule',
+    keeper_options: [
+      {id: 'video-2160', name: 'Movie.2160p.Remux.mkv', metadata_label: '3840x2160', size_label: '5 KB'},
+      {id: 'video-1080', name: 'Movie.1080p.WEB-DL.mkv', metadata_label: '1920x1080', size_label: '2 KB'},
+      {id: 'video-720', name: 'Movie.720p.WEB-DL.mkv', metadata_label: '1280x720', size_label: '1.5 KB'},
+    ],
+    video_count: 3,
+    accessory_count: 0,
+    folder_file_count: 2,
+    reclaimable_bytes: 3500,
+    reclaimable_label: '3.4 KB',
+    default_action_counts: {keep: 1, cleanup: 2, rename: 0},
+    needs_review: true,
+    review_flags: [{kind: 'multiple_video_candidates', role: 'video', file_count: 3, label: '3 video candidates'}],
+  };
+  const detail = {
+    ...summary,
+    videos: [
+      {
+        id: 'video-2160', kind: 'video', path: '/library/Movie/Movie.2160p.Remux.mkv', name: 'Movie.2160p.Remux.mkv',
+        size_bytes: 5000, size_label: '5 KB', created_at: '2025-01-15T12:00:00Z', modified_at: '2025-01-16T12:00:00Z',
+        metadata: {width: 3840, height: 2160, duration_seconds: 2500, codec: 'hevc', bit_rate: 50000000},
+        metadata_label: '3840x2160 - hevc - 2500s', default_operation: 'keep', default_selected: false, accessories: [],
+      },
+      {
+        id: 'video-1080', kind: 'video', path: '/library/Movie/Movie.1080p.WEB-DL.mkv', name: 'Movie.1080p.WEB-DL.mkv',
+        size_bytes: 2000, size_label: '2 KB', created_at: '2024-06-10T12:00:00Z', modified_at: '2024-06-11T12:00:00Z',
+        metadata: {width: 1920, height: 1080, duration_seconds: 2400, codec: 'h264', bit_rate: 8000000},
+        metadata_label: '1920x1080 - h264 - 2400s', default_operation: 'move', default_selected: true, accessories: [],
+      },
+      {
+        id: 'video-720', kind: 'video', path: '/library/Movie/Movie.720p.WEB-DL.mkv', name: 'Movie.720p.WEB-DL.mkv',
+        size_bytes: 1500, size_label: '1.5 KB', created_at: '2023-03-20T12:00:00Z', modified_at: '2023-03-21T12:00:00Z',
+        metadata: {width: 1280, height: 720, duration_seconds: 2500, codec: 'h264', bit_rate: 5000000},
+        metadata_label: '1280x720 - h264 - 2500s', default_operation: 'move', default_selected: true, accessories: [],
+      },
+    ],
+    folder_files: [
+      {
+        id: 'folder-clearlogo', kind: 'folder_file', role: 'folder_file', path: '/library/Movie/clearlogo.png', name: 'clearlogo.png',
+        size_bytes: 500, size_label: '500 B', created_at: '2022-01-01T12:00:00Z', modified_at: '2025-01-01T12:00:00Z',
+        default_operation: 'keep', default_selected: false, renameable: false,
+      },
+      {
+        id: 'folder-posters-done', kind: 'folder_file', role: 'marker', path: '/library/Movie/.posters_done', name: '.posters_done',
+        size_bytes: 0, size_label: '0 B', created_at: '', modified_at: '2025-01-02T12:00:00Z',
+        default_operation: 'keep', default_selected: false, renameable: false,
+      },
+    ],
+  };
+
+  await page.route('**/api/maintenance/duplicates/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({scan: compareScan}),
+  }));
+  await page.route('**/api/maintenance/duplicates/apply/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({apply: null}),
+  }));
+  await page.route('**/api/maintenance/duplicates/groups?*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      scan: compareScan, offset: 0, limit: 10, total: 1, count: 1,
+      has_previous: false, has_next: false, next_offset: null, previous_offset: null,
+      large_result: false, review: 'all', groups: [summary],
+    }),
+  }));
+  await page.route('**/api/maintenance/duplicates/groups/group-side-by-side?*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({group: detail}),
+  }));
+
+  await page.goto('/maintenance#duplicates');
+  const card = page.locator('[data-maint-group-card="group-side-by-side"]');
+  await expect(card).toContainText('2 other folder files');
+  await card.locator('[data-maint-expand]').click();
+
+  await expect(card.locator('.duplicate-compare-columns > div')).toContainText(['Keeping', 'Moving to quarantine']);
+  const videoPair = card.locator('[data-duplicate-comparison-pair="videos"]');
+  await expect(videoPair.locator('.duplicate-compare-side-keep [data-duplicate-file-row="video-2160"]')).toBeVisible();
+  await expect(videoPair.locator('.duplicate-compare-side-cleanup [data-duplicate-file-row]')).toHaveCount(2);
+  await expect(videoPair.locator('[data-duplicate-file-row="video-1080"] .duplicate-difference-badge')).toContainText([
+    'Lower resolution',
+    'Shorter by 1m 40s',
+    'Smaller by',
+    'Creation date differs',
+  ]);
+  await expect(videoPair.locator('[data-duplicate-file-row="video-1080"] .duplicate-compare-metric.is-different')).toContainText([
+    '1920 x 1080',
+    '40m 00s',
+    '2 KB',
+  ]);
+
+  const centers = await videoPair.evaluate(pair => {
+    const keeper = pair.querySelector('[data-duplicate-file-row="video-2160"]').getBoundingClientRect();
+    const cleanup = pair.querySelector('.duplicate-compare-side-cleanup .duplicate-compare-stack').getBoundingClientRect();
+    return {keeper: keeper.top + keeper.height / 2, cleanup: cleanup.top + cleanup.height / 2};
+  });
+  expect(Math.abs(centers.keeper - centers.cleanup)).toBeLessThan(3);
+
+  const contextPair = card.locator('[data-duplicate-comparison-pair="folder-context"]');
+  await expect(contextPair.locator('.duplicate-compare-side-keep .duplicate-file-name')).toContainText(['clearlogo.png', '.posters_done']);
+  await expect(contextPair.locator('[data-maint-operation]')).toHaveCount(0);
+  await expect(contextPair.locator('.duplicate-action-badge')).toHaveText(['Keep · context only', 'Keep · context only']);
+  await expect(contextPair.locator('.duplicate-compare-side-cleanup')).toContainText('Excluded from duplicate cleanup');
+  await expect(contextPair.locator('[data-duplicate-file-row="folder-clearlogo"] .duplicate-compare-metric').filter({hasText: 'Created'})).not.toContainText('Unavailable');
+  await expect(contextPair.locator('[data-duplicate-file-row="folder-posters-done"] .duplicate-compare-metric').filter({hasText: 'Created'})).toContainText('Unavailable');
+
+  const pairColors = await card.locator('[data-duplicate-comparison-pair]').evaluateAll(pairs => pairs.map(pair => getComputedStyle(pair).backgroundColor));
+  expect(new Set(pairColors).size).toBeGreaterThan(1);
+});
+
 test('subtitle coverage recommendation is visible and a resolved group leaves the current list', async ({ page }) => {
   let applied = false;
   const qualityScan = {
@@ -552,7 +678,7 @@ test('subtitle coverage recommendation is visible and a resolved group leaves th
   await expect(page.locator('[data-duplicate-file-row="srt-2160"] .duplicate-action-badge')).toHaveText('Quarantine');
   await expect(page.locator('[data-duplicate-file-row="srt-2160"]')).toHaveClass(/duplicate-file-match-child/);
   const actionColors = await page.locator('[data-duplicate-file-row]').evaluateAll(rows => rows.map(row =>
-    getComputedStyle(row.cells[0]).borderLeftColor
+    getComputedStyle(row).borderLeftColor
   ));
   expect(actionColors[0]).not.toBe(actionColors[1]);
   expect(actionColors[2]).not.toBe(actionColors[3]);
