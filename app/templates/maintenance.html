@@ -275,6 +275,10 @@
               <i class="bi bi-search" aria-hidden="true"></i>
               <span>Scan</span>
             </button>
+            <button id="posterFullScanButton" class="btn btn-outline-secondary" type="button">
+              <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+              <span>Full Rescan</span>
+            </button>
             <button id="posterCancelScanButton" class="btn btn-outline-danger" type="button" disabled>
               <i class="bi bi-x-circle" aria-hidden="true"></i>
               <span>Cancel</span>
@@ -283,6 +287,14 @@
           <div id="posterBrowserCollapse" class="collapse">
             <div id="posterBrowser" class="media-browser compact-folder-picker mt-3"></div>
           </div>
+          <div class="form-text mt-1">Scan reuses unchanged folders from the last analysis; Full Rescan re-checks everything.</div>
+          <div class="toolbar-row mt-3">
+            <div class="form-check form-switch">
+              <input id="posterAutoApplyEligible" class="form-check-input" type="checkbox">
+              <label class="form-check-label" for="posterAutoApplyEligible">Apply ready updates automatically after Scan</label>
+            </div>
+          </div>
+          <div class="form-text">Only strictly-safe matches apply automatically; anything ambiguous, unsafe, or unreadable still waits for review here. Off by default.</div>
         </div>
 
         <div class="toolbar-row mt-3">

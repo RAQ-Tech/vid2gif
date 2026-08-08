@@ -99,6 +99,7 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
 | `LANDSCAPE_POSTER_AUTO` | `0` | Enable automatic landscape poster maintenance at startup |
 | `LANDSCAPE_POSTER_INTERVAL_SECONDS` | `900` | Incremental landscape poster scan interval when automation is enabled |
 | `LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS` | `86400` | Maximum interval between full landscape poster reconciliation scans |
+| `LANDSCAPE_POSTER_AUTO_APPLY` | `0` | Apply eligible landscape poster updates automatically after a manual Scan on the Library Maintenance page. Off by default; can also be toggled and persists from the UI |
 | `VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT` | `120` | Stop and skip one BIF extraction when FFmpeg writes no new frame for this many seconds |
 | `EMBY_REFRESH_ENABLED` | `0` | Request an Emby library refresh after landscape poster changes |
 | `EMBY_URL` | empty | Emby server base URL, for example `http://emby:8096` |
@@ -143,6 +144,18 @@ and then replaced atomically. If an existing backup differs from the current
 portrait, the item is marked unsafe and left unchanged. Ambiguous, unreadable,
 or mismatched artwork is also left unchanged. Optional automatic runs store
 state under `/state` and do not use `.posters_done` marker files.
+
+Manual poster Scans reuse each folder's previous verdict when its artwork is
+unchanged since the last analysis, so a repeated scan of a large library only
+re-checks new or modified artwork. Use Full Rescan to ignore the cache and
+re-check every folder. When at least one update is ready and auto-apply is
+off, an Emby administrator notification is sent (subject to the notification
+policy on the Settings page) so the review can happen without leaving a scan
+running in a browser tab. The "Apply ready updates automatically after Scan"
+switch applies only the strictly-safe matches immediately after a manual scan
+finishes; anything ambiguous, unsafe, or unreadable still waits on the results
+table for manual review. It is off by default and its state persists in
+`/state/landscape-posters/settings.json` across container restarts.
 
 Duplicate cleanup settings live on the Settings page. Duplicate move
 destinations default to `/library/.vid2gif-duplicates`, can be changed to another

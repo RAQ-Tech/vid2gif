@@ -4755,10 +4755,12 @@
     const enabled = byId('posterAutomationEnabled');
     const scan = byId('posterScanInterval');
     const full = byId('posterFullScanInterval');
+    const autoApply = byId('posterAutoApplyEligible');
     const canApply = element => element && (force || (!posterSettingsDirty.has(element.id) && document.activeElement !== element));
     if (canApply(enabled)) enabled.checked = Boolean(settings.enabled);
     if (canApply(scan)) scan.value = settings.scan_interval_seconds || 900;
     if (canApply(full)) full.value = settings.full_scan_interval_seconds || 86400;
+    if (canApply(autoApply)) autoApply.checked = Boolean(settings.auto_apply_eligible);
   }
 
   function posterStatusBadge(status) {
@@ -4857,6 +4859,7 @@
     }
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
     if (byId('posterRunButton')) byId('posterRunButton').disabled = active;
+    if (byId('posterFullScanButton')) byId('posterFullScanButton').disabled = active;
     if (byId('posterCancelScanButton')) {
       byId('posterCancelScanButton').disabled = !active || scan?.status === 'cancelling';
     }
@@ -4940,7 +4943,12 @@
     } else if (analysis?.status === 'success') {
       ensurePosterSelection(analysis);
       const stale = analysis.freshness?.status === 'changed';
-      setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, stale ? 'Library artwork changed after this scan. Rescan before applying updates.' : withEmbyCoverage(`${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous`, analysis));
+      const workSummary = `${analysis.reused_count || 0} reused, ${analysis.analyzed_count || 0} analyzed`;
+      let detail = stale
+        ? 'Library artwork changed after this scan. Rescan before applying updates.'
+        : withEmbyCoverage(`${analysis.already_landscape_count || 0} already landscape, ${analysis.ambiguous_count || 0} ambiguous; ${workSummary}`, analysis);
+      if (analysis.auto_apply_pending) detail = 'Applying ready updates automatically...';
+      setPosterMessage(stale ? 'Poster analysis is out of date' : `${analysis.eligible_count || 0} poster updates ready`, detail);
       if (posterItemsPage?.scan?.id !== analysis.id) loadPosterItems(0);
     } else if (analysis?.status === 'cancelled') {
       setPosterMessage('Landscape poster scan cancelled', analysis.path || '');
@@ -4973,7 +4981,7 @@
       posterSettingsLoaded = true;
       renderPosterStatus(data);
       clearTimeout(posterPollTimer);
-      if (!document.hidden && (data.analysis_scan?.active || data.current_run?.status === 'running')) {
+      if (!document.hidden && (data.analysis_scan?.active || data.current_run?.status === 'running' || data.analysis_scan?.auto_apply_pending)) {
         posterPollTimer = setTimeout(refreshPosterStatus, 1000);
       }
     } catch (e) {
@@ -4994,6 +5002,7 @@
     if (element.id === 'posterAutomationEnabled') return {enabled: element.checked};
     if (element.id === 'posterScanInterval') return {scan_interval_seconds: Number(element.value)};
     if (element.id === 'posterFullScanInterval') return {full_scan_interval_seconds: Number(element.value)};
+    if (element.id === 'posterAutoApplyEligible') return {auto_apply_eligible: element.checked};
     return null;
   }
 
@@ -5035,8 +5044,9 @@
     });
   }
 
-  async function runLandscapePosters() {
+  async function runLandscapePosters(forceFull = false) {
     const button = byId('posterRunButton');
+    const fullButton = byId('posterFullScanButton');
     const path = (byId('posterPath')?.value || '').trim();
     if (!path) {
       setPosterMessage('Choose a folder under the library', '');
@@ -5044,16 +5054,17 @@
     }
     rememberScanSource(path, 'vid2gif_poster_scan_source');
     if (button) button.disabled = true;
+    if (fullButton) fullButton.disabled = true;
     posterItemsPage = null;
     posterPageOffset = 0;
     posterPlan = null;
-    setPosterMessage('Starting poster analysis', path);
+    setPosterMessage(forceFull ? 'Starting full poster rescan' : 'Starting poster analysis', path);
     setPosterProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued', active: true});
     try {
       const res = await fetch('/api/maintenance/landscape-posters/scan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path})
+        body: JSON.stringify({path, force_full: forceFull})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -5070,6 +5081,7 @@
       setPosterMessage('Poster analysis could not start', e.message || '');
     } finally {
       if (button && !posterScan?.active) button.disabled = false;
+      if (fullButton && !posterScan?.active) fullButton.disabled = false;
     }
   }
 
@@ -5454,7 +5466,7 @@
       actorSelectionChanged();
       renderActorItems(actorItemsPage);
     });
-    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval'].forEach(id => {
+    ['posterAutomationEnabled', 'posterScanInterval', 'posterFullScanInterval', 'posterAutoApplyEligible'].forEach(id => {
       const element = byId(id);
       element?.addEventListener('change', event => {
         clearTimeout(posterSettingInputTimers.get(element));
@@ -5467,7 +5479,8 @@
         });
       }
     });
-    byId('posterRunButton')?.addEventListener('click', runLandscapePosters);
+    byId('posterRunButton')?.addEventListener('click', () => runLandscapePosters(false));
+    byId('posterFullScanButton')?.addEventListener('click', () => runLandscapePosters(true));
     byId('posterCancelScanButton')?.addEventListener('click', cancelLandscapePosterScan);
     byId('posterBrowseButton')?.addEventListener('click', () => posterFolderPicker?.toggle());
     byId('posterPlanButton')?.addEventListener('click', reviewPosterPlan);

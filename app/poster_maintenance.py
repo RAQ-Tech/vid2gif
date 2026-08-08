@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import json
@@ -57,6 +58,7 @@ POSTER_RUN_ITEM_RETENTION_COUNT = max(50, _env_int("POSTER_RUN_ITEM_RETENTION_CO
 IMAGE_PROBE_TIMEOUT_SECONDS = max(1, _env_int("POSTER_IMAGE_PROBE_TIMEOUT", 10))
 POSTER_FILESYSTEM_WORKFLOW = "poster_scan.filesystem"
 POSTER_EMBY_WORKFLOW = "poster_scan.emby"
+POSTER_ANALYZER_VERSION = 1
 __test__ = False
 
 _settings_lock = threading.RLock()
@@ -174,6 +176,7 @@ def default_settings():
             LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS,
             MIN_FULL_SCAN_INTERVAL_SECONDS,
         ),
+        "auto_apply_eligible": _env_truthy("LANDSCAPE_POSTER_AUTO_APPLY", False),
     }
 
 
@@ -195,6 +198,9 @@ def _coerce_settings(data, base=None):
         "enabled": bool(data.get("enabled", base["enabled"])),
         "scan_interval_seconds": scan_interval,
         "full_scan_interval_seconds": full_interval,
+        "auto_apply_eligible": bool(
+            data.get("auto_apply_eligible", base.get("auto_apply_eligible", False))
+        ),
     }
 
 
@@ -256,6 +262,7 @@ def update_settings(updates, path=None):
             "enabled",
             "scan_interval_seconds",
             "full_scan_interval_seconds",
+            "auto_apply_eligible",
         ):
             if key in updates:
                 merged[key] = updates[key]
@@ -276,6 +283,7 @@ def public_settings(settings=None):
         "full_scan_interval_label": format_duration(
             settings.get("full_scan_interval_seconds")
         ),
+        "auto_apply_eligible": bool(settings.get("auto_apply_eligible")),
         "emby_refresh_enabled": bool(settings.get("emby_sync_after_maintenance", True)),
         "emby_api_key_configured": bool(settings.get("emby_api_key")),
     }
@@ -664,6 +672,7 @@ def _analysis_item(candidate, root, status, message):
             "poster": _file_identity(candidate["poster_path"]),
             "backup": _file_identity(candidate["backup_path"]),
         },
+        "analyzer_version": POSTER_ANALYZER_VERSION,
     }
 
 
@@ -818,6 +827,10 @@ def public_poster_scan(scan):
         "active": scan.get("status") in {"queued", "running", "cancelling"},
         "cancel_requested": bool(scan.get("cancel_requested")),
         "results_page_size": 10,
+        "scan_mode": "full" if scan.get("force_full") else "incremental",
+        "force_full": bool(scan.get("force_full")),
+        "auto_apply_pending": bool(scan.get("auto_apply_pending")),
+        "auto_apply_run_id": scan.get("auto_apply_run_id") or "",
         "emby_mapping": emby_catalog.public_summary(
             scan.get("emby_mapping"), app_settings.load_settings()
         ),
@@ -832,6 +845,9 @@ def _ensure_poster_cache_loaded():
     if _poster_cache_loaded:
         return
     restored = maintenance_scan_store.restore_scan("posters")
+    if restored:
+        # A pending auto-apply from a prior process cannot resume; treat it as done.
+        restored["auto_apply_pending"] = False
     with _poster_scan_lock:
         if restored and restored.get("id") not in poster_scans:
             poster_scans[restored["id"]] = restored
@@ -860,6 +876,50 @@ def _prune_poster_analysis_locked():
         poster_apply_runs.pop(apply_id, None)
 
 
+def _latest_reusable_poster_scan(scan):
+    """Find the most recent successful analysis of the same path to reuse verdicts from."""
+    scan_path = os.path.realpath(scan.get("path") or "")
+    lib_root = os.path.realpath(scan.get("lib_root") or "")
+    with _poster_scan_lock:
+        candidates = [
+            candidate
+            for candidate in poster_scans.values()
+            if candidate is not scan
+            and candidate.get("status") == "success"
+            and os.path.realpath(candidate.get("path") or "") == scan_path
+            and os.path.realpath(candidate.get("lib_root") or "") == lib_root
+        ]
+        if not candidates:
+            return None
+        latest = max(
+            candidates,
+            key=lambda item: item.get("finished_at") or item.get("created_at") or "",
+        )
+        return copy.deepcopy(latest)
+
+
+def _poster_item_reusable(item, identities):
+    return bool(
+        isinstance(item, dict)
+        and item.get("analyzer_version") == POSTER_ANALYZER_VERSION
+        and item.get("identities") == identities
+    )
+
+
+def _notify_scan_ready(scan, counts, settings):
+    eligible = int(counts.get("eligible_count") or 0)
+    if not eligible:
+        return None
+    emby_settings = _emby_settings(settings)
+    return emby_notifications.send(
+        "vid2gif: poster updates ready",
+        f"{eligible} landscape poster update{'s' if eligible != 1 else ''} "
+        "ready for review on the Library Maintenance page.",
+        event_key=f"poster-scan-ready:{scan.get('id')}",
+        settings=emby_settings,
+    )
+
+
 @coordinated_library_operation(
     "Scan landscape posters", kind="scan", href="/maintenance#posters"
 )
@@ -880,6 +940,14 @@ def _run_poster_scan(scan, lib_root):
             started_at=utc_iso(started),
         )
         root = os.path.realpath(lib_root)
+        previous = None if scan.get("force_full") else _latest_reusable_poster_scan(scan)
+        previous_by_id = {
+            item.get("id"): item
+            for item in ((previous or {}).get("items") or [])
+            if item.get("id")
+        }
+        reused_count = 0
+        analyzed_count = 0
         items = []
         folders = 0
         for base, dirs, files in os.walk(scan["path"], followlinks=False):
@@ -905,7 +973,19 @@ def _run_poster_scan(scan, lib_root):
                         items.append(_analysis_item(candidate, root, "ambiguous", "Multiple landscape backgrounds for this video stem are ambiguous"))
                 else:
                     for candidate in candidates:
-                        status, message = _analyze_candidate(candidate, root)
+                        item_id = _poster_item_id(candidate, root)
+                        identities = {
+                            "background": _file_identity(candidate["background_path"]),
+                            "poster": _file_identity(candidate["poster_path"]),
+                            "backup": _file_identity(candidate["backup_path"]),
+                        }
+                        previous_item = previous_by_id.get(item_id)
+                        if _poster_item_reusable(previous_item, identities):
+                            status, message = previous_item["status"], previous_item["message"]
+                            reused_count += 1
+                        else:
+                            status, message = _analyze_candidate(candidate, root)
+                            analyzed_count += 1
                         items.append(_analysis_item(candidate, root, status, message))
             if folders % 50 == 0:
                 task_progress.update_scan(
@@ -919,6 +999,8 @@ def _run_poster_scan(scan, lib_root):
                     unit_label="folders",
                 )
         counts = _poster_counts(items)
+        counts["reused_count"] = reused_count
+        counts["analyzed_count"] = analyzed_count
         task_progress.update_scan(
             scan,
             "poster_scan",
@@ -944,6 +1026,12 @@ def _run_poster_scan(scan, lib_root):
         emby_mapping = _enrich_poster_items(items, scan)
         if emby_mapping is None:
             return
+        settings = load_settings()
+        auto_apply_pending = bool(
+            scan.get("allow_auto_apply", True)
+            and settings.get("auto_apply_eligible")
+            and counts.get("eligible_count")
+        )
         task_progress.update_scan(
             scan,
             "poster_scan",
@@ -960,12 +1048,19 @@ def _run_poster_scan(scan, lib_root):
             remaining_stages=[],
             unit_label="posters",
             overall_units=folders,
+            auto_apply_pending=auto_apply_pending,
         )
         persisted = maintenance_scan_store.persist_success("posters", "posters", scan, lib_root)
         if persisted:
             with _poster_scan_lock:
                 for candidate in poster_scans.values():
                     candidate["_persisted_latest"] = candidate is scan
+        if (
+            scan.get("allow_auto_apply", True)
+            and counts.get("eligible_count")
+            and not settings.get("auto_apply_eligible")
+        ):
+            _notify_scan_ready(scan, counts, settings)
         impact_metrics.record_scan(
             scan["id"], "posters", "posters", scan["path"],
             [{"issue_id": f"poster:{item['id']}", "finding_ids": [item["id"]], "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in items if item.get("eligible")],
@@ -977,7 +1072,34 @@ def _run_poster_scan(scan, lib_root):
         task_progress.update_scan(scan, "poster_scan", 100, "Poster analysis failed", status="failed", error=str(exc), finished_at=utc_iso())
 
 
-def start_poster_scan(path=None, *, synchronous=False, lib_root=LIB_ROOT):
+def _run_poster_scan_and_maybe_auto_apply(scan, lib_root):
+    """Run analysis, then apply eligible updates automatically if the user opted in."""
+    _run_poster_scan(scan, lib_root)
+    if scan.get("status") != "success" or not scan.get("auto_apply_pending"):
+        return
+    plan, err = build_poster_plan(
+        {
+            "scan_id": scan["id"],
+            "selection": {"mode": "all_eligible", "excluded_item_ids": []},
+        },
+        lib_root=lib_root,
+    )
+    if err or not plan:
+        scan["auto_apply_pending"] = False
+        return
+    run, _err = start_poster_apply(plan["id"], synchronous=True, lib_root=lib_root)
+    scan["auto_apply_pending"] = False
+    scan["auto_apply_run_id"] = (run or {}).get("id", "")
+
+
+def start_poster_scan(
+    path=None,
+    *,
+    synchronous=False,
+    lib_root=LIB_ROOT,
+    force_full=False,
+    allow_auto_apply=True,
+):
     _ensure_poster_cache_loaded()
     real_path, err = _normalize_scan_path(path or lib_root, lib_root)
     if err:
@@ -993,12 +1115,16 @@ def start_poster_scan(path=None, *, synchronous=False, lib_root=LIB_ROOT):
             "status": "queued", "created_at": utc_iso(), "started_at": None,
             "finished_at": None, "progress_percent": 0, "progress_label": "Queued",
             "error": "", "cancel_requested": False, "items": [], "counts": {},
+            "force_full": bool(force_full),
+            "allow_auto_apply": bool(allow_auto_apply),
+            "auto_apply_pending": False,
+            "auto_apply_run_id": "",
         }
         poster_scans[scan_id] = scan
     if synchronous:
-        _run_poster_scan(scan, lib_root)
+        _run_poster_scan_and_maybe_auto_apply(scan, lib_root)
     else:
-        threading.Thread(target=_run_poster_scan, args=(scan, lib_root), daemon=True, name=f"vid2gif-poster-analysis-{scan_id}").start()
+        threading.Thread(target=_run_poster_scan_and_maybe_auto_apply, args=(scan, lib_root), daemon=True, name=f"vid2gif-poster-analysis-{scan_id}").start()
     return scan, None
 
 
@@ -1242,7 +1368,11 @@ def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
         try:
             # The rescan deliberately starts after the apply releases the
             # shared library-operation lease, avoiding a nested-gate deadlock.
-            start_poster_scan(plan["path"], synchronous=True, lib_root=lib_root)
+            # allow_auto_apply=False stops this verification rescan from
+            # triggering another apply cycle.
+            start_poster_scan(
+                plan["path"], synchronous=True, lib_root=lib_root, allow_auto_apply=False
+            )
         except Exception:
             pass
 

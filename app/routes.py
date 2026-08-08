@@ -992,6 +992,7 @@ def api_maintenance_landscape_posters_scan():
         data.get("path") or LIB_ROOT,
         synchronous=_truthy(data.get("synchronous")),
         lib_root=LIB_ROOT,
+        force_full=_truthy(data.get("force_full")),
     )
     if err:
         return jsonify({"error": err}), 400

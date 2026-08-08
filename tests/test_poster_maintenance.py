@@ -434,6 +434,135 @@ def test_landscape_poster_manifest_skips_unchanged_folders_incrementally(monkeyp
     assert second["counters"]["candidates"] == 0
 
 
+def test_poster_scan_reuses_unchanged_folder_verdicts(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"landscape")
+    _write(movie / "Movie-poster.jpg", b"portrait")
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    calls = []
+    original_analyze = poster_maintenance._analyze_candidate
+
+    def counting_analyze(candidate, root):
+        calls.append(candidate["background_path"])
+        return original_analyze(candidate, root)
+
+    monkeypatch.setattr(poster_maintenance, "_analyze_candidate", counting_analyze)
+
+    first, err1 = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+    second, err2 = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+
+    assert err1 is None and err2 is None
+    assert len(calls) == 1, "second scan should not re-analyze an unchanged folder"
+    assert first["counts"]["analyzed_count"] == 1
+    assert first["counts"]["reused_count"] == 0
+    assert second["counts"]["analyzed_count"] == 0
+    assert second["counts"]["reused_count"] == 1
+    assert second["counts"]["eligible_count"] == 1
+
+
+def test_poster_scan_force_full_bypasses_reuse_cache(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"landscape")
+    _write(movie / "Movie-poster.jpg", b"portrait")
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    first, err1 = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+    second, err2 = poster_maintenance.start_poster_scan(
+        str(lib), synchronous=True, lib_root=str(lib), force_full=True
+    )
+
+    assert err1 is None and err2 is None
+    assert second["force_full"] is True
+    assert second["counts"]["reused_count"] == 0
+    assert second["counts"]["analyzed_count"] == 1
+
+
+def test_poster_auto_apply_eligible_setting_defaults_off_and_persists(monkeypatch, tmp_path):
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    assert poster_maintenance.load_settings()["auto_apply_eligible"] is False
+
+    settings, err = poster_maintenance.update_settings({"auto_apply_eligible": True})
+    assert err is None
+    assert settings["auto_apply_eligible"] is True
+    assert poster_maintenance.load_settings()["auto_apply_eligible"] is True
+
+
+def test_poster_scan_auto_applies_eligible_updates_when_enabled(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    background = _write(movie / "Movie-background.jpg", b"landscape")
+    poster = _write(movie / "Movie-poster.jpg", b"portrait")
+    _reset_poster_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(poster_maintenance.emby_sync, "sync_changes", lambda *a, **k: None)
+
+    settings, settings_err = poster_maintenance.update_settings({"auto_apply_eligible": True})
+    assert settings_err is None
+
+    scan, scan_err = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+
+    assert scan_err is None
+    assert scan["status"] == "success"
+    assert scan["counts"]["eligible_count"] == 1
+    assert scan["auto_apply_pending"] is False
+    assert scan["auto_apply_run_id"]
+
+    apply_run = poster_maintenance.poster_apply_runs[scan["auto_apply_run_id"]]
+    assert apply_run["status"] == "success"
+    assert apply_run["updated_count"] == 1
+    assert poster.read_bytes() == background.read_bytes()
+    assert (movie / "Movie-poster-backup.jpg").read_bytes() == b"portrait"
+
+
+def test_poster_scan_does_not_auto_apply_when_setting_disabled(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    poster = _write(movie / "Movie-poster.jpg", b"portrait")
+    _write(movie / "Movie-background.jpg", b"landscape")
+    _reset_poster_state(monkeypatch, tmp_path)
+
+    scan, err = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+
+    assert err is None
+    assert scan["counts"]["eligible_count"] == 1
+    assert scan["auto_apply_pending"] is False
+    assert scan["auto_apply_run_id"] == ""
+    assert poster.read_bytes() == b"portrait"
+
+
+def test_poster_scan_notifies_when_eligible_and_auto_apply_disabled(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    _write(movie / "Movie-background.jpg", b"landscape")
+    _write(movie / "Movie-poster.jpg", b"portrait")
+    _reset_poster_state(monkeypatch, tmp_path)
+    app_settings.update_settings({"emby_url": "http://emby.local", "emby_api_key": "secret-key"})
+
+    sent = []
+    monkeypatch.setattr(
+        poster_maintenance.emby_notifications,
+        "send",
+        lambda *args, **kwargs: sent.append((args, kwargs)) or {"id": "n1", "status": "success"},
+    )
+
+    scan, err = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
+
+    assert err is None
+    assert scan["counts"]["eligible_count"] == 1
+    assert len(sent) == 1
+    assert "poster updates ready" in sent[0][0][0].lower()
+
+    sent.clear()
+    result = poster_maintenance._notify_scan_ready(
+        scan, {"eligible_count": 0}, poster_maintenance.load_settings()
+    )
+    assert result is None
+    assert sent == []
+
+
 def test_poster_refresh_compatibility_alias_updates_global_sync_setting(monkeypatch, tmp_path):
     _reset_poster_state(monkeypatch, tmp_path)
 
