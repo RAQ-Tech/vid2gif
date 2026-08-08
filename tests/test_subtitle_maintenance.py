@@ -239,6 +239,67 @@ def test_subtitle_coverage_uncertainty_requires_review_but_is_not_auto_selected(
     assert page["items"][0]["srt_files"][0]["actionable"] is False
 
 
+def test_subtitle_coverage_scan_reuses_unchanged_video_duration(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    _write(
+        lib / "Movie" / "Movie.eng.srt",
+        b"1\n00:41:18,160 --> 00:41:20,560\nFinal line\n",
+    )
+    _reset_subtitles(monkeypatch)
+    calls = []
+
+    def counting_probe(path):
+        calls.append(path)
+        return 41.5 * 60
+
+    monkeypatch.setattr(
+        subtitle_maintenance.subtitle_quality, "probe_media_duration", counting_probe
+    )
+
+    first, err1 = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
+    )
+    second, err2 = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
+    )
+
+    assert err1 is None and err2 is None
+    assert len(calls) == 1, "second scan should reuse the cached video duration"
+    assert first["counts"]["analyzed_count"] == 1
+    assert first["counts"]["reused_count"] == 0
+    assert second["counts"]["analyzed_count"] == 0
+    assert second["counts"]["reused_count"] == 1
+    assert second["counts"]["ok_count"] == 1
+
+
+def test_subtitle_coverage_scan_force_full_bypasses_reuse_cache(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    _write(
+        lib / "Movie" / "Movie.eng.srt",
+        b"1\n00:41:18,160 --> 00:41:20,560\nFinal line\n",
+    )
+    _reset_subtitles(monkeypatch)
+    monkeypatch.setattr(
+        subtitle_maintenance.subtitle_quality,
+        "probe_media_duration",
+        lambda _path: 41.5 * 60,
+    )
+
+    first, err1 = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
+    )
+    second, err2 = subtitle_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True, mode="coverage", force_full=True
+    )
+
+    assert err1 is None and err2 is None
+    assert second["force_full"] is True
+    assert second["counts"]["reused_count"] == 0
+    assert second["counts"]["analyzed_count"] == 1
+
+
 def test_subtitle_scan_tracks_each_release_in_shared_folder_by_exact_stem(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     folder = lib / "Studio" / "Shared Title"

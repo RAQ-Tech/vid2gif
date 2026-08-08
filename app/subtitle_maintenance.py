@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import json
@@ -400,9 +401,20 @@ def _counts(items, mode="missing"):
     return counts
 
 
-def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progress=None):
+def _enrich_subtitle_quality(
+    items,
+    catalog,
+    settings,
+    before_item=None,
+    progress=None,
+    previous_by_path=None,
+    force_full=False,
+):
     mappings = settings.get("emby_path_mappings") or []
     total = len(items)
+    previous_by_path = previous_by_path or {}
+    reused_count = 0
+    analyzed_count = 0
     for index, item in enumerate(items, start=1):
         if before_item:
             before_item()
@@ -415,11 +427,27 @@ def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progres
             catalog, item.get("path"), mappings
         ) if catalog else None
         duration_source = "emby" if duration else ""
+        video_identity = _stat_identity(item.get("path"))
+        if not duration and not force_full:
+            previous_item = previous_by_path.get(item.get("path"))
+            if (
+                previous_item
+                and video_identity
+                and previous_item.get("video_identity") == video_identity
+                and previous_item.get("video_duration_seconds")
+            ):
+                duration = previous_item["video_duration_seconds"]
+                duration_source = "cache"
         if not duration:
             duration = subtitle_quality.probe_media_duration(item.get("path"))
             duration_source = "ffprobe" if duration else "unavailable"
+        if duration_source == "cache":
+            reused_count += 1
+        elif duration_source == "ffprobe":
+            analyzed_count += 1
         item["video_duration_seconds"] = duration
         item["video_duration_source"] = duration_source
+        item["video_identity"] = video_identity
         incomplete = []
         review = []
         for subtitle in subtitles:
@@ -462,7 +490,7 @@ def _enrich_subtitle_quality(items, catalog, settings, before_item=None, progres
             item.update(status="ok", detail="Subtitle timestamps cover the video duration")
         if progress and (index == total or index % 25 == 0):
             progress(index, total)
-    return items
+    return {"reused_count": reused_count, "analyzed_count": analyzed_count}
 
 
 def _stream_summary(status="not_checked", message="Emby subtitle streams were not checked; rescan to add stream details.", settings=None):
@@ -686,6 +714,8 @@ def public_scan(scan):
         "cancel_requested": bool(scan.get("cancel_requested")),
         "results_page_size": ITEM_PAGE_DEFAULT,
         "large_result": review_count >= LARGE_RESULT_COUNT,
+        "scan_mode": "full" if scan.get("force_full") else "incremental",
+        "force_full": bool(scan.get("force_full")),
         "settings": public_settings(scan.get("settings") or app_settings.load_settings()),
         **counts,
         "emby_mapping": emby_catalog.public_summary(
@@ -761,6 +791,29 @@ def _active_scan_locked(mode=None):
     if not active:
         return None
     return max(active, key=lambda item: item.get("_created_ts") or 0)
+
+
+def _latest_reusable_subtitle_scan(scan):
+    """Find the most recent successful coverage scan of the same path to reuse video durations from."""
+    scan_path = os.path.realpath(scan.get("path") or "")
+    lib_root = os.path.realpath(scan.get("lib_root") or "")
+    with subtitle_lock:
+        candidates = [
+            candidate
+            for candidate in subtitle_scans.values()
+            if candidate is not scan
+            and candidate.get("mode") == "coverage"
+            and candidate.get("status") == "success"
+            and os.path.realpath(candidate.get("path") or "") == scan_path
+            and os.path.realpath(candidate.get("lib_root") or "") == lib_root
+        ]
+        if not candidates:
+            return None
+        latest = max(
+            candidates,
+            key=lambda item: item.get("_finished_ts") or item.get("_created_ts") or 0,
+        )
+        return copy.deepcopy(latest)
 
 
 @coordinated_library_operation(
@@ -853,7 +906,13 @@ def _run_scan(scan, settings, lib_root):
                 unit_label="videos",
                 scanned_video_count=filesystem_scanned_count,
             )
-            _enrich_subtitle_quality(
+            previous = None if scan.get("force_full") else _latest_reusable_subtitle_scan(scan)
+            previous_by_path = {
+                item.get("path"): item
+                for item in ((previous or {}).get("items") or [])
+                if item.get("path")
+            }
+            quality_counts = _enrich_subtitle_quality(
                 items,
                 catalog,
                 settings,
@@ -869,12 +928,15 @@ def _run_scan(scan, settings, lib_root):
                     unit_label="videos",
                     scanned_video_count=filesystem_scanned_count,
                 ),
+                previous_by_path=previous_by_path,
+                force_full=bool(scan.get("force_full")),
             )
             final_workflow = SUBTITLE_QUALITY_WORKFLOW
         counts = _counts(items, mode)
         counts["scanned_video_count"] = filesystem_scanned_count
         if mode == "coverage":
             counts["coverage_video_count"] = len(items)
+            counts.update(quality_counts)
         for item in items:
             for subtitle in item.get("srt_files") or []:
                 subtitle["emby_parent_item_id"] = item.get("emby_item_id", "")
@@ -949,7 +1011,7 @@ def _run_scan(scan, settings, lib_root):
         )
 
 
-def start_scan(path, lib_root=LIB_ROOT, synchronous=False, mode="missing"):
+def start_scan(path, lib_root=LIB_ROOT, synchronous=False, mode="missing", force_full=False):
     mode = str(mode or "missing").strip().lower()
     if mode not in SUBTITLE_SCAN_MODES:
         return None, "Choose missing or coverage"
@@ -980,6 +1042,7 @@ def start_scan(path, lib_root=LIB_ROOT, synchronous=False, mode="missing"):
         "counts": {},
         "settings": settings,
         "lib_root": os.path.realpath(lib_root),
+        "force_full": bool(force_full),
     }
     with subtitle_lock:
         _prune_scans_locked()

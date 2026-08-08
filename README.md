@@ -182,6 +182,12 @@ incomplete SRT files can be quarantined or permanently deleted; uncertain
 coverage stays review-only. Video files and missing-subtitle findings are never
 cleanup targets, and review selections persist across result pages.
 
+Timestamp-coverage scans need each video's duration; Emby is checked first, and
+when Emby doesn't have it, a repeated Scan Coverage reuses the duration probed
+by the previous scan of that folder as long as the video file itself hasn't
+changed, instead of re-probing it with FFprobe every time. Use Full Coverage
+Rescan to ignore that cache and re-probe every video.
+
 The dashboard tracks maintenance impact from the first launch after this
 feature is installed. It does not backfill bounded historical logs. Distinct
 actionable issues, completed fixes, quarantine/delete totals, milestones, daily

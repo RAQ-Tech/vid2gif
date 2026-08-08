@@ -1323,6 +1323,7 @@ def api_maintenance_subtitles_scan():
         lib_root=LIB_ROOT,
         synchronous=_truthy(data.get("synchronous")),
         mode=data.get("mode") or "missing",
+        force_full=_truthy(data.get("force_full")),
     )
     if err:
         return jsonify({"error": err}), 400

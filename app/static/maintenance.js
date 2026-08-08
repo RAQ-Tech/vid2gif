@@ -3777,9 +3777,11 @@
     const active = Boolean(scan?.active || ['queued', 'running', 'cancelling'].includes(scan?.status || ''));
     const missingScanButton = byId('subtitleMissingScanButton');
     const coverageScanButton = byId('subtitleCoverageScanButton');
+    const coverageFullScanButton = byId('subtitleCoverageFullScanButton');
     const cancelButton = byId('subtitleCancelScanButton');
     if (missingScanButton) missingScanButton.disabled = active;
     if (coverageScanButton) coverageScanButton.disabled = active;
+    if (coverageFullScanButton) coverageFullScanButton.disabled = active;
     if (cancelButton) cancelButton.disabled = !active || scan?.status === 'cancelling';
     const planButton = byId('subtitlePlanButton');
     if (planButton && scan?.freshness?.status === 'changed') planButton.disabled = true;
@@ -3945,11 +3947,12 @@
       const streamDetail = ['complete', 'partial'].includes(streams.status)
         ? `Emby streams: ${streams.stream_count || 0}, mismatches: ${streams.index_mismatch_count || 0}.`
         : (streams.message || 'Emby stream details are unavailable.');
+      const coverageWorkSummary = `${scan.reused_count || 0} reused, ${scan.analyzed_count || 0} analyzed`;
       setSubtitleMessage(
         `${coverageMode ? 'Coverage' : 'Missing subtitle'} scan: ${scan.review_count || 0} review item${(scan.review_count || 0) === 1 ? '' : 's'}`,
         withEmbyCoverage(
           coverageMode
-            ? `${scan.incomplete_count || 0} likely incomplete, ${scan.coverage_review_count || 0} need coverage review, ${scan.ok_count || 0} complete.`
+            ? `${scan.incomplete_count || 0} likely incomplete, ${scan.coverage_review_count || 0} need coverage review, ${scan.ok_count || 0} complete; ${coverageWorkSummary}`
             : `${scan.missing_count || 0} missing, ${scan.language_review_count || 0} language review, ${scan.unknown_count || 0} unknown. ${streamDetail} Expected: ${(settings.expected_languages || []).join(', ') || 'not set'}`,
           scan
         )
@@ -3999,7 +4002,7 @@
     }
   }
 
-  async function startSubtitleScan(mode = subtitleScan?.mode || 'missing') {
+  async function startSubtitleScan(mode = subtitleScan?.mode || 'missing', forceFull = false) {
     const path = (byId('subtitlePath')?.value || config.libRoot || '/library').trim();
     if (!path) {
       setSubtitleMessage('Choose a folder under the library', '');
@@ -4009,13 +4012,13 @@
     stopSubtitlePolling();
     subtitleItemsPage = null;
     subtitlePageOffset = 0;
-    setSubtitleMessage(mode === 'coverage' ? 'Starting subtitle coverage scan' : 'Starting missing subtitle scan', '');
+    setSubtitleMessage(mode === 'coverage' ? (forceFull ? 'Starting full subtitle coverage rescan' : 'Starting subtitle coverage scan') : 'Starting missing subtitle scan', '');
     setSubtitleProgress({status: 'queued', progress_percent: 0, progress_label: 'Queued'});
     try {
       const res = await fetch('/api/maintenance/subtitles/scan', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path, mode})
+        body: JSON.stringify({path, mode, force_full: forceFull})
       });
       const data = await readJsonResponse(res);
       if (!res.ok) {
@@ -5396,6 +5399,7 @@
     });
     byId('subtitleMissingScanButton')?.addEventListener('click', () => startSubtitleScan('missing'));
     byId('subtitleCoverageScanButton')?.addEventListener('click', () => startSubtitleScan('coverage'));
+    byId('subtitleCoverageFullScanButton')?.addEventListener('click', () => startSubtitleScan('coverage', true));
     byId('subtitleCancelScanButton')?.addEventListener('click', cancelSubtitleScan);
     byId('subtitlePlanButton')?.addEventListener('click', reviewSubtitlePlan);
     byId('subtitleApplyButton')?.addEventListener('click', applySubtitlePlan);
