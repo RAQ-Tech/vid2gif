@@ -438,7 +438,9 @@ def test_entrypoint_defaults_to_group_writable_umask():
 def test_runtime_requirements_exclude_dev_tools():
     requirements = (ROOT / "requirements.txt").read_text()
     dev_requirements = (ROOT / "requirements-dev.txt").read_text()
-    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    workflow_files = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflow_files, "No CI workflow files found"
+    workflow = "\n".join(path.read_text() for path in workflow_files)
 
     assert "pytest" not in requirements
     assert "pip-audit" not in requirements
@@ -449,3 +451,24 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "pytest==8.1.1" in dev_requirements
     assert "pip-audit==2.10.1" in dev_requirements
     assert "python -m pip_audit -r requirements.txt" in workflow
+
+
+def test_container_publish_waits_for_the_test_suite():
+    """A commit that fails tests must never publish an image to GHCR."""
+    workflow_dir = ROOT / ".github" / "workflows"
+    publishing = []
+    for path in sorted(workflow_dir.glob("*.yml")):
+        content = path.read_text()
+        if "docker/build-push-action" not in content:
+            continue
+        publishing.append(path.name)
+        jobs = content.split("jobs:", 1)[1]
+        build_job = jobs.split("build-and-push:", 1)[1]
+        assert "needs: [tests]" in build_job, (
+            f"{path.name} publishes an image without depending on the tests job"
+        )
+        assert "python -m pytest" in content, (
+            f"{path.name} publishes an image but its tests job is in another "
+            "workflow file, where 'needs:' cannot reach it"
+        )
+    assert publishing, "No workflow builds and pushes the container image"
