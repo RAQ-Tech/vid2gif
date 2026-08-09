@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { waitForOpaque } from './helpers.js';
 
 const activityPayload = {
   active: true,
@@ -74,6 +75,7 @@ test('global activity is understandable, cancellable, and accessible', async ({ 
   await activity.getByRole('button', { name: 'Cancel' }).click();
   await expect.poll(() => cancelRequests).toBe(1);
 
+  await waitForOpaque(page, '#globalActivity');
   const accessibility = await new AxeBuilder({ page })
     .include('#globalActivity')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])

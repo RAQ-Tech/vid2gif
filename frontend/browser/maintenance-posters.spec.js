@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { waitForOpaque } from './helpers.js';
 
 const completedScan = {
   id: 'poster-scan-complete',
@@ -132,6 +133,7 @@ test('landscape poster review exposes the shared source, filters, backup plan, a
   await expect(page.locator('#posterBackupNote')).toContainText('not quarantined or deleted');
   await expect(page.locator('#posterSelectionSummary')).toContainText('1 of 1');
   await expect(page.getByRole('button', {name: 'Preview Selected Changes'})).toBeEnabled();
+  await waitForOpaque(page, '#pane-posters');
   const accessibility = await new AxeBuilder({page})
     .include('#pane-posters')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
