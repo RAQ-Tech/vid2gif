@@ -22,6 +22,24 @@ When landscape poster maintenance is enabled, it can also replace matching
 Duplicate cleanup can move, delete, or rename confirmed files under the mounted
 library root and records applied cleanup actions under `/state`.
 
+### State Backups
+
+`POST /system/backup` streams the whole `/state` directory as a zip and, like
+every other endpoint, is unauthenticated. Anyone who can reach the port can
+download it, so the archive is built on the assumption that it is readable by
+any host on the network.
+
+Stored credentials are therefore blanked before they enter the archive. Any
+JSON file under `/state` containing an `emby_api_key` is reserialized with that
+value emptied; the backup manifest (`vid2gif-backup.json`) lists which files
+were redacted under `redacted`. Restoring a backup restores everything except
+those credentials, which must be re-entered on the Settings page. Non-JSON
+files and JSON files with no credentials are archived byte-for-byte.
+
+This limits the blast radius of the unauthenticated endpoint; it is not a
+substitute for keeping the app off the public internet. The archive still
+contains library paths, file names, maintenance logs, and job history.
+
 ## Reporting Issues
 
 For security issues, open a private report through GitHub's security advisory

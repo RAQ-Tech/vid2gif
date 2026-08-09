@@ -536,6 +536,7 @@ def system_backup():
     )
     response.headers["X-vid2gif-Backup-Files"] = str(backup["file_count"])
     response.headers["X-vid2gif-Backup-Bytes"] = str(backup["total_bytes"])
+    response.headers["X-vid2gif-Backup-Redacted"] = str(backup.get("redacted_count", 0))
     return response
 
 

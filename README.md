@@ -18,6 +18,13 @@ If you need internet-facing access, add authentication, CSRF protection, rate
 limiting, stricter file-serving rules, and reverse-proxy hardening before
 deployment.
 
+The System page can download the whole `/state` directory as a zip. That
+endpoint is unauthenticated like the rest of the app, so stored credentials
+(currently the Emby API key) are blanked out of the archive before it is sent
+and are listed under `redacted` in the backup manifest. Restoring a backup
+therefore requires re-entering the Emby API key on the Settings page. See
+[`SECURITY.md`](SECURITY.md) for the full data-exposure model.
+
 ## Testing
 
 Install development dependencies, audit runtime dependencies, build the checked-in

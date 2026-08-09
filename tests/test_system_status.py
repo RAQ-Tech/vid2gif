@@ -83,6 +83,86 @@ def test_create_state_backup_archives_files_and_manifest(tmp_path):
         os.remove(archive_path)
 
 
+def test_state_backup_redacts_stored_credentials(tmp_path):
+    state = tmp_path / "state"
+    legacy = state / "landscape-posters"
+    legacy.mkdir(parents=True)
+    (state / "app_settings.json").write_text(
+        json.dumps(
+            {
+                "emby_url": "http://emby.local:8096",
+                "emby_api_key": "super-secret-key",
+                "duplicate_keeper_rule": "quality",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # The atomic settings writer keeps a .bak alongside the live file.
+    (state / "app_settings.json.bak").write_text(
+        json.dumps({"emby_api_key": "older-secret-key"}), encoding="utf-8"
+    )
+    # Legacy location that still held the key before the settings migration.
+    (legacy / "settings.json").write_text(
+        json.dumps({"enabled": True, "emby_api_key": "legacy-secret-key"}),
+        encoding="utf-8",
+    )
+    (state / "notes.txt").write_text("super-secret-key is not JSON", encoding="utf-8")
+
+    archive_path, backup = system_status.create_state_backup(str(state))
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            blob = b"\n".join(
+                archive.read(name) for name in archive.namelist() if name.endswith(".json")
+            )
+            assert b"super-secret-key" not in blob
+            assert b"older-secret-key" not in blob
+            assert b"legacy-secret-key" not in blob
+
+            settings = json.loads(archive.read("state/app_settings.json"))
+            assert settings["emby_api_key"] == ""
+            # Non-secret settings must survive redaction untouched.
+            assert settings["emby_url"] == "http://emby.local:8096"
+            assert settings["duplicate_keeper_rule"] == "quality"
+
+            assert json.loads(archive.read("state/app_settings.json.bak"))["emby_api_key"] == ""
+            assert json.loads(
+                archive.read("state/landscape-posters/settings.json")
+            )["emby_api_key"] == ""
+
+            manifest = json.loads(archive.read("vid2gif-backup.json"))
+            assert set(manifest["redacted"]) == {
+                os.path.join("app_settings.json"),
+                os.path.join("app_settings.json.bak"),
+                os.path.join("landscape-posters", "settings.json"),
+            }
+            assert manifest["redacted_keys"] == ["emby_api_key"]
+            assert manifest["file_count"] == 4
+
+        assert backup["redacted_count"] == 3
+    finally:
+        os.remove(archive_path)
+
+
+def test_state_backup_leaves_non_secret_files_byte_identical(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    payload = json.dumps({"status": "success", "nested": {"count": 1}})
+    (state / "impact-metrics.json").write_text(payload, encoding="utf-8")
+    # write_bytes avoids the platform newline translation write_text applies.
+    (state / "run.jsonl").write_bytes(b'{"a":1}\n{"b":2}\n')
+
+    archive_path, backup = system_status.create_state_backup(str(state))
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            # No secrets present, so files are archived verbatim rather than reserialized.
+            assert archive.read("state/impact-metrics.json").decode() == payload
+            assert archive.read("state/run.jsonl").decode() == '{"a":1}\n{"b":2}\n'
+            assert json.loads(archive.read("vid2gif-backup.json"))["redacted"] == []
+        assert backup["redacted_count"] == 0
+    finally:
+        os.remove(archive_path)
+
+
 def test_system_routes_render_status_health_and_backup(monkeypatch, tmp_path):
     payload = {
         "overall": "healthy",

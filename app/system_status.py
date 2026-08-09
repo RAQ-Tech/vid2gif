@@ -20,6 +20,11 @@ WORKER_THREADS = {
     "test_lab_worker": ("Test Lab worker", "vid2gif-test-lab"),
     "poster_worker": ("Poster scheduler", "vid2gif-landscape-poster-worker"),
 }
+# Credential fields that must never leave the container inside a backup.
+# /system/backup is unauthenticated by design (the app is LAN-only), so the
+# archive is treated as readable by anyone who can reach the port.
+SECRET_SETTING_KEYS = frozenset({"emby_api_key"})
+BACKUP_REDACTED_VALUE = ""
 
 
 def _uptime_label(seconds):
@@ -159,6 +164,47 @@ def status_payload(now=None):
     }
 
 
+def _redact_secrets(value):
+    """Blank any known credential field, at any depth. Returns (value, count)."""
+    if isinstance(value, dict):
+        redacted = {}
+        count = 0
+        for key, item in value.items():
+            if key in SECRET_SETTING_KEYS and isinstance(item, str) and item:
+                redacted[key] = BACKUP_REDACTED_VALUE
+                count += 1
+                continue
+            redacted[key], nested = _redact_secrets(item)
+            count += nested
+        return redacted, count
+    if isinstance(value, list):
+        items = []
+        count = 0
+        for item in value:
+            cleaned, nested = _redact_secrets(item)
+            items.append(cleaned)
+            count += nested
+        return items, count
+    return value, 0
+
+
+def _redacted_json_bytes(source):
+    """Return redacted UTF-8 bytes for a JSON file, or None to archive it as-is.
+
+    Anything that is not parseable JSON is left untouched; this only ever
+    rewrites files it fully understands.
+    """
+    try:
+        with open(source, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    cleaned, count = _redact_secrets(payload)
+    if not count:
+        return None
+    return json.dumps(cleaned, indent=2, sort_keys=True).encode("utf-8")
+
+
 def create_state_backup(state_root=None):
     state_root = os.path.realpath(state_root or STATE_ROOT)
     if not os.path.isdir(state_root):
@@ -169,6 +215,7 @@ def create_state_backup(state_root=None):
     file_count = 0
     total_bytes = 0
     skipped = []
+    redacted = []
     try:
         with zipfile.ZipFile(
             archive_path,
@@ -187,8 +234,16 @@ def create_state_backup(state_root=None):
                         skipped.append(relative)
                         continue
                     try:
-                        size = os.path.getsize(source)
-                        archive.write(source, os.path.join("state", relative))
+                        cleaned = _redacted_json_bytes(source)
+                        if cleaned is None:
+                            size = os.path.getsize(source)
+                            archive.write(source, os.path.join("state", relative))
+                        else:
+                            size = len(cleaned)
+                            archive.writestr(
+                                os.path.join("state", relative), cleaned
+                            )
+                            redacted.append(relative)
                     except OSError:
                         skipped.append(relative)
                         continue
@@ -202,6 +257,8 @@ def create_state_backup(state_root=None):
                 "file_count": file_count,
                 "total_bytes": total_bytes,
                 "skipped": skipped,
+                "redacted": sorted(redacted),
+                "redacted_keys": sorted(SECRET_SETTING_KEYS),
                 "python": sys.version.split()[0],
             }
             archive.writestr(
@@ -222,4 +279,5 @@ def create_state_backup(state_root=None):
         "total_bytes": total_bytes,
         "total_size_label": format_size(total_bytes),
         "skipped_count": len(skipped),
+        "redacted_count": len(redacted),
     }
