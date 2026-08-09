@@ -560,6 +560,36 @@
     container.appendChild(sel);
   }
 
+  // Submitting a folder queues every compatible video under it. Picking the
+  // library root by mistake would enqueue the whole library, so confirm the
+  // exact count first once a batch gets large enough to be a surprise.
+  const LARGE_BATCH_CONFIRM_THRESHOLD = 25;
+  let largeBatchConfirmed = false;
+
+  async function confirmLargeBatch(event) {
+    if (largeBatchConfirmed) return;
+    const path = (byId('video')?.value || '').trim();
+    if (!path) return;
+    const form = byId('newJobForm');
+    if (!form) return;
+    event.preventDefault();
+    let data = null;
+    try {
+      const res = await fetch(`/api/scan-estimate?${scanEstimateParams().toString()}`);
+      if (res.ok) data = await res.json();
+    } catch (_e) {
+      data = null;
+    }
+    const count = Number(data?.compatible_count || 0);
+    // Anything unknown (estimate failed, single file, small batch) submits as before.
+    if (data?.is_dir && count >= LARGE_BATCH_CONFIRM_THRESHOLD) {
+      const message = `${path}\n\nThis queues ${count} GIF jobs and writes a poster.gif next to each video. Continue?`;
+      if (!window.confirm(message)) return;
+    }
+    largeBatchConfirmed = true;
+    form.submit();
+  }
+
   function saveForm() {
     const form = byId('newJobForm');
     if (!form) return;
@@ -623,7 +653,10 @@
       saveForm();
       scheduleScanEstimate();
     });
+    // Registered after syncOptimizeSetting so the hidden optimize value is
+    // already synced by the time this may re-submit the form.
     form.addEventListener('submit', syncOptimizeSetting);
+    form.addEventListener('submit', confirmLargeBatch);
     if (hadSavedPath && vid && vid.value.trim()) {
       scheduleScanEstimate(150);
     } else {
