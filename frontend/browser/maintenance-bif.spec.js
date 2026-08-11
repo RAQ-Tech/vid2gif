@@ -36,6 +36,9 @@ const items = Array.from({ length: 30 }, (_value, index) => ({
       status: 'refused',
       reason: 'decoder rejected this video',
       run_id: 'previous-run',
+      retryable: false,
+      attempt_count: 1,
+      tactics_tried: ['strict', 'tolerant', 'reduced'],
     },
   } : {}),
 }));
@@ -111,7 +114,9 @@ test('missing BIF selection persists across pages and holds prior failures', asy
   await page.locator('#previewItems [data-preview-page="next"]').first().click();
   const heldItem = page.getByRole('checkbox', { name: 'Generate BIF for Movie 027.mkv' });
   await expect(heldItem).not.toBeChecked();
-  await expect(page.getByText('Previous issue')).toBeVisible();
+  // A failure the decoder owns is labelled as needing a retry, and offers one.
+  await expect(page.getByText('Needs retry')).toBeVisible();
+  await expect(page.locator('[data-preview-retry]')).toBeVisible();
   await heldItem.check();
   await expect(page.locator('#previewSelectionSummary')).toContainText('29 selected across all result pages');
 
@@ -127,4 +132,59 @@ test('missing BIF selection persists across pages and holds prior failures', asy
     include_held_item_ids: ['item-27'],
   });
   await expect(page.getByText('Across all pages', { exact: true })).toBeVisible();
+});
+
+test('a permanently failed video can be released for another attempt', async ({ page }) => {
+  let clearBody = null;
+  let cleared = false;
+
+  await page.route('**/api/maintenance/video-previews/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ scan }),
+  }));
+  await page.route('**/api/maintenance/video-previews/generation/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ run: null }),
+  }));
+  await page.route('**/api/maintenance/video-previews/generation/issues/clear', async route => {
+    clearBody = route.request().postDataJSON();
+    cleared = true;
+    return route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({cleared_count: 1}),
+    });
+  });
+  await page.route('**/api/maintenance/video-previews/items*', route => {
+    // Once cleared, the failure is gone and the video is a normal candidate.
+    const item = {
+      id: 'stuck', name: 'Movie 999.mkv', relative_path: 'Movie 999.mkv',
+      path: '/library/Movie 999.mkv', status: 'missing', size_label: '1 GB',
+      detail: 'No BIF present', bifs: [],
+      ...(cleared ? {} : {
+        generation_held: true,
+        previous_generation_issue: {
+          status: 'refused', reason: 'Invalid data found when processing input',
+          run_id: 'r1', retryable: false, attempt_count: 3,
+          tactics_tried: ['strict', 'tolerant', 'reduced'],
+        },
+      }),
+    };
+    return route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        scan, offset: 0, limit: 25, total: 1, count: 1,
+        has_previous: false, has_next: false, next_offset: null, previous_offset: null,
+        sort: 'video', direction: 'asc', missing_total: 1, items: [item],
+      }),
+    });
+  });
+
+  await page.goto('/maintenance#video-previews');
+  // Every tactic that was tried is reported, so the reason is not a mystery.
+  await expect(page.locator('#previewItems')).toContainText('strict, tolerant, reduced');
+  await expect(page.locator('#previewItems')).toContainText('3 attempts');
+
+  await page.locator('[data-preview-retry="stuck"]').click();
+
+  await expect.poll(() => clearBody).toEqual({item_ids: ['stuck']});
+  // The dead end is gone: no held badge, no retry button, ready to generate.
+  await expect(page.locator('[data-preview-retry]')).toHaveCount(0);
+  await expect(page.getByText('Needs retry')).toHaveCount(0);
 });

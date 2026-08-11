@@ -1178,6 +1178,18 @@ def api_maintenance_video_previews_generation_settings():
     return jsonify({"settings": settings})
 
 
+@app.route("/api/maintenance/video-previews/generation/issues/clear", methods=["POST"])
+def api_maintenance_video_previews_clear_generation_issues():
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("item_ids")
+    item_ids = (
+        [str(value) for value in raw_ids if str(value or "").strip()]
+        if isinstance(raw_ids, list)
+        else None
+    )
+    return jsonify(video_preview_maintenance.clear_generation_issues(item_ids))
+
+
 @app.route("/api/maintenance/video-previews/generation/plan", methods=["POST"])
 def api_maintenance_video_previews_generation_plan():
     plan, err = video_preview_maintenance.build_generation_plan(

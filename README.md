@@ -196,6 +196,15 @@ persist across result pages. Quarantined cleanup runs can be previewed and
 restored from their audit logs; restore name conflicts are adjusted without
 overwriting existing files.
 
+BIF generation escalates rather than giving up on the first error. A video is
+first extracted normally, then retried with a decoder that tolerates damaged
+packets, then retried again at reduced width -- a partial preview is better than
+none. Only a video that fails all three is recorded as a failure, and the record
+says which tactics were tried. Failures caused by the machine rather than the
+file (a stall, a busy disk, a video that changed mid-run) are cleared at the
+start of the next scan and tried again automatically; the rest stay listed with
+a "Try again" control so they are never a dead end.
+
 Video preview maintenance separates cleanup from generation. Bad and warning
 BIFs can be quarantined or deleted first; a fresh scan then provides the missing
 videos eligible for direct BIF generation. Width and interval settings persist,

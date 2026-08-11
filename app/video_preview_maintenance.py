@@ -639,6 +639,9 @@ def start_scan(path, lib_root=LIB_ROOT, synchronous=False):
     real_path, err = _validate_scan_path(path, lib_root)
     if err:
         return None, err
+    # A stall or a busy disk says nothing about the file, so those videos get
+    # another chance every scan rather than staying stuck until it changes.
+    _clear_retryable_generation_issues()
     scan_id = _now_id()
     created = time.time()
     scan = {
@@ -2965,6 +2968,13 @@ def _generation_issue_for_item(item, issues=None):
         "reason": issue.get("reason") or "The previous generation attempt could not complete",
         "run_id": issue.get("run_id") or "",
         "updated_at": issue.get("updated_at"),
+        "retryable": bool(issue.get("retryable")),
+        "attempt_count": int(issue.get("attempt_count") or 1),
+        "tactics_tried": [
+            str((attempt or {}).get("tactic") or "")
+            for attempt in (issue.get("attempts") or [])
+            if (attempt or {}).get("tactic")
+        ],
     }
 
 
@@ -2978,6 +2988,7 @@ def _record_generation_result(plan_item, result, run_id):
         if (result or {}).get("status") == "generated":
             records.pop(item_id, None)
         else:
+            previous = records.get(item_id) or {}
             records[item_id] = {
                 "item_id": item_id,
                 "video_relative_path": (plan_item or {}).get("video_relative_path") or "",
@@ -2986,8 +2997,47 @@ def _record_generation_result(plan_item, result, run_id):
                 "reason": (result or {}).get("reason") or "Generation did not complete",
                 "run_id": str(run_id or ""),
                 "updated_at": utc_iso(),
+                "retryable": bool((result or {}).get("retryable")),
+                "attempts": (result or {}).get("extraction_attempts") or [],
+                "attempt_count": int(previous.get("attempt_count") or 0) + 1,
             }
         _write_json(GENERATION_ISSUES_PATH, issues)
+
+
+def clear_generation_issues(item_ids=None):
+    """Forget recorded failures so those videos are attempted again.
+
+    Passing no ids clears every record. Retryable failures are cleared
+    automatically at the start of a run, so this exists for the permanent ones
+    a user wants to try again after changing something.
+    """
+    with generation_persist_lock:
+        issues = _generation_issues()
+        records = issues.setdefault("records", {})
+        if item_ids is None:
+            cleared = len(records)
+            issues["records"] = {}
+        else:
+            wanted = {str(value) for value in item_ids if str(value or "").strip()}
+            cleared = sum(1 for key in list(records) if key in wanted)
+            for key in list(records):
+                if key in wanted:
+                    records.pop(key, None)
+        _write_json(GENERATION_ISSUES_PATH, issues)
+    return {"cleared_count": cleared}
+
+
+def _clear_retryable_generation_issues():
+    """Drop failures that described the machine, not the file."""
+    with generation_persist_lock:
+        issues = _generation_issues()
+        records = issues.setdefault("records", {})
+        retryable = [key for key, value in records.items() if (value or {}).get("retryable")]
+        for key in retryable:
+            records.pop(key, None)
+        if retryable:
+            _write_json(GENERATION_ISSUES_PATH, issues)
+    return len(retryable)
 
 
 def _manifest_generated_identity(path, manifest=None):
@@ -3255,9 +3305,53 @@ def _ffmpeg_error_summary(data):
     return summary
 
 
-def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, run):
-    command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-xerror", "-i", video_path,
+class GenerationStalled(RuntimeError):
+    """FFmpeg stopped producing frames; usually the disk, not the file."""
+
+
+# Ordered from strictest to most forgiving. A video that fails the first tactic
+# is not necessarily unreadable -- the default -xerror aborts on the first bad
+# packet, so a single damaged frame is enough to lose an otherwise fine preview.
+EXTRACTION_TACTICS = (
+    {
+        "key": "strict",
+        "label": "Standard extraction",
+        "tolerant": False,
+        "width_scale": 1.0,
+    },
+    {
+        "key": "tolerant",
+        "label": "Error-tolerant extraction",
+        "tolerant": True,
+        "width_scale": 1.0,
+    },
+    {
+        "key": "reduced",
+        "label": "Reduced-width extraction",
+        "tolerant": True,
+        "width_scale": 0.5,
+    },
+)
+MIN_TACTIC_WIDTH = 160
+
+
+def _tactic_width(width, tactic):
+    scaled = int(int(width) * float(tactic.get("width_scale") or 1.0))
+    # Keep it even; libx/jpeg scalers dislike odd widths with -2 height.
+    scaled = max(MIN_TACTIC_WIDTH, scaled)
+    return scaled - (scaled % 2)
+
+
+def _extraction_command(video_path, output_pattern, width, interval_seconds, tactic):
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if tactic.get("tolerant"):
+        # Keep decoding past damaged packets instead of aborting at the first
+        # one, and rebuild timestamps when the container's are unusable.
+        command += ["-err_detect", "ignore_err", "-fflags", "+discardcorrupt+genpts"]
+    else:
+        command += ["-xerror"]
+    command += [
+        "-i", video_path,
         "-map", "0:v:0",
         "-vf", (
             f"select='eq(n,0)+gte(t-prev_selected_t,{int(interval_seconds)})',"
@@ -3265,6 +3359,16 @@ def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, r
         ),
         "-fps_mode", "vfr", "-pix_fmt", "yuvj420p", "-q:v", "2", output_pattern,
     ]
+    return command
+
+
+def _run_frame_extraction(
+    video_path, output_pattern, width, interval_seconds, run, tactic=None
+):
+    tactic = tactic or EXTRACTION_TACTICS[0]
+    command = _extraction_command(
+        video_path, output_pattern, width, interval_seconds, tactic
+    )
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -3330,9 +3434,9 @@ def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, r
                     _persist_generation_run(run)
                 if now - last_progress >= GENERATION_STALL_TIMEOUT_SECONDS:
                     _terminate_generation_process(process)
-                    raise RuntimeError(
+                    raise GenerationStalled(
                         "FFmpeg made no frame progress for "
-                        f"{GENERATION_STALL_TIMEOUT_SECONDS} seconds; the video may be corrupt or unreadable"
+                        f"{GENERATION_STALL_TIMEOUT_SECONDS} seconds"
                     )
             time.sleep(0.1)
     finally:
@@ -3343,6 +3447,72 @@ def _run_frame_extraction(video_path, output_pattern, width, interval_seconds, r
         with stderr_lock:
             error_data = bytes(stderr_tail)
         raise RuntimeError(_ffmpeg_error_summary(error_data))
+
+
+def _failure_is_retryable(exc):
+    """Whether a failure says something about the machine rather than the file.
+
+    A stall, a vanished temp directory, or a video that changed mid-run all
+    describe conditions that can differ next time. A decoder that refused every
+    tactic describes the file, and retrying it unchanged just burns disk.
+    """
+    if isinstance(exc, (GenerationStalled, OSError)):
+        return True
+    text = str(exc).lower()
+    transient_markers = (
+        "changed after",
+        "changed during",
+        "no space left",
+        "resource temporarily unavailable",
+        "permission denied",
+        "timed out",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _extract_frames_with_retries(video, item_work, width, interval_seconds, run):
+    """Extract frames, easing decoder strictness until something comes out.
+
+    Returns (frames, tactic_used, attempts). Raises the last error only when
+    every tactic has been tried, so a single damaged packet no longer costs the
+    whole preview.
+    """
+    attempts = []
+    last_error = None
+    for index, tactic in enumerate(EXTRACTION_TACTICS):
+        # Each attempt gets a clean directory so partial output from a failed
+        # tactic can never be mistaken for this one's frames.
+        if os.path.isdir(item_work):
+            shutil.rmtree(item_work, ignore_errors=True)
+        os.makedirs(item_work, exist_ok=True)
+        pattern = os.path.join(item_work, "%08d.jpg")
+        tactic_width = _tactic_width(width, tactic)
+        if index:
+            run.update({"current_stage": f"Retrying: {tactic['label'].lower()}"})
+            _persist_generation_run(run, force=True)
+        try:
+            _run_frame_extraction(video, pattern, tactic_width, interval_seconds, run, tactic)
+        except ScanCancelled:
+            raise
+        except Exception as exc:
+            last_error = exc
+            attempts.append({"tactic": tactic["key"], "error": str(exc)})
+            continue
+        frames = sorted(
+            (
+                os.path.join(item_work, name)
+                for name in os.listdir(item_work)
+                if name.lower().endswith(".jpg")
+            ),
+            key=str.lower,
+        )
+        if frames:
+            attempts.append({"tactic": tactic["key"], "frame_count": len(frames)})
+            return frames, tactic, attempts
+        # A clean exit with no frames is still a failure worth escalating.
+        last_error = RuntimeError("FFmpeg produced no frames")
+        attempts.append({"tactic": tactic["key"], "error": "No frames produced"})
+    raise last_error or RuntimeError("Frame extraction produced no usable frames")
 
 
 def _install_generated_bif(
@@ -3479,13 +3649,14 @@ def _execute_generation(run, plan):
                 if not _identity_matches(video, item.get("video_identity")):
                     raise RuntimeError("Video changed after the missing-BIF scan")
                 item_work = os.path.join(work_root, item["item_id"])
-                os.makedirs(item_work)
-                pattern = os.path.join(item_work, "%08d.jpg")
-                _run_frame_extraction(video, pattern, plan["width"], plan["interval_seconds"], run)
-                frames = sorted(
-                    (os.path.join(item_work, name) for name in os.listdir(item_work) if name.lower().endswith(".jpg")),
-                    key=str.lower,
+                frames, tactic_used, attempts = _extract_frames_with_retries(
+                    video, item_work, plan["width"], plan["interval_seconds"], run
                 )
+                result["extraction_tactic"] = tactic_used.get("key")
+                result["extraction_attempts"] = attempts
+                if tactic_used is not EXTRACTION_TACTICS[0]:
+                    result["degraded"] = True
+                pattern = os.path.join(item_work, "%08d.jpg")
                 run.update(
                     {
                         "current_stage": "Packaging preview",
@@ -3519,7 +3690,11 @@ def _execute_generation(run, plan):
             except ScanCancelled:
                 raise
             except Exception as exc:
-                result.update({"status": "refused", "reason": str(exc)})
+                result.update({
+                    "status": "refused",
+                    "reason": str(exc),
+                    "retryable": _failure_is_retryable(exc),
+                })
                 refused += 1
             _record_generation_result(item, result, run.get("id"))
             results.append(result)

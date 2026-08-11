@@ -1186,7 +1186,7 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
     )
     assert err is None
 
-    def fake_extract(_video, pattern, _width, _interval, _run):
+    def fake_extract(_video, pattern, _width, _interval, _run, _tactic=None):
         _write(Path(pattern % 1), _jpeg(b"frame-one"))
         _write(Path(pattern % 2), _jpeg(b"frame-two"))
 
@@ -1242,7 +1242,7 @@ def test_bif_generation_refuses_late_matching_bif(monkeypatch, tmp_path):
     assert err is None
     _write(video.parent / "Movie-existing.bif", _bif_bytes([_jpeg(b"existing")], multiplier=10_000))
 
-    def fake_extract(_video, pattern, _width, _interval, _run):
+    def fake_extract(_video, pattern, _width, _interval, _run, _tactic=None):
         _write(Path(pattern % 1), _jpeg(b"new"))
 
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
@@ -1265,7 +1265,7 @@ def test_bif_generation_continues_after_one_video_fails_and_persists_results(mon
     )
     assert err is None
 
-    def fake_extract(video_path, pattern, _width, _interval, _run):
+    def fake_extract(video_path, pattern, _width, _interval, _run, _tactic=None):
         if video_path == str(broken):
             raise RuntimeError("decoder rejected corrupt video")
         _write(Path(pattern % 1), _jpeg(b"healthy-frame"))
@@ -1662,3 +1662,170 @@ def test_both_preview_scans_publish_emby_identity(monkeypatch, tmp_path):
     quality_scan = _quality_scan(lib, monkeypatch, tmp_path)
     assert quality_scan["items"][0]["emby_item_id"] == "movie-1"
     assert video_preview_maintenance.public_quality_scan(quality_scan)["emby_mapping"]["matched_count"] == 1
+
+
+def test_strict_extraction_aborts_on_the_first_error_but_tolerant_does_not():
+    """-xerror is why one damaged packet costs the whole preview."""
+    strict = video_preview_maintenance._extraction_command(
+        "/library/Movie.mkv", "/tmp/%08d.jpg", 320, 10,
+        video_preview_maintenance.EXTRACTION_TACTICS[0],
+    )
+    tolerant = video_preview_maintenance._extraction_command(
+        "/library/Movie.mkv", "/tmp/%08d.jpg", 320, 10,
+        video_preview_maintenance.EXTRACTION_TACTICS[1],
+    )
+
+    assert "-xerror" in strict
+    assert "-xerror" not in tolerant
+    assert "ignore_err" in tolerant
+    assert "+discardcorrupt+genpts" in tolerant
+
+
+def test_reduced_tactic_halves_the_width_without_going_below_the_floor():
+    reduced = video_preview_maintenance.EXTRACTION_TACTICS[2]
+
+    assert video_preview_maintenance._tactic_width(640, reduced) == 320
+    # Never below the floor, and always even.
+    assert video_preview_maintenance._tactic_width(200, reduced) == 160
+    assert video_preview_maintenance._tactic_width(321, reduced) % 2 == 0
+
+
+def test_extraction_escalates_until_a_tactic_produces_frames(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    tried = []
+
+    def fake_extract(_video, pattern, _width, _interval, _run, tactic=None):
+        tried.append(tactic["key"])
+        if tactic["key"] == "strict":
+            raise RuntimeError("Error while decoding stream")
+        Path(pattern % 1).parent.mkdir(parents=True, exist_ok=True)
+        _write(Path(pattern % 1), _jpeg(b"recovered"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+
+    frames, tactic, attempts = video_preview_maintenance._extract_frames_with_retries(
+        "/library/Movie.mkv", str(work), 320, 10, {},
+    )
+
+    assert tried == ["strict", "tolerant"]
+    assert tactic["key"] == "tolerant"
+    assert len(frames) == 1
+    assert attempts[0]["tactic"] == "strict" and "error" in attempts[0]
+    assert attempts[1]["frame_count"] == 1
+
+
+def test_a_tactic_producing_no_frames_escalates_rather_than_succeeding(tmp_path, monkeypatch):
+    """A clean exit with an empty directory is still a failure."""
+    work = tmp_path / "work"
+    tried = []
+
+    def fake_extract(_video, pattern, _width, _interval, _run, tactic=None):
+        tried.append(tactic["key"])
+        if tactic["key"] != "reduced":
+            return  # exits cleanly, writes nothing
+        Path(pattern % 1).parent.mkdir(parents=True, exist_ok=True)
+        _write(Path(pattern % 1), _jpeg(b"last-resort"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+
+    frames, tactic, _attempts = video_preview_maintenance._extract_frames_with_retries(
+        "/library/Movie.mkv", str(work), 320, 10, {},
+    )
+
+    assert tried == ["strict", "tolerant", "reduced"]
+    assert tactic["key"] == "reduced"
+    assert len(frames) == 1
+
+
+def test_frames_from_a_failed_tactic_are_not_reused_by_the_next(tmp_path, monkeypatch):
+    """Partial output from a failed attempt must not pollute the next one."""
+    work = tmp_path / "work"
+
+    def fake_extract(_video, pattern, _width, _interval, _run, tactic=None):
+        Path(pattern % 1).parent.mkdir(parents=True, exist_ok=True)
+        if tactic["key"] == "strict":
+            _write(Path(pattern % 1), _jpeg(b"partial-a"))
+            _write(Path(pattern % 2), _jpeg(b"partial-b"))
+            raise RuntimeError("decoder gave up midway")
+        _write(Path(pattern % 1), _jpeg(b"clean"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+
+    frames, tactic, _attempts = video_preview_maintenance._extract_frames_with_retries(
+        "/library/Movie.mkv", str(work), 320, 10, {},
+    )
+
+    assert tactic["key"] == "tolerant"
+    # Only the successful tactic's single frame survives.
+    assert len(frames) == 1
+    assert Path(frames[0]).read_bytes() == _jpeg(b"clean")
+
+
+def test_every_tactic_failing_raises_the_last_error(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+
+    def fake_extract(_video, _pattern, _width, _interval, _run, tactic=None):
+        raise RuntimeError(f"{tactic['key']} failed")
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+
+    try:
+        video_preview_maintenance._extract_frames_with_retries(
+            "/library/Movie.mkv", str(work), 320, 10, {},
+        )
+    except RuntimeError as exc:
+        # The error surfaced is the last tactic's, not the first.
+        assert "reduced failed" in str(exc)
+    else:
+        raise AssertionError("extraction should have raised once every tactic failed")
+
+
+def test_stalls_are_retryable_but_a_refusing_decoder_is_not():
+    stalled = video_preview_maintenance.GenerationStalled("no frame progress for 120 seconds")
+    assert video_preview_maintenance._failure_is_retryable(stalled) is True
+    assert video_preview_maintenance._failure_is_retryable(OSError("disk busy")) is True
+    assert video_preview_maintenance._failure_is_retryable(
+        RuntimeError("Video changed after the missing-BIF scan")
+    ) is True
+    # A decoder that refused every tactic describes the file, not the machine.
+    assert video_preview_maintenance._failure_is_retryable(
+        RuntimeError("Invalid data found when processing input")
+    ) is False
+
+
+def test_a_scan_clears_retryable_failures_but_keeps_permanent_ones(monkeypatch, tmp_path):
+    issues_path = tmp_path / "issues.json"
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_ISSUES_PATH", str(issues_path))
+    video_preview_maintenance._write_json(str(issues_path), {
+        "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+        "records": {
+        "stalled": {"item_id": "stalled", "retryable": True, "reason": "stalled"},
+        "corrupt": {"item_id": "corrupt", "retryable": False, "reason": "undecodable"},
+    }})
+
+    cleared = video_preview_maintenance._clear_retryable_generation_issues()
+
+    assert cleared == 1
+    records = video_preview_maintenance._generation_issues()["records"]
+    assert "stalled" not in records
+    assert "corrupt" in records
+
+
+def test_clearing_issues_lets_a_permanent_failure_be_tried_again(monkeypatch, tmp_path):
+    issues_path = tmp_path / "issues.json"
+    monkeypatch.setattr(video_preview_maintenance, "GENERATION_ISSUES_PATH", str(issues_path))
+    video_preview_maintenance._write_json(str(issues_path), {
+        "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+        "records": {
+        "corrupt": {"item_id": "corrupt", "retryable": False},
+        "other": {"item_id": "other", "retryable": False},
+    }})
+
+    result = video_preview_maintenance.clear_generation_issues(["corrupt"])
+
+    assert result["cleared_count"] == 1
+    records = video_preview_maintenance._generation_issues()["records"]
+    assert "corrupt" not in records and "other" in records
+
+    video_preview_maintenance.clear_generation_issues()
+    assert video_preview_maintenance._generation_issues()["records"] == {}

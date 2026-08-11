@@ -2904,18 +2904,29 @@
         : bif.name
       ).join(', ');
       const issue = item.previous_generation_issue;
+      // A permanent failure is excluded from generation until it is cleared,
+      // so it needs a way out rather than just a badge.
       const issueBadge = issue
-        ? '<span class="badge text-bg-warning ms-1">Previous issue</span>'
+        ? `<span class="badge text-bg-warning ms-1">${issue.retryable ? 'Will retry' : 'Needs retry'}</span>`
+        : '';
+      const tactics = issue && (issue.tactics_tried || []).length
+        ? ` Tried: ${(issue.tactics_tried || []).join(', ')}.`
+        : '';
+      const attemptText = issue && issue.attempt_count > 1
+        ? ` ${issue.attempt_count} attempts.`
+        : '';
+      const retryButton = issue && !issue.retryable
+        ? `<button class="btn btn-outline-secondary btn-sm ms-2" type="button" data-preview-retry="${escapeHtml(item.id)}">Try again</button>`
         : '';
       const detail = issue
-        ? `${item.detail || ''} Previous generation attempt: ${issue.reason || 'could not complete'}`
+        ? `${item.detail || ''} Previous attempt: ${issue.reason || 'could not complete'}.${tactics}${attemptText}`
         : (item.detail || '');
       return `<tr>` +
         `<td>${item.status === 'missing' ? `<input class="form-check-input" type="checkbox" data-preview-generate="${escapeHtml(item.id)}" aria-label="Generate BIF for ${escapeHtml(item.name)}"${previewItemIsSelected(item) ? ' checked' : ''}>` : ''}</td>` +
         `<td>${previewStatusBadge(item.status)}${issueBadge}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
         `<td>${escapeHtml(item.size_label || '')}</td>` +
-        `<td>${escapeHtml(detail)}</td>` +
+        `<td>${escapeHtml(detail)}${retryButton}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(bifNames)}">${escapeHtml(bifNames || 'none')}</code></td>` +
         `</tr>`;
     }).join('');
@@ -5834,6 +5845,27 @@
         loadPreviewItems(previewItemsPage.next_offset);
       } else if (direction === 'prev' && previewItemsPage?.has_previous) {
         loadPreviewItems(previewItemsPage.previous_offset);
+      }
+    });
+
+    byId('previewItems')?.addEventListener('click', async event => {
+      const retry = event.target.closest('[data-preview-retry]');
+      if (!retry) return;
+      const itemId = retry.getAttribute('data-preview-retry');
+      retry.disabled = true;
+      try {
+        const res = await fetch('/api/maintenance/video-previews/generation/issues/clear', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({item_ids: [itemId]}),
+        });
+        const data = await readJsonResponse(res);
+        if (!res.ok) throw new Error(data.error || 'The previous failure could not be cleared');
+        setPreviewMessage('Ready to try again', 'Rescan to pick this video up for generation.');
+        loadPreviewItems(previewItemsPage?.offset || 0);
+      } catch (e) {
+        retry.disabled = false;
+        setPreviewMessage('Could not clear the previous failure', e.message || '');
       }
     });
 
