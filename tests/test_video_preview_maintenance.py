@@ -1424,7 +1424,7 @@ def test_frame_extraction_times_out_when_no_frames_advance(monkeypatch, tmp_path
     except RuntimeError as exc:
         assert "no frame progress" in str(exc)
     assert "-xerror" in commands[0]
-    assert commands[0][commands[0].index("-map") + 1] == "0:v:0"
+    assert commands[0][commands[0].index("-map") + 1] == "0:V:0"
 
 
 def test_bif_quality_cancel_reuses_active_scan(monkeypatch, tmp_path):
@@ -1948,3 +1948,68 @@ def test_a_failure_from_older_extraction_logic_no_longer_holds_a_video(monkeypat
     record(video_preview_maintenance.EXTRACTION_LOGIC_VERSION)
     page, _err = video_preview_maintenance.items_payload(scan["id"], status="missing")
     assert page["selection"]["held_count"] == 1
+
+
+def test_extraction_skips_embedded_cover_art_when_choosing_a_video_stream():
+    """Library MP4s often carry cover art as the first video stream.
+
+    "0:v:0" selects it, which yields exactly one frame from an otherwise clean
+    run no matter how forgiving the decoder flags are. Capital V excludes
+    attached pictures, so the film is chosen instead.
+    """
+    for tactic in video_preview_maintenance.EXTRACTION_TACTICS:
+        command = video_preview_maintenance._extraction_command(
+            "/library/Movie.mp4", "/tmp/%08d.jpg", 320, 10, tactic,
+        )
+        assert "0:V:0" in command, tactic["key"]
+        assert "0:v:0" not in command, tactic["key"]
+
+
+def test_stream_inventory_reports_attached_pictures(monkeypatch):
+    payload = {
+        "streams": [
+            {"index": 0, "codec_type": "video", "codec_name": "mjpeg",
+             "width": 600, "height": 900, "nb_frames": "1",
+             "disposition": {"attached_pic": 1}},
+            {"index": 1, "codec_type": "video", "codec_name": "hevc",
+             "width": 3840, "height": 2160, "nb_frames": "47000",
+             "disposition": {"attached_pic": 0}},
+        ]
+    }
+
+    class _Result:
+        returncode = 0
+        stdout = json.dumps(payload)
+
+    monkeypatch.setattr(
+        video_preview_maintenance.subprocess, "run", lambda *a, **k: _Result()
+    )
+
+    inventory = video_preview_maintenance.probe_stream_inventory("/library/Movie.mp4")
+
+    assert inventory[0]["attached_pic"] == 1
+    assert inventory[0]["codec_name"] == "mjpeg"
+    assert inventory[1]["attached_pic"] == 0
+    assert inventory[1]["width"] == 3840
+
+
+def test_stream_inventory_is_recorded_when_no_tactic_reaches_the_target(tmp_path, monkeypatch):
+    """A shortfall must leave evidence rather than requiring another guess."""
+    work = tmp_path / "work"
+
+    def fake_extract(_video, pattern, _width, _interval, _run, tactic=None):
+        Path(pattern % 1).parent.mkdir(parents=True, exist_ok=True)
+        _write(Path(pattern % 1), _jpeg(b"only-one"))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+    monkeypatch.setattr(
+        video_preview_maintenance, "probe_stream_inventory",
+        lambda path, timeout=10: [{"index": 0, "codec_type": "video", "attached_pic": 1}],
+    )
+
+    _frames, _tactic, attempts = video_preview_maintenance._extract_frames_with_retries(
+        "/library/Movie.mkv", str(work), 320, 10, {}, expected_frames=199,
+    )
+
+    inventory = next(a["stream_inventory"] for a in attempts if "stream_inventory" in a)
+    assert inventory[0]["attached_pic"] == 1

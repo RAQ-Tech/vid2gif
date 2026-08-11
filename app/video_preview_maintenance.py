@@ -81,7 +81,7 @@ GENERATION_ISSUES_SCHEMA_VERSION = 1
 # A recorded failure only describes what the extraction code of the day could
 # manage. Bump this whenever the tactics change so previously failed videos are
 # offered again automatically instead of staying held by a stale verdict.
-EXTRACTION_LOGIC_VERSION = 2
+EXTRACTION_LOGIC_VERSION = 3
 GENERATION_STALL_TIMEOUT_SECONDS = max(
     30,
     _env_int("VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT", 120),
@@ -3391,7 +3391,11 @@ def _extraction_command(video_path, output_pattern, width, interval_seconds, tac
         command += ["-xerror"]
     command += [
         "-i", video_path,
-        "-map", "0:v:0",
+        # Capital V excludes attached pictures. Many library MP4s carry embedded
+        # cover art as the first video stream, and "0:v:0" selects that instead
+        # of the film -- yielding exactly one frame from a clean run, no matter
+        # how tolerant the decoder flags are.
+        "-map", "0:V:0",
         "-vf", (
             f"select='eq(n,0)+gte(t-prev_selected_t,{int(interval_seconds)})',"
             f"scale={int(width)}:-2:flags=lanczos"
@@ -3488,6 +3492,51 @@ def _run_frame_extraction(
         raise RuntimeError(_ffmpeg_error_summary(error_data))
 
 
+def probe_stream_inventory(path, timeout=FFPROBE_TIMEOUT_SECONDS):
+    """List a video's streams so a bad extraction can be explained, not guessed.
+
+    An underproducing extraction is almost always a mapping problem rather than
+    a decode problem, and the only way to tell them apart is to know what the
+    file actually contains -- including whether its first video stream is really
+    embedded cover art.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries",
+                "stream=index,codec_type,codec_name,width,height,nb_frames,duration"
+                ":stream_disposition=attached_pic",
+                "-of", "json", path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        streams = (json.loads(proc.stdout or "{}") or {}).get("streams") or []
+    except (TypeError, ValueError):
+        return []
+    inventory = []
+    for stream in streams:
+        disposition = stream.get("disposition") or {}
+        inventory.append({
+            "index": stream.get("index"),
+            "codec_type": stream.get("codec_type"),
+            "codec_name": stream.get("codec_name"),
+            "width": stream.get("width"),
+            "height": stream.get("height"),
+            "nb_frames": stream.get("nb_frames"),
+            "duration": stream.get("duration"),
+            "attached_pic": int(disposition.get("attached_pic") or 0),
+        })
+    return inventory
+
+
 def _failure_is_retryable(exc):
     """Whether a failure says something about the machine rather than the file.
 
@@ -3576,8 +3625,10 @@ def _extract_frames_with_retries(
             + (f" of an expected {expected_frames}" if expected_frames else "")
         )
     if best:
-        # Nothing reached the expected count; hand back the fullest attempt so
-        # the installer reports the precise shortfall rather than a bare error.
+        # Nothing reached the expected count. Record what the file actually
+        # contains so the shortfall can be explained from the log instead of
+        # reasoned about from the outside.
+        attempts.append({"stream_inventory": probe_stream_inventory(video)})
         return best[0], best[1], attempts
     raise last_error or RuntimeError("Frame extraction produced no usable frames")
 
