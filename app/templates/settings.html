@@ -179,6 +179,41 @@
             <input id="duplicate_excluded_folders" name="duplicate_excluded_folders" class="form-control" value="{{ duplicate_excluded_folders_text }}" placeholder="trailers, extras, samples">
           </div>
         </div>
+
+        <div class="panel-subheading mt-4">
+          <i class="bi bi-sliders" aria-hidden="true"></i>
+          <span>When to ask you</span>
+        </div>
+        <p class="small text-muted mb-3">Cleanup picks the best copy of each file on its own. These
+          decide how close two candidates have to be before it stops deciding and sends the folder
+          to your review queue instead. Smaller numbers mean fewer questions and more trust in the
+          ranking; larger numbers mean more folders come back to you.</p>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_subtitle_close_points">Subtitles are tied within</label>
+            <div class="input-group">
+              <input id="duplicate_subtitle_close_points" name="duplicate_subtitle_close_points" class="form-control" type="number" min="0" max="100" step="1" value="{{ settings.duplicate_subtitle_close_points }}">
+              <span class="input-group-text">% coverage</span>
+            </div>
+            <div class="form-text">Two subtitles whose coverage of the video is this close count as a tie.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_image_close_ratio">Images are tied within</label>
+            <div class="input-group">
+              <input id="duplicate_image_close_ratio" name="duplicate_image_close_ratio" class="form-control" type="number" min="0" max="100" step="1" value="{{ settings.duplicate_image_close_ratio }}">
+              <span class="input-group-text">% pixels</span>
+            </div>
+            <div class="form-text">Posters and artwork this close in total pixel count count as a tie.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="duplicate_runtime_tolerance_seconds">Runtime may differ by</label>
+            <div class="input-group">
+              <input id="duplicate_runtime_tolerance_seconds" name="duplicate_runtime_tolerance_seconds" class="form-control" type="number" min="0" max="3600" step="10" value="{{ settings.duplicate_runtime_tolerance_seconds }}">
+              <span class="input-group-text">seconds</span>
+            </div>
+            <div class="form-text">Beyond this, a subtitle or preview from a different-length copy is flagged rather than used.</div>
+          </div>
+        </div>
       </div>
 
       <div class="settings-panel">

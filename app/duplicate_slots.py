@@ -335,14 +335,17 @@ def resolve_group_slots(
     Returns a list of slot dicts, each naming a winner (or none, when the role
     is not understood) plus the losers to clean up.
     """
+    # Keys match the normalized duplicate-settings dict, which drops the
+    # "duplicate_" prefix the stored settings use.
     options = dict(DEFAULTS)
     for key in DEFAULTS:
-        value = (settings or {}).get(f"duplicate_{key}")
-        if value is not None:
-            try:
-                options[key] = float(value)
-            except (TypeError, ValueError):
-                pass
+        value = (settings or {}).get(key)
+        if value is None:
+            continue
+        try:
+            options[key] = float(value)
+        except (TypeError, ValueError):
+            pass
 
     probe_image = probe_image or _default_probe_image
     analyze_subtitle = analyze_subtitle or _default_analyze_subtitle

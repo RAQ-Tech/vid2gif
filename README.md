@@ -176,6 +176,13 @@ group shows one row per slot with the winner, the copy it came from, and the
 measurement that decided it; the full per-file action list stays available behind
 a disclosure.
 
+Three settings control when cleanup stops deciding and asks instead: how close
+two subtitles' coverage must be to count as tied, how close two images must be in
+pixel count, and how far a runtime may differ before a subtitle or preview from a
+different-length copy is flagged rather than used. Smaller values mean fewer
+questions and more trust in the ranking; larger values send more folders back for
+review.
+
 Cleanup runs can be undone a file at a time. Each log lists every file it moved
 with its current state, and restoring some files leaves the rest available to
 restore later. Records describing moved files are exempt from the log size cap so

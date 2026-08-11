@@ -139,6 +139,14 @@ def _bitrate_label(bit_rate):
     return f"{bit_rate} bps"
 
 
+def _percent_ratio(value, default=0.10):
+    """Settings store a whole percentage; the resolver compares against a ratio."""
+    try:
+        return max(0.0, float(value)) / 100.0
+    except (TypeError, ValueError):
+        return default
+
+
 def duplicate_settings():
     settings = app_settings.load_settings()
     return {
@@ -147,6 +155,10 @@ def duplicate_settings():
         "accessory_policy": settings.get("duplicate_accessory_policy", "rename_unmatched"),
         "move_root": settings.get("duplicate_move_root") or app_settings.DEFAULT_DUPLICATE_MOVE_ROOT,
         "excluded_folders": set(settings.get("duplicate_excluded_folders") or []),
+        # Slot review margins, keyed to match duplicate_slots.DEFAULTS.
+        "subtitle_close_points": settings.get("duplicate_subtitle_close_points", 8),
+        "image_close_ratio": _percent_ratio(settings.get("duplicate_image_close_ratio", 10)),
+        "runtime_tolerance_seconds": settings.get("duplicate_runtime_tolerance_seconds", 60),
     }
 
 
@@ -164,6 +176,9 @@ def public_duplicate_settings(settings):
         "excluded_folders": sorted(
             str(item) for item in (settings.get("excluded_folders") or [])
         ),
+        "subtitle_close_points": settings.get("subtitle_close_points", 8),
+        "image_close_ratio": settings.get("image_close_ratio", 0.10),
+        "runtime_tolerance_seconds": settings.get("runtime_tolerance_seconds", 60),
     }
 
 

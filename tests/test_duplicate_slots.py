@@ -306,7 +306,7 @@ def test_settings_can_widen_the_subtitle_tie_margin():
     loose = duplicate_slots.resolve_group_slots(
         [keeper, copy_one],
         keeper,
-        {"duplicate_subtitle_close_points": 20},
+        {"subtitle_close_points": 20},
         analyze_subtitle=analyze,
     )
     assert _slot(loose, "subtitle:.eng.srt")["needs_review"] is True

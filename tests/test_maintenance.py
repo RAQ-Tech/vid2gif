@@ -2182,3 +2182,126 @@ def test_cleanup_borrows_a_better_poster_from_the_copy_being_removed(monkeypatch
     assert apply_err is None
     assert result["refused_count"] == 0
     assert keeper_poster.read_bytes() == b"l" * 900
+
+
+def test_stored_image_margin_reaches_the_slot_resolver(monkeypatch, tmp_path):
+    """A saved setting must change a real decision, not just be stored.
+
+    The normalized duplicate-settings dict drops the "duplicate_" prefix, so a
+    resolver reading the prefixed name silently falls back to its default.
+    """
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    keeper = _write(movie / "Movie.1080p.mkv", b"a" * 400)
+    loser = _write(movie / "Movie.720p.mkv", b"b" * 100)
+    _write(movie / "Movie.1080p-poster.jpg", b"s" * 40)
+    _write(movie / "Movie.720p-poster.jpg", b"l" * 900)
+
+    # 5% apart in pixel count: a hair outside the default 10% tie margin.
+    dimensions = {
+        "Movie.1080p-poster.jpg": {"width": 1000, "height": 1000},
+        "Movie.720p-poster.jpg": {"width": 1050, "height": 1000},
+    }
+    monkeypatch.setattr(
+        maintenance.duplicate_slots,
+        "_default_probe_image",
+        lambda path: dimensions.get(os.path.basename(path)),
+    )
+    metadata = {
+        keeper.name: {"width": 1920, "height": 1080, "bit_rate": 8_000_000},
+        loser.name: {"width": 1280, "height": 720, "bit_rate": 2_000_000},
+    }
+
+    def poster_slot(scan):
+        group = scan["groups"][0]
+        return next(slot for slot in group["slots"] if slot["role"] == "poster")
+
+    tight = _scan(lib, lib, monkeypatch, metadata,
+                  {"duplicate_image_close_ratio": 1})
+    # A 1% margin separates them cleanly, so the bigger image simply wins.
+    assert poster_slot(tight)["needs_review"] is False
+
+    loose = _scan(lib, lib, monkeypatch, metadata,
+                  {"duplicate_image_close_ratio": 25})
+    # A 25% margin makes them a tie, which has to come back for review.
+    slot = poster_slot(loose)
+    assert slot["needs_review"] is True
+    assert any(flag["kind"] == "close_call" for flag in slot["flags"])
+
+
+def _settings_form(**overrides):
+    """A complete settings form, as a browser would submit it.
+
+    The handler validates every field rather than merging partials, so a
+    partial post is rejected outright.
+    """
+    defaults = app_settings.default_settings()
+    form = {
+        "preview_height_preset": "original",
+        "duplicate_grouping_mode": defaults["duplicate_grouping_mode"],
+        "duplicate_keeper_rule": defaults["duplicate_keeper_rule"],
+        "duplicate_accessory_policy": defaults["duplicate_accessory_policy"],
+        "duplicate_move_root": defaults["duplicate_move_root"],
+        "duplicate_excluded_folders": ", ".join(defaults["duplicate_excluded_folders"]),
+        "duplicate_subtitle_close_points": str(defaults["duplicate_subtitle_close_points"]),
+        "duplicate_image_close_ratio": str(defaults["duplicate_image_close_ratio"]),
+        "duplicate_runtime_tolerance_seconds": str(defaults["duplicate_runtime_tolerance_seconds"]),
+        "subtitle_expected_languages": ", ".join(defaults["subtitle_expected_languages"]),
+        "video_preview_bif_width": str(defaults["video_preview_bif_width"]),
+        "video_preview_bif_interval_seconds": str(defaults["video_preview_bif_interval_seconds"]),
+        "emby_url": "",
+        "emby_api_key": "",
+        "emby_path_mappings": "",
+        "emby_admin_notifications": defaults["emby_admin_notifications"],
+    }
+    form.update(overrides)
+    return form
+
+
+def test_settings_form_saves_the_slot_review_margins(monkeypatch, tmp_path):
+    """The margins must survive a real form POST, not just exist in defaults."""
+    settings_path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(settings_path))
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(settings_path))
+
+    client = routes.app.test_client()
+    page = client.get("/settings")
+    assert page.status_code == 200
+    assert "duplicate_subtitle_close_points" in page.get_data(as_text=True)
+
+    response = client.post("/settings", data=_settings_form(
+        duplicate_subtitle_close_points="3",
+        duplicate_image_close_ratio="25",
+        duplicate_runtime_tolerance_seconds="120",
+    ))
+    assert response.status_code in (200, 302)
+
+    saved = app_settings.load_settings()
+    assert saved["duplicate_subtitle_close_points"] == 3
+    assert saved["duplicate_image_close_ratio"] == 25
+    assert saved["duplicate_runtime_tolerance_seconds"] == 120
+
+    # And they arrive at the resolver in the shape it reads, with the image
+    # margin converted from a percentage to a ratio.
+    normalized = maintenance.duplicate_settings()
+    assert normalized["subtitle_close_points"] == 3
+    assert normalized["image_close_ratio"] == 0.25
+    assert normalized["runtime_tolerance_seconds"] == 120
+
+
+def test_out_of_range_margins_fall_back_to_defaults(monkeypatch, tmp_path):
+    settings_path = tmp_path / "app_settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(settings_path))
+    monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(settings_path))
+
+    client = routes.app.test_client()
+    client.post("/settings", data=_settings_form(
+        duplicate_subtitle_close_points="-5",
+        duplicate_image_close_ratio="not a number",
+        duplicate_runtime_tolerance_seconds="999999",
+    ))
+
+    saved = app_settings.load_settings()
+    assert saved["duplicate_subtitle_close_points"] == 8
+    assert saved["duplicate_image_close_ratio"] == 10
+    assert saved["duplicate_runtime_tolerance_seconds"] == 60
