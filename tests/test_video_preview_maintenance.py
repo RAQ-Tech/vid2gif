@@ -247,19 +247,21 @@ def test_missing_bif_selection_spans_pages_and_holds_previous_failures(monkeypat
     scan = _scan(lib, monkeypatch, tmp_path)
     held_item = scan["items"][27]
     video_preview_maintenance._write_json(
-        video_preview_maintenance.GENERATION_RUN_PATH,
+        video_preview_maintenance.GENERATION_ISSUES_PATH,
         {
-            "schema_version": video_preview_maintenance.GENERATION_RUN_SCHEMA_VERSION,
-            "run": {
-                "id": "previous-run",
-                "status": "success",
-                "finished_at": "2026-07-14T12:00:00Z",
-                "items": [{
+            "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+            "records": {
+                held_item["id"]: {
                     "item_id": held_item["id"],
                     "status": "refused",
                     "reason": "decoder rejected this video",
-                    "video": held_item["relative_path"],
-                }],
+                    "video_relative_path": held_item["relative_path"],
+                    "video_identity": held_item.get("video_identity")
+                    or video_preview_maintenance._stat_identity(held_item["path"]),
+                    "retryable": False,
+                    # Written by the current extraction logic, so it still holds.
+                    "extraction_logic_version": video_preview_maintenance.EXTRACTION_LOGIC_VERSION,
+                },
             },
         },
     )
@@ -299,8 +301,8 @@ def test_missing_bif_selection_spans_pages_and_holds_previous_failures(monkeypat
     held_public = next(item for item in second_page["items"] if item["id"] == held_item["id"])
     assert held_public["generation_held"] is True
     assert held_public["previous_generation_issue"]["reason"] == "decoder rejected this video"
-    migrated = video_preview_maintenance._generation_issues()["records"][held_item["id"]]
-    assert migrated["migrated_from_latest_run"] is True
+    stored = video_preview_maintenance._generation_issues()["records"][held_item["id"]]
+    assert stored["extraction_logic_version"] == video_preview_maintenance.EXTRACTION_LOGIC_VERSION
     assert default_err is None
     assert default_plan["file_count"] == 29
     assert default_plan["held_back_count"] == 1
@@ -1901,3 +1903,48 @@ def test_the_fullest_attempt_survives_when_no_tactic_reaches_the_target(tmp_path
     # 50 frames beats 1, and beats the tactic that produced none at all.
     assert tactic["key"] == "tolerant"
     assert len(frames) == 50
+
+
+def test_a_failure_from_older_extraction_logic_no_longer_holds_a_video(monkeypatch, tmp_path):
+    """After the tactics change, old verdicts must not keep a video excluded.
+
+    This is the upgrade path: a video that failed under the previous logic gets
+    another attempt automatically rather than waiting for a manual retry.
+    """
+    lib = tmp_path / "library"
+    _write(lib / "Movie" / "Movie.mkv")
+    scan = _scan(lib, monkeypatch, tmp_path)
+    item = scan["items"][0]
+
+    def record(version):
+        video_preview_maintenance._write_json(
+            video_preview_maintenance.GENERATION_ISSUES_PATH,
+            {
+                "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+                "records": {item["id"]: {
+                    "item_id": item["id"],
+                    "status": "refused",
+                    "reason": "Generated BIF frame count is unexpected (1 / 199)",
+                    "video_identity": item.get("video_identity")
+                    or video_preview_maintenance._stat_identity(item["path"]),
+                    "retryable": False,
+                    **({"extraction_logic_version": version} if version is not None else {}),
+                }},
+            },
+        )
+
+    # An unstamped record predates the version stamp entirely.
+    record(None)
+    page, _err = video_preview_maintenance.items_payload(scan["id"], status="missing")
+    assert page["selection"]["held_count"] == 0
+    assert page["items"][0].get("generation_held") is not True
+
+    # So does one written by an older version of the extraction logic.
+    record(video_preview_maintenance.EXTRACTION_LOGIC_VERSION - 1)
+    page, _err = video_preview_maintenance.items_payload(scan["id"], status="missing")
+    assert page["selection"]["held_count"] == 0
+
+    # A record from the current logic still holds.
+    record(video_preview_maintenance.EXTRACTION_LOGIC_VERSION)
+    page, _err = video_preview_maintenance.items_payload(scan["id"], status="missing")
+    assert page["selection"]["held_count"] == 1

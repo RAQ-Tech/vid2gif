@@ -2797,6 +2797,27 @@
     };
   }
 
+  function syncPreviewVisibleSelectAll() {
+    const master = byId('previewSelectVisible');
+    if (!master) return;
+    const boxes = Array.from(document.querySelectorAll('[data-preview-generate]'));
+    const checked = boxes.filter(box => box.checked).length;
+    master.disabled = !boxes.length;
+    master.checked = Boolean(boxes.length) && checked === boxes.length;
+    master.indeterminate = checked > 0 && checked < boxes.length;
+  }
+
+  function setPreviewVisibleSelection(shouldSelect) {
+    document.querySelectorAll('[data-preview-generate]').forEach(box => {
+      if (box.checked === shouldSelect) return;
+      box.checked = shouldSelect;
+      // Reuse the existing per-checkbox path so held overrides and the
+      // all_eligible exclusion set stay consistent.
+      box.dispatchEvent(new Event('change', {bubbles: true}));
+    });
+    syncPreviewVisibleSelectAll();
+  }
+
   function renderPreviewSelectionSummary() {
     const target = byId('previewSelectionSummary');
     if (!target) return;
@@ -2804,7 +2825,10 @@
     const held = Math.max(0, previewSelection.heldTotal - previewSelection.includedHeld.size);
     const mode = previewSelection.mode === 'all_eligible' ? 'across all result pages' : 'chosen individually';
     target.innerHTML = `<strong>${escapeHtml(selected)} selected</strong> ${escapeHtml(mode)}` +
-      (held ? ` <span class="text-warning-emphasis">- ${escapeHtml(held)} held back after previous generation issues</span>` : '') +
+      (held
+        ? ` <span class="text-warning-emphasis">- ${escapeHtml(held)} held back after previous generation issues</span>` +
+          ` <button class="btn btn-outline-secondary btn-sm ms-2" type="button" data-preview-retry-all="1">Try all ${escapeHtml(held)} again</button>`
+        : '') +
       `<div class="small text-muted mt-1">Page navigation does not change this selection.</div>`;
   }
 
@@ -2934,9 +2958,13 @@
       `${previewPager(page)}` +
       `<div class="table-responsive workspace-table-wrap">` +
       `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-missing-bifs" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || previewSort.column)}" data-current-direction="${escapeHtml(page.direction || previewSort.direction)}">` +
-      `<thead><tr><th data-column-id="generate" data-resizable="false">Generate</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="detail" data-sortable="true">Detail</th><th data-column-id="bifs" data-sortable="true" data-sort-type="number">BIF files</th></tr></thead>` +
+      `<thead><tr><th data-column-id="generate" data-resizable="false">` +
+      `<div class="d-flex align-items-center gap-2">` +
+      `<input class="form-check-input mt-0" type="checkbox" id="previewSelectVisible" aria-label="Select every missing video on this page">` +
+      `<label class="form-check-label" for="previewSelectVisible">Generate</label></div></th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="video" data-sortable="true">Video</th><th data-column-id="size" data-sortable="true" data-sort-type="number">Size</th><th data-column-id="detail" data-sortable="true">Detail</th><th data-column-id="bifs" data-sortable="true" data-sort-type="number">BIF files</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>` +
       `${previewPager(page)}`;
+    syncPreviewVisibleSelectAll();
   }
 
   async function loadPreviewItems(offset = previewPageOffset) {
@@ -5849,6 +5877,26 @@
     });
 
     byId('previewItems')?.addEventListener('click', async event => {
+      const retryAll = event.target.closest('[data-preview-retry-all]');
+      if (retryAll) {
+        retryAll.disabled = true;
+        try {
+          const res = await fetch('/api/maintenance/video-previews/generation/issues/clear', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+          });
+          const data = await readJsonResponse(res);
+          if (!res.ok) throw new Error(data.error || 'Previous failures could not be cleared');
+          setPreviewMessage(
+            `${data.cleared_count || 0} videos released`,
+            'They will be attempted again on the next generation run.',
+          );
+          loadPreviewItems(previewItemsPage?.offset || 0);
+        } catch (e) {
+          retryAll.disabled = false;
+          setPreviewMessage('Could not clear previous failures', e.message || '');
+        }
+        return;
+      }
       const retry = event.target.closest('[data-preview-retry]');
       if (!retry) return;
       const itemId = retry.getAttribute('data-preview-retry');
@@ -5870,6 +5918,11 @@
     });
 
     byId('previewItems')?.addEventListener('change', event => {
+      const master = event.target.closest('#previewSelectVisible');
+      if (master) {
+        setPreviewVisibleSelection(master.checked);
+        return;
+      }
       const checkbox = event.target.closest('[data-preview-generate]');
       if (!checkbox) return;
       const itemId = checkbox.getAttribute('data-preview-generate');
@@ -5886,6 +5939,7 @@
         previewSelection.excluded.add(itemId);
       }
       previewSelectionChanged();
+      syncPreviewVisibleSelectAll();
     });
 
     byId('subtitleItems')?.addEventListener('click', event => {

@@ -78,6 +78,10 @@ GENERATION_RUN_PATH = os.path.join(GENERATION_ROOT, "latest-run.json")
 GENERATION_ISSUES_PATH = os.path.join(GENERATION_ROOT, "issues.json")
 GENERATION_RUN_SCHEMA_VERSION = 1
 GENERATION_ISSUES_SCHEMA_VERSION = 1
+# A recorded failure only describes what the extraction code of the day could
+# manage. Bump this whenever the tactics change so previously failed videos are
+# offered again automatically instead of staying held by a stale verdict.
+EXTRACTION_LOGIC_VERSION = 2
 GENERATION_STALL_TIMEOUT_SECONDS = max(
     30,
     _env_int("VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT", 120),
@@ -2963,6 +2967,10 @@ def _generation_issue_for_item(item, issues=None):
     identity = (item or {}).get("video_identity") or _stat_identity((item or {}).get("path") or "")
     if not _same_generation_identity(identity, issue.get("video_identity")):
         return None
+    # Records written by older extraction logic say nothing about what the
+    # current tactics can do, so they no longer hold a video back.
+    if int(issue.get("extraction_logic_version") or 0) != EXTRACTION_LOGIC_VERSION:
+        return None
     return {
         "status": issue.get("status") or "refused",
         "reason": issue.get("reason") or "The previous generation attempt could not complete",
@@ -3000,6 +3008,7 @@ def _record_generation_result(plan_item, result, run_id):
                 "retryable": bool((result or {}).get("retryable")),
                 "attempts": (result or {}).get("extraction_attempts") or [],
                 "attempt_count": int(previous.get("attempt_count") or 0) + 1,
+                "extraction_logic_version": EXTRACTION_LOGIC_VERSION,
             }
         _write_json(GENERATION_ISSUES_PATH, issues)
 
@@ -3232,6 +3241,36 @@ def build_generation_plan(payload, lib_root=LIB_ROOT):
     }
     with preview_lock:
         generation_plans[plan["id"]] = plan
+    # Record what this plan chose *not* to do. Without this the only trace of a
+    # held-back video is its absence from the run log, which is impossible to
+    # tell apart from it never having been found.
+    selected_ids = {item["item_id"] for item in files}
+    _write_log(
+        "bif-generation-plan",
+        {
+            "plan_id": plan["id"],
+            "scan_id": scan.get("id"),
+            "selection_mode": selection_mode,
+            "missing_total": len(missing_items),
+            "selected_count": len(files),
+            "held_back_count": held_back_count,
+            "held_override_count": held_override_count,
+            "extraction_logic_version": EXTRACTION_LOGIC_VERSION,
+            "held_back": [
+                {
+                    "item_id": item.get("id"),
+                    "video": item.get("relative_path") or item.get("name"),
+                    "reason": (issue_by_id.get(item["id"]) or {}).get("reason") or "",
+                    "retryable": (issue_by_id.get(item["id"]) or {}).get("retryable"),
+                    "attempt_count": (issue_by_id.get(item["id"]) or {}).get("attempt_count"),
+                    "tactics_tried": (issue_by_id.get(item["id"]) or {}).get("tactics_tried") or [],
+                    "excluded_because": "A previous generation attempt failed and was not cleared",
+                }
+                for item in missing_items
+                if item.get("id") in issue_by_id and item.get("id") not in selected_ids
+            ],
+        },
+    )
     return plan, None
 
 

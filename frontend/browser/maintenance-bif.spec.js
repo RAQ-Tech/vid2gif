@@ -188,3 +188,48 @@ test('a permanently failed video can be released for another attempt', async ({ 
   await expect(page.locator('[data-preview-retry]')).toHaveCount(0);
   await expect(page.getByText('Needs retry')).toHaveCount(0);
 });
+
+test('the header checkbox selects and clears every video on the page', async ({ page }) => {
+  await page.route('**/api/maintenance/video-previews/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ scan }),
+  }));
+  await page.route('**/api/maintenance/video-previews/generation/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ run: null }),
+  }));
+  await page.route('**/api/maintenance/video-previews/items*', route => {
+    const pageItems = items.slice(0, 5).map(item => ({...item, generation_held: false}));
+    return route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        scan, offset: 0, limit: 25, total: 5, count: 5,
+        has_previous: false, has_next: false, next_offset: null, previous_offset: null,
+        sort: 'video', direction: 'asc', missing_total: 5,
+        selection: {missing_total: 5, held_count: 0, default_selected_count: 5},
+        items: pageItems,
+      }),
+    });
+  });
+
+  await page.goto('/maintenance#video-previews');
+  const master = page.locator('#previewSelectVisible');
+  const boxes = page.locator('[data-preview-generate]');
+  await expect(boxes).toHaveCount(5);
+
+  // Everything starts selected, so the header reflects that rather than lying.
+  await expect(master).toBeChecked();
+
+  await master.uncheck();
+  for (let index = 0; index < 5; index += 1) {
+    await expect(boxes.nth(index)).not.toBeChecked();
+  }
+
+  await master.check();
+  for (let index = 0; index < 5; index += 1) {
+    await expect(boxes.nth(index)).toBeChecked();
+  }
+
+  // Clearing one row drops the header into the partial state.
+  await boxes.nth(2).uncheck();
+  await expect(master).not.toBeChecked();
+  await expect(master).toHaveJSProperty('indeterminate', true);
+});
