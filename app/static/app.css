@@ -995,6 +995,11 @@ th[aria-sort="descending"] .table-sort-icon {
   font-weight: 600;
 }
 
+/* Rows for files that cannot be put back stay readable but recede. */
+.restore-row-inactive > td {
+  color: var(--bs-secondary-color);
+}
+
 .duplicate-compare-columns,
 .duplicate-compare-pair-grid {
   display: grid;

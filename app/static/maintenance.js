@@ -20,6 +20,7 @@
   let currentPlan = null;
   let currentApply = null;
   let currentRestorePlan = null;
+  let restoreSelection = {logId: '', ids: new Set()};
   let currentGroupsPage = null;
   let groupPageOffset = 0;
   let groupPageLimit = PAGE_SIZE_DEFAULT;
@@ -2520,8 +2521,9 @@
     const rows = logs.map(log =>
       `<tr>` +
       `<td><div class="toolbar-row mb-0"><button class="btn btn-outline-secondary btn-sm" type="button" data-maint-log="${escapeHtml(log.id)}">Open</button>` +
-      (log.restore_available ? `<button class="btn btn-outline-primary btn-sm" type="button" data-maint-restore-preview="${escapeHtml(log.id)}">Preview restore</button>` : '') +
-      (log.restored_at ? `<span class="badge text-bg-success">Restored ${escapeHtml(log.restored_count || 0)}</span>` : '') +
+      (log.restore_available ? `<button class="btn btn-outline-primary btn-sm" type="button" data-maint-restore-preview="${escapeHtml(log.id)}">Restore all</button>` : '') +
+      (log.restore_available ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-restore-choose="${escapeHtml(log.id)}">Choose files</button>` : '') +
+      (log.restored_count ? `<span class="badge text-bg-success">Put back ${escapeHtml(log.restored_count)}</span>` : '') +
       `</div></td>` +
       `<td>${escapeHtml(log.created_at || '')}</td>` +
       `<td>${escapeHtml(log.action || '')}</td>` +
@@ -2534,6 +2536,85 @@
       `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-duplicate-logs" data-sort-mode="client">` +
       `<thead><tr><th data-column-id="open" data-resizable="false"></th><th data-column-id="time" data-sortable="true">Time</th><th data-column-id="action" data-sortable="true">Action</th><th data-column-id="result" data-sortable="true">Result</th><th data-column-id="size" data-sortable="true">Log size</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></div>`;
+  }
+
+  function restoreStateBadge(item) {
+    if (item.state === 'restored') return '<span class="badge text-bg-success">Already put back</span>';
+    if (item.state === 'unavailable') return '<span class="badge text-bg-secondary">Cannot restore</span>';
+    return '<span class="badge text-bg-primary">Can restore</span>';
+  }
+
+  function updateRestoreSelectionControls() {
+    const count = restoreSelection.ids.size;
+    const summary = byId('maintenanceRestoreSelectionSummary');
+    if (summary) {
+      summary.textContent = count
+        ? `${count} file${count === 1 ? '' : 's'} selected`
+        : 'No files selected';
+    }
+    const button = byId('maintenanceRestoreSelectedButton');
+    if (button) button.disabled = !count;
+  }
+
+  function renderDuplicateLogItems(payload) {
+    const target = byId('maintenanceLogItems');
+    if (!target) return;
+    const items = payload.items || [];
+    if (!items.length) {
+      target.innerHTML = '<div class="text-muted small">This cleanup moved no files that can be put back.</div>';
+      return;
+    }
+    const rows = items.map(item => {
+      const selectable = item.state === 'restorable';
+      const checked = selectable && restoreSelection.ids.has(item.file_id);
+      return `<tr class="${selectable ? '' : 'restore-row-inactive'}">` +
+        `<td><input class="form-check-input" type="checkbox" data-maint-restore-file="${escapeHtml(item.file_id)}"` +
+        `${checked ? ' checked' : ''}${selectable ? '' : ' disabled'} aria-label="Select ${escapeHtml(item.original_name || 'file')}"></td>` +
+        `<td class="path-cell"><code title="${escapeHtml(item.original_path || '')}">${escapeHtml(item.original_name || '')}</code>` +
+        `<div class="text-muted small">${escapeHtml(item.operation === 'rename' ? 'Renamed' : 'Quarantined')} · ${escapeHtml(item.size_label || '')}</div></td>` +
+        `<td class="path-cell"><code title="${escapeHtml(item.current_path || '')}">${escapeHtml(item.current_name || '')}</code></td>` +
+        `<td>${restoreStateBadge(item)}<div class="text-muted small">${escapeHtml(item.detail || '')}</div></td>` +
+        `</tr>`;
+    }).join('');
+    const warning = payload.restore_incomplete
+      ? '<div class="scan-estimate mt-2"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><div>' +
+        '<div>Some files from this cleanup were never recorded.</div>' +
+        '<div class="scan-estimate-detail">The log hit its size limit while writing, so those files cannot be put back.</div>' +
+        '</div></div>'
+      : '';
+    target.innerHTML =
+      `<section class="settings-panel" data-maint-log-items="${escapeHtml(payload.log_id || '')}">` +
+      `<div class="panel-subheading"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i>` +
+      `<span>Put individual files back</span></div>` +
+      `<p class="small text-muted mb-2">${escapeHtml(payload.restorable_count || 0)} of ${escapeHtml(payload.item_count || 0)} files from this cleanup can still be put back. ` +
+      `Restoring some now leaves the rest available later.</p>` +
+      warning +
+      `<div class="toolbar-row mt-2">` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-restore-select-all="${escapeHtml(payload.log_id || '')}">Select all restorable</button>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-restore-select-none="1">Clear selection</button>` +
+      `<span id="maintenanceRestoreSelectionSummary" class="small text-muted">No files selected</span>` +
+      `<button id="maintenanceRestoreSelectedButton" class="btn btn-outline-primary btn-sm" type="button" ` +
+      `data-maint-restore-selected="${escapeHtml(payload.log_id || '')}" disabled>Preview restore of selected</button>` +
+      `</div>` +
+      `<div class="table-responsive workspace-table-wrap mt-2"><table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th></th><th>Original file</th><th>Currently at</th><th>Status</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div></section>`;
+    updateRestoreSelectionControls();
+  }
+
+  async function loadDuplicateLogItems(logId) {
+    restoreSelection = {logId, ids: new Set()};
+    const target = byId('maintenanceLogItems');
+    if (target) target.innerHTML = '<div class="text-muted small">Loading cleanup files...</div>';
+    try {
+      const res = await fetch(`/api/maintenance/duplicates/logs/${encodeURIComponent(logId)}/items`);
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Cleanup files unavailable');
+      renderDuplicateLogItems(data);
+    } catch (e) {
+      if (target) target.innerHTML = '';
+      setMessage('Cleanup files unavailable', e.message || '');
+    }
   }
 
   function renderDuplicateRestorePlan(plan) {
@@ -2559,11 +2640,12 @@
     target.scrollIntoView({behavior: 'smooth', block: 'start'});
   }
 
-  async function previewDuplicateRestore(logId) {
+  async function previewDuplicateRestore(logId, fileIds = null) {
     setMessage('Building restore preview', 'No files will be changed yet.');
     try {
       const res = await fetch(`/api/maintenance/duplicates/logs/${encodeURIComponent(logId)}/restore/plan`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(fileIds && fileIds.length ? {file_ids: fileIds} : {}),
       });
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || 'Restore preview could not be built');
@@ -2585,9 +2667,15 @@
       });
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || 'Restore could not be applied');
+      const restoredLogId = currentRestorePlan?.log_id || '';
       currentRestorePlan = null;
       if (byId('maintenanceRestoreSummary')) byId('maintenanceRestoreSummary').innerHTML = '';
       setMessage('Restore complete', `${data.result?.applied_count || 0} restored, ${data.result?.refused_count || 0} refused, ${data.result?.collision_adjusted_count || 0} collision names adjusted.`);
+      // Reload the file list so what remains restorable reflects the restore
+      // that just happened rather than going stale.
+      if (restoredLogId && restoreSelection.logId === restoredLogId) {
+        loadDuplicateLogItems(restoredLogId);
+      }
       refreshMaintenanceLogs();
       checkMaintenanceFreshness();
     } catch (e) {
@@ -5891,8 +5979,47 @@
     byId('maintenanceLogList')?.addEventListener('click', event => {
       const button = event.target.closest('[data-maint-log]');
       const restore = event.target.closest('[data-maint-restore-preview]');
+      const choose = event.target.closest('[data-maint-restore-choose]');
       if (button) openMaintenanceLog(button.getAttribute('data-maint-log'));
       if (restore) previewDuplicateRestore(restore.getAttribute('data-maint-restore-preview'));
+      if (choose) loadDuplicateLogItems(choose.getAttribute('data-maint-restore-choose'));
+    });
+
+    byId('maintenanceLogItems')?.addEventListener('click', event => {
+      const selectAll = event.target.closest('[data-maint-restore-select-all]');
+      const clear = event.target.closest('[data-maint-restore-select-none]');
+      const selected = event.target.closest('[data-maint-restore-selected]');
+      if (selectAll) {
+        document.querySelectorAll('[data-maint-restore-file]:not([disabled])').forEach(input => {
+          input.checked = true;
+          restoreSelection.ids.add(input.getAttribute('data-maint-restore-file'));
+        });
+        updateRestoreSelectionControls();
+        return;
+      }
+      if (clear) {
+        document.querySelectorAll('[data-maint-restore-file]').forEach(input => {
+          input.checked = false;
+        });
+        restoreSelection.ids.clear();
+        updateRestoreSelectionControls();
+        return;
+      }
+      if (selected) {
+        previewDuplicateRestore(
+          selected.getAttribute('data-maint-restore-selected'),
+          Array.from(restoreSelection.ids),
+        );
+      }
+    });
+
+    byId('maintenanceLogItems')?.addEventListener('change', event => {
+      const checkbox = event.target.closest('[data-maint-restore-file]');
+      if (!checkbox) return;
+      const fileId = checkbox.getAttribute('data-maint-restore-file');
+      if (checkbox.checked) restoreSelection.ids.add(fileId);
+      else restoreSelection.ids.delete(fileId);
+      updateRestoreSelectionControls();
     });
     byId('maintenanceRestoreSummary')?.addEventListener('click', event => {
       const button = event.target.closest('[data-maint-restore-apply]');

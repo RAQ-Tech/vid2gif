@@ -164,6 +164,23 @@ finishes; anything ambiguous, unsafe, or unreadable still waits on the results
 table for manual review. It is off by default and its state persists in
 `/state/landscape-posters/settings.json` across container restarts.
 
+Duplicate cleanup keeps the best copy of every file, not just the best video.
+Each sidecar role and suffix forms a slot -- `.eng.srt`, `-poster.jpg`, `.bif` --
+and the strongest candidate wins that slot even when it sits beside a copy being
+removed, in which case it is renamed onto the surviving filename. Subtitles and
+BIF previews are judged against the keeper's runtime, so a file from a longer cut
+ranks below one that matches and is flagged rather than adopted silently.
+Borrowing requires a real measurement: files that cannot be read or measured
+leave the keeper's own copy in place and raise the slot for review. Expanding a
+group shows one row per slot with the winner, the copy it came from, and the
+measurement that decided it; the full per-file action list stays available behind
+a disclosure.
+
+Cleanup runs can be undone a file at a time. Each log lists every file it moved
+with its current state, and restoring some files leaves the rest available to
+restore later. Records describing moved files are exempt from the log size cap so
+a large cleanup stays reversible.
+
 Duplicate cleanup settings live on the Settings page. Duplicate move
 destinations default to `/library/.vid2gif-duplicates`, can be changed to another
 folder under the mounted library root, and every applied cleanup writes a bounded
