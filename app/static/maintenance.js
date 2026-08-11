@@ -2940,17 +2940,17 @@
         ? ` ${issue.attempt_count} attempts.`
         : '';
       const retryButton = issue && !issue.retryable
-        ? `<button class="btn btn-outline-secondary btn-sm ms-2" type="button" data-preview-retry="${escapeHtml(item.id)}">Try again</button>`
+        ? `<button class="btn btn-outline-secondary btn-sm mt-2 d-block" type="button" data-preview-retry="${escapeHtml(item.id)}">Try again</button>`
         : '';
       const detail = issue
         ? `${item.detail || ''} Previous attempt: ${issue.reason || 'could not complete'}.${tactics}${attemptText}`
         : (item.detail || '');
       return `<tr>` +
         `<td>${item.status === 'missing' ? `<input class="form-check-input" type="checkbox" data-preview-generate="${escapeHtml(item.id)}" aria-label="Generate BIF for ${escapeHtml(item.name)}"${previewItemIsSelected(item) ? ' checked' : ''}>` : ''}</td>` +
-        `<td>${previewStatusBadge(item.status)}${issueBadge}</td>` +
+        `<td class="preview-status-cell">${previewStatusBadge(item.status)}${issueBadge}${retryButton}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
         `<td>${escapeHtml(item.size_label || '')}</td>` +
-        `<td>${escapeHtml(detail)}${retryButton}</td>` +
+        `<td class="preview-detail-cell"><div class="preview-detail-text" title="${escapeHtml(detail)}">${escapeHtml(detail)}</div></td>` +
         `<td class="path-cell"><code title="${escapeHtml(bifNames)}">${escapeHtml(bifNames || 'none')}</code></td>` +
         `</tr>`;
     }).join('');

@@ -1000,6 +1000,28 @@ th[aria-sort="descending"] .table-sort-icon {
   color: var(--bs-secondary-color);
 }
 
+/* A raw decoder error can run to hundreds of characters. Left unbounded it
+   stretches the row far past the viewport and pushes the controls in later
+   columns out of reach, so the cell is capped and the full text moves to the
+   title attribute. */
+.preview-detail-cell {
+  max-width: 46ch;
+}
+
+.preview-detail-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.preview-status-cell {
+  white-space: nowrap;
+  vertical-align: top;
+}
+
 .duplicate-compare-columns,
 .duplicate-compare-pair-grid {
   display: grid;

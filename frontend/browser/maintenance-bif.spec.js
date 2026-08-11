@@ -233,3 +233,64 @@ test('the header checkbox selects and clears every video on the page', async ({ 
   await expect(master).not.toBeChecked();
   await expect(master).toHaveJSProperty('indeterminate', true);
 });
+
+test('the retry control stays on screen next to a very long decoder error', async ({ page }) => {
+  // The real error text that made the button unreachable.
+  const longError = '[vf#0:0 @ 0x55b13c1a3680] Task finished with error code: -1094995529 '
+    + '(Invalid data found when processing input) | [vf#0:0 @ 0x55b13c1a3680] Terminating '
+    + 'thread with return code -1094995529 (Invalid data found when processing input) | '
+    + '[vost#0:0/mjpeg @ 0x55b13c59d9c0] Could not open encoder before EOF | '
+    + '[vost#0:0/mjpeg @ 0x55b13c59d9c0] Task finished with error code: -22 (Invalid argument) | '
+    + '[out#0/image2 @ 0x55b13c59d880] Nothing was written into output file, because at least '
+    + 'one of its streams received no packets.';
+
+  await page.route('**/api/maintenance/video-previews/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ scan }),
+  }));
+  await page.route('**/api/maintenance/video-previews/generation/status*', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ run: null }),
+  }));
+  await page.route('**/api/maintenance/video-previews/items*', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({
+      scan, offset: 0, limit: 25, total: 1, count: 1,
+      has_previous: false, has_next: false, next_offset: null, previous_offset: null,
+      sort: 'video', direction: 'asc', missing_total: 1,
+      selection: {missing_total: 1, held_count: 1, default_selected_count: 0},
+      items: [{
+        id: 'long', name: 'Movie.mp4', relative_path: 'Studio/Movie.mp4',
+        path: '/library/Studio/Movie.mp4', status: 'missing', size_label: '4 GB',
+        detail: 'No matching BIF file found beside the video', bifs: [],
+        generation_held: true,
+        previous_generation_issue: {
+          status: 'refused', reason: longError, run_id: 'r1',
+          retryable: false, attempt_count: 1,
+          tactics_tried: ['strict', 'tolerant', 'reduced'],
+        },
+      }],
+    }),
+  }));
+
+  await page.goto('/maintenance#video-previews');
+  const retry = page.locator('[data-preview-retry="long"]');
+  await expect(retry).toBeVisible();
+
+  // The table scrolls horizontally, so page coordinates say nothing about
+  // reachability. What matters is whether the control sits inside the
+  // container's visible region without scrolling sideways to hunt for it.
+  const reach = await page.evaluate(() => {
+    const button = document.querySelector('[data-preview-retry="long"]');
+    const wrap = button.closest('.workspace-table-wrap') || button.closest('.table-responsive');
+    const b = button.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    return {
+      buttonRight: b.right,
+      visibleRight: w.right,
+      hiddenBehindScroll: wrap.scrollWidth - wrap.clientWidth,
+    };
+  });
+  expect(reach.buttonRight).toBeLessThanOrEqual(reach.visibleRight);
+
+  // The full error is still available, just not stretching the row.
+  await expect(page.locator('.preview-detail-text')).toHaveAttribute('title', new RegExp('Invalid data found'));
+});
