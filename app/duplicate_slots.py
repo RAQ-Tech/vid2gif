@@ -173,6 +173,26 @@ def _rank_subtitles(candidates, keeper, options, analyze_subtitle):
             }
         )
     scored.sort(key=lambda item: item["_rank"], reverse=True)
+
+    # Taking a file from another copy is only justified by evidence that it is
+    # better. Unreadable or untimed subtitles give no such evidence, so the
+    # keeper's own copy stays and the slot is raised for review instead.
+    measurable = [
+        item for item in scored if item["quality"].get("coverage_ratio") is not None
+    ]
+    if not measurable:
+        return (
+            _prefer_keeper(candidates, keeper),
+            "Subtitle timings could not be read, so the keeper's copy stays",
+            False,
+            [
+                {
+                    "kind": "no_comparable_signal",
+                    "label": "No readable timings to compare these subtitles by",
+                }
+            ],
+        )
+
     best = scored[0]
     quality = best["quality"]
     percent = quality.get("coverage_percent")
@@ -205,7 +225,7 @@ def _rank_subtitles(candidates, keeper, options, analyze_subtitle):
     return best, reason, close, flags
 
 
-def _rank_images(candidates, options, probe_image):
+def _rank_images(candidates, keeper, options, probe_image):
     scored = []
     for entry in candidates:
         dimensions = probe_image(entry["file"].get("path")) or {}
@@ -220,6 +240,22 @@ def _rank_images(candidates, options, probe_image):
             }
         )
     scored.sort(key=lambda item: item["_rank"], reverse=True)
+
+    # Same rule as subtitles: without a measurement there is no case for
+    # preferring another copy's image over the keeper's.
+    if not any(item["pixels"] for item in scored):
+        return (
+            _prefer_keeper(candidates, keeper),
+            "Image dimensions could not be read, so the keeper's copy stays",
+            False,
+            [
+                {
+                    "kind": "no_comparable_signal",
+                    "label": "No readable dimensions to compare these images by",
+                }
+            ],
+        )
+
     best = scored[0]
     reason = (
         f"{best['dimensions'].get('width')} x {best['dimensions'].get('height')}"
@@ -325,6 +361,9 @@ def resolve_group_slots(
             "suffix": slot["suffix"],
             "label": _slot_label(role, slot["suffix"]),
             "candidate_count": len(candidates),
+            "candidate_file_ids": [
+                item["file"].get("id", "") for item in candidates
+            ],
             "winner_file_id": "",
             "winner_video_id": "",
             "destination_path": "",
@@ -370,7 +409,9 @@ def resolve_group_slots(
                 candidates, keeper, options, analyze_subtitle
             )
         elif role in IMAGE_ROLES:
-            best, reason, close, flags = _rank_images(candidates, options, probe_image)
+            best, reason, close, flags = _rank_images(
+                candidates, keeper, options, probe_image
+            )
         elif role == "bif":
             best, reason, close, flags = _rank_bif(candidates, keeper, options, bif_info)
         else:

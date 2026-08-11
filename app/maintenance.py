@@ -890,6 +890,69 @@ def _default_accessory_operation(accessory, keep_video, action, settings, lib_ro
     return "rename", target, "Unmatched sidecar will be renamed to the keeper stem"
 
 
+def _slot_driven_accessory_defaults(videos, recommended, slots, action, lib_root):
+    """Assign each sidecar its operation from the resolved slot winners.
+
+    The keeper no longer keeps a sidecar simply for belonging to the surviving
+    copy: it keeps the ones that actually won their slot. A sidecar from a
+    losing copy that won its slot is renamed onto the keeper's stem, which is
+    the same destination shape the plan's canonicalization pass expects.
+    """
+    accessories = {}
+    for video in videos:
+        for accessory in video.get("accessories") or []:
+            accessories[accessory.get("id")] = (accessory, video)
+
+    decisions = {}
+    for slot in slots:
+        winner_id = slot.get("winner_file_id")
+        if not winner_id:
+            # Nothing understood well enough to act on; leave it all in place.
+            for file_id in slot.get("candidate_file_ids") or []:
+                decisions[file_id] = ("keep", "", slot.get("reason") or "Left for review")
+            continue
+        for file_id in slot.get("loser_file_ids") or []:
+            decisions[file_id] = (action, "", f"Lost the {slot.get('label')} slot")
+
+    # Losers are settled first so a winner may legitimately take a path that a
+    # losing file is about to vacate.
+    vacating = {
+        os.path.normcase(os.path.realpath(accessories[file_id][0].get("path", "")))
+        for file_id, (operation, _target, _reason) in decisions.items()
+        if operation in {"move", "delete"} and file_id in accessories
+    }
+
+    for slot in slots:
+        winner_id = slot.get("winner_file_id")
+        if not winner_id or winner_id not in accessories:
+            continue
+        accessory, parent = accessories[winner_id]
+        if parent.get("id") == recommended.get("id"):
+            decisions[winner_id] = ("keep", "", slot.get("reason") or "Best available copy")
+            continue
+        target = slot.get("destination_path") or _accessory_destination(accessory, recommended)
+        if not target or not path_is_under(target, lib_root):
+            decisions[winner_id] = ("keep", "", "Rename target is outside the library")
+            continue
+        if os.path.lexists(target) and os.path.normcase(os.path.realpath(target)) not in vacating:
+            decisions[winner_id] = ("keep", target, "Rename target already exists")
+            continue
+        decisions[winner_id] = (
+            "rename",
+            target,
+            slot.get("reason") or "Best copy will be renamed to the keeper stem",
+        )
+
+    for file_id, (accessory, _parent) in accessories.items():
+        operation, target, reason = decisions.get(file_id, (None, None, None))
+        if operation is None:
+            continue
+        accessory["default_operation"] = operation
+        accessory["default_destination_path"] = target
+        accessory["default_reason"] = reason
+        accessory["default_selected"] = operation != "keep"
+
+
 def _annotate_group_defaults(videos, recommended, settings, lib_root, action="move"):
     for video in videos:
         if video["id"] == recommended["id"]:
@@ -898,24 +961,30 @@ def _annotate_group_defaults(videos, recommended, settings, lib_root, action="mo
         else:
             video["default_operation"] = action
             video["default_selected"] = True
-        for accessory in video.get("accessories") or []:
-            if video["id"] == recommended["id"]:
-                accessory["default_operation"] = "keep"
-                accessory["default_selected"] = False
-                continue
-            operation, target, reason = _default_accessory_operation(
-                accessory,
-                recommended,
-                action,
-                settings,
-                lib_root,
-            )
-            accessory["default_operation"] = operation
-            accessory["default_destination_path"] = target
-            accessory["default_reason"] = reason
-            accessory["default_selected"] = operation != "keep"
 
-    _apply_subtitle_quality_defaults(videos, recommended, action, lib_root)
+    policy = settings.get("accessory_policy") or "rename_unmatched"
+    if policy != "rename_unmatched":
+        # "Remove all" and "keep unmatched" both say don't be clever, so they
+        # keep the original per-file behaviour untouched.
+        for video in videos:
+            for accessory in video.get("accessories") or []:
+                if video["id"] == recommended["id"]:
+                    accessory["default_operation"] = "keep"
+                    accessory["default_selected"] = False
+                    continue
+                operation, target, reason = _default_accessory_operation(
+                    accessory, recommended, action, settings, lib_root
+                )
+                accessory["default_operation"] = operation
+                accessory["default_destination_path"] = target
+                accessory["default_reason"] = reason
+                accessory["default_selected"] = operation != "keep"
+        _apply_subtitle_quality_defaults(videos, recommended, action, lib_root)
+        return []
+
+    slots = duplicate_slots.resolve_group_slots(videos, recommended, settings)
+    _slot_driven_accessory_defaults(videos, recommended, slots, action, lib_root)
+    return slots
 
 
 def _subtitle_accessory_buckets(videos):
@@ -1088,7 +1157,7 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
     videos.sort(key=lambda video: _keeper_sort_key(video, settings.get("keeper_rule")))
     recommended = videos[0]
     remove_ids = [video["id"] for video in videos[1:]]
-    _annotate_group_defaults(videos, recommended, settings, lib_root)
+    slots = _annotate_group_defaults(videos, recommended, settings, lib_root)
     reclaimable = 0
     accessory_count = sum(len(video.get("accessories") or []) for video in videos)
     for video in videos[1:]:
@@ -1104,13 +1173,6 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
     impact_issue_id = "duplicate:" + hashlib.sha256(
         "|".join(sorted(video["id"] for video in videos)).encode("utf-8")
     ).hexdigest()[:24]
-    # Resolved once per group at scan time: the ranking probes artwork and BIF
-    # files, which is far too expensive to redo on every page render. Slots that
-    # are uncontested or byte-identical never reach a probe at all.
-    try:
-        slots = duplicate_slots.resolve_group_slots(videos, recommended, settings)
-    except Exception:
-        slots = []
     return {
         "id": group_id,
         "impact_issue_id": impact_issue_id,

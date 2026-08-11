@@ -310,3 +310,69 @@ def test_settings_can_widen_the_subtitle_tie_margin():
         analyze_subtitle=analyze,
     )
     assert _slot(loose, "subtitle:.eng.srt")["needs_review"] is True
+
+
+def test_unreadable_subtitles_are_not_borrowed_on_file_size_alone():
+    """Borrowing needs evidence; a bigger unparseable file is not evidence."""
+    keeper = _video("v1", "movie", accessories=[
+        _accessory("s1", "movie", ".eng.srt", "subtitle", size=6),
+    ])
+    copy_one = _video("v2", "movie(1)", accessories=[
+        _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=900),
+    ])
+
+    slots = duplicate_slots.resolve_group_slots(
+        [keeper, copy_one],
+        keeper,
+        # No usable timestamps in either file.
+        analyze_subtitle=lambda path, duration: _quality(None, status="invalid"),
+    )
+    slot = _slot(slots, "subtitle:.eng.srt")
+
+    assert slot["winner_file_id"] == "s1"
+    assert slot["borrowed"] is False
+    assert slot["needs_review"] is True
+    assert any(flag["kind"] == "no_comparable_signal" for flag in slot["flags"])
+
+
+def test_unmeasurable_images_are_not_borrowed_on_file_size_alone():
+    keeper = _video("v1", "movie", accessories=[
+        _accessory("p1", "movie", "-poster.jpg", "poster", size=10),
+    ])
+    copy_one = _video("v2", "movie(1)", accessories=[
+        _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=5000),
+    ])
+
+    slots = duplicate_slots.resolve_group_slots(
+        [keeper, copy_one], keeper, probe_image=lambda path: None
+    )
+    slot = _slot(slots, "poster:-poster.jpg")
+
+    assert slot["winner_file_id"] == "p1"
+    assert slot["borrowed"] is False
+    assert any(flag["kind"] == "no_comparable_signal" for flag in slot["flags"])
+
+
+def test_a_measurable_candidate_still_wins_over_an_unreadable_one():
+    keeper = _video("v1", "movie", accessories=[
+        _accessory("s1", "movie", ".eng.srt", "subtitle", size=100),
+    ])
+    copy_one = _video("v2", "movie(1)", accessories=[
+        _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=200),
+    ])
+    results = {
+        "s1": _quality(None, status="invalid"),
+        "s2": _quality(96.0, status="complete", last=3400.0),
+    }
+
+    slots = duplicate_slots.resolve_group_slots(
+        [keeper, copy_one],
+        keeper,
+        analyze_subtitle=lambda path, duration: results[
+            "s1" if path.endswith("movie.eng.srt") else "s2"
+        ],
+    )
+    slot = _slot(slots, "subtitle:.eng.srt")
+
+    assert slot["winner_file_id"] == "s2"
+    assert slot["borrowed"] is True

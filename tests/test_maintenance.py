@@ -2128,3 +2128,57 @@ def test_restore_records_survive_the_informational_log_size_cap(monkeypatch, tmp
     _match, parsed, _restored, err = maintenance._cleanup_log_records(entry["id"])
     assert err is None
     assert len([item for item in parsed if maintenance._is_restorable_record(item)]) == 6
+
+
+def test_cleanup_borrows_a_better_poster_from_the_copy_being_removed(monkeypatch, tmp_path):
+    """The keeper no longer keeps a sidecar just for surviving."""
+    lib = tmp_path / "library"
+    movie = lib / "Movie"
+    keeper = _write(movie / "Movie.1080p.mkv", b"a" * 400)
+    loser = _write(movie / "Movie.720p.mkv", b"b" * 100)
+    # Different byte sizes: equal-size sidecars are treated as interchangeable
+    # and deliberately never probed, which is the common true-duplicate case.
+    keeper_poster = _write(movie / "Movie.1080p-poster.jpg", b"s" * 40)
+    better_poster = _write(movie / "Movie.720p-poster.jpg", b"l" * 900)
+
+    dimensions = {
+        keeper_poster.name: {"width": 600, "height": 900, "landscape": False},
+        better_poster.name: {"width": 2000, "height": 3000, "landscape": False},
+    }
+    monkeypatch.setattr(
+        maintenance.duplicate_slots,
+        "_default_probe_image",
+        lambda path: dimensions.get(os.path.basename(path)),
+    )
+
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            keeper.name: {"width": 1920, "height": 1080, "bit_rate": 8_000_000},
+            loser.name: {"width": 1280, "height": 720, "bit_rate": 2_000_000},
+        },
+    )
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+            "groups": [],
+        },
+        lib_root=str(lib),
+    )
+    assert err is None
+    operations = {item["source_path"]: item for item in plan["files"]}
+
+    # The better poster is renamed onto the keeper's stem...
+    assert operations[str(better_poster)]["operation"] == "rename"
+    assert operations[str(better_poster)]["destination_path"] == str(keeper_poster)
+    # ...and the keeper's own weaker poster is quarantined to make room.
+    assert operations[str(keeper_poster)]["operation"] == "move"
+
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+    assert apply_err is None
+    assert result["refused_count"] == 0
+    assert keeper_poster.read_bytes() == b"l" * 900
