@@ -529,6 +529,9 @@ test('quick review can quarantine the keeper and duplicate sidecars with one cle
   await expect(page.locator('[data-maint-group-card="group-review"] [data-maint-keep] option')).toHaveCount(2);
 
   await page.locator('[data-maint-expand="group-review"]').click();
+  // The per-file action controls now sit behind a disclosure, under the
+  // slot table that summarises which copy wins each file.
+  await page.locator('details.duplicate-file-detail summary').click();
   await expect(page.locator('[data-maint-operation="srt-2160"]')).toHaveValue('keep');
   await expect(page.locator('[data-maint-file]')).toHaveCount(0);
   await expect(page.locator('.duplicate-file-name')).toContainText([
@@ -657,6 +660,9 @@ test('side-by-side review stacks duplicate candidates and keeps complete folder 
   const card = page.locator('[data-maint-group-card="group-side-by-side"]');
   await expect(card).toContainText('2 other folder files');
   await card.locator('[data-maint-expand]').click();
+  // The per-file action controls now sit behind a disclosure, under the
+  // slot table that summarises which copy wins each file.
+  await card.locator('details.duplicate-file-detail summary').click();
 
   await expect(card.locator('.duplicate-compare-columns > div')).toContainText(['Keeping', 'Moving to quarantine']);
   const videoPair = card.locator('[data-duplicate-comparison-pair="videos"]');
@@ -817,6 +823,9 @@ test('subtitle coverage recommendation is visible and a resolved group leaves th
   const card = page.locator('[data-maint-group-card="group-subtitle-quality"]');
   await expect(card).toContainText('99.6% coverage');
   await card.locator('[data-maint-expand]').click();
+  // The per-file action controls now sit behind a disclosure, under the
+  // slot table that summarises which copy wins each file.
+  await card.locator('details.duplicate-file-detail summary').click();
   await expect(page.locator('[data-maint-operation="srt-1080"]')).toHaveValue('rename');
   await expect(page.locator('[data-maint-operation="srt-1080"]')).toContainText('Keep with selected video (rename)');
   await expect(card).toContainText('65.6% · ends 27:15 of 41:30');

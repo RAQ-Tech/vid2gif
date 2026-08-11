@@ -1076,6 +1076,7 @@
         candidateSignature: '',
         dirty: false,
         expanded: false,
+        fileDetailOpen: false,
         loading: false,
         projectionPending: false,
         appliedKeepId: ''
@@ -1101,6 +1102,7 @@
         candidateSignature: '',
         dirty: Boolean(draft.saved),
         expanded: false,
+        fileDetailOpen: false,
         loading: false,
         projectionPending: false,
         appliedKeepId: group.recommended_keep_id
@@ -1423,6 +1425,104 @@
       `</article>`;
   }
 
+  const SLOT_COPY_LETTERS = 'ABCDEFGHIJKLMNOP';
+
+  function duplicateCopyLabels(group, state) {
+    const labels = new Map();
+    (group.videos || []).forEach((video, index) => {
+      labels.set(video.id, {
+        letter: SLOT_COPY_LETTERS[index] || String(index + 1),
+        name: video.name || '',
+        isKeeper: video.id === state.keepId,
+      });
+    });
+    return labels;
+  }
+
+  function duplicateAccessoryIndex(group) {
+    const index = new Map();
+    (group.videos || []).forEach(video => {
+      (video.accessories || []).forEach(accessory => {
+        index.set(accessory.id, {file: accessory, video});
+      });
+    });
+    return index;
+  }
+
+  function slotSourceBadge(labels, videoId) {
+    const entry = labels.get(videoId);
+    if (!entry) return '<span class="duplicate-slot-source is-none">--</span>';
+    const klass = entry.isKeeper ? 'is-keeper' : 'is-other';
+    const suffix = entry.isKeeper ? ' (keeper)' : '';
+    return `<span class="duplicate-slot-source ${klass}" title="${escapeHtml(entry.name + suffix)}">${escapeHtml(entry.letter)}</span>`;
+  }
+
+  function slotFlagChips(slot) {
+    return (slot.flags || []).map(flag => {
+      const critical = ['runtime_mismatch', 'unknown_role'].includes(flag.kind);
+      return `<span class="duplicate-slot-flag${critical ? ' is-critical' : ''}">${escapeHtml(flag.label || flag.kind || '')}</span>`;
+    }).join('');
+  }
+
+  function slotRow(slot, accessories, labels) {
+    const winner = accessories.get(slot.winner_file_id);
+    const name = winner ? winner.file.name : (slot.winner_file_id ? '' : 'Left in place');
+    const classes = [];
+    if (slot.needs_review) classes.push('is-flagged');
+    if (slot.borrowed) classes.push('is-borrowed');
+    return `<tr class="${classes.join(' ')}">` +
+      `<td class="duplicate-slot-name">${escapeHtml(slot.label || slot.slot_key || '')}` +
+      (slot.candidate_count > 1 ? `<span class="duplicate-slot-count">${slot.candidate_count} copies</span>` : '') +
+      `</td>` +
+      `<td class="duplicate-slot-file"><code title="${escapeHtml(name)}">${escapeHtml(name || '--')}</code></td>` +
+      `<td class="duplicate-slot-from">${slot.winner_video_id ? slotSourceBadge(labels, slot.winner_video_id) : '<span class="duplicate-slot-source is-none">--</span>'}</td>` +
+      `<td class="duplicate-slot-why">${escapeHtml(slot.reason || '')}${slotFlagChips(slot)}</td>` +
+      `</tr>`;
+  }
+
+  function renderDuplicateSlotTable(group, state) {
+    const slots = group.slots || [];
+    if (!slots.length) return '';
+    const labels = duplicateCopyLabels(group, state);
+    const accessories = duplicateAccessoryIndex(group);
+    // Anything still worth a human glance sorts to the top; matching files
+    // carry no decision and collapse out of the way.
+    const active = slots.filter(slot => !slot.identical || slot.needs_review);
+    const identical = slots.filter(slot => slot.identical && !slot.needs_review);
+    active.sort((a, b) => (Number(b.needs_review) - Number(a.needs_review))
+      || (Number(b.borrowed) - Number(a.borrowed))
+      || String(a.label || '').localeCompare(String(b.label || '')));
+
+    const legend = Array.from(labels.entries()).map(([, entry]) =>
+      `<span class="duplicate-slot-legend-item"><span class="duplicate-slot-source ${entry.isKeeper ? 'is-keeper' : 'is-other'}">${escapeHtml(entry.letter)}</span>` +
+      `<code title="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</code>${entry.isKeeper ? '<span class="duplicate-slot-keeper-tag">keeper</span>' : ''}</span>`
+    ).join('');
+
+    const summary = group.slot_summary || {};
+    const borrowed = Number(summary.borrowed_count || 0);
+    const headline = borrowed
+      ? `${borrowed} file${borrowed === 1 ? '' : 's'} will be taken from another copy and renamed to match the keeper.`
+      : 'Every file being kept already belongs to the keeper.';
+
+    const rows = active.length
+      ? active.map(slot => slotRow(slot, accessories, labels)).join('')
+      : '<tr><td colspan="4" class="text-muted text-center py-3">No sidecars to compare in this folder.</td></tr>';
+
+    const identicalBlock = identical.length
+      ? `<details class="duplicate-slot-identical"><summary>${identical.length} file${identical.length === 1 ? '' : 's'} identical in every copy</summary>` +
+        `<div class="duplicate-slot-identical-list">${identical.map(slot => `<code>${escapeHtml(slot.label || '')}</code>`).join('')}</div></details>`
+      : '';
+
+    return `<section class="duplicate-slot-panel" data-duplicate-slots="${escapeHtml(group.id)}">` +
+      `<div class="duplicate-slot-heading"><h4>Best copy of each file</h4><p>${escapeHtml(headline)}</p></div>` +
+      `<div class="duplicate-slot-legend">${legend}</div>` +
+      `<div class="table-responsive"><table class="table duplicate-slot-table">` +
+      `<thead><tr><th>File</th><th>Best copy</th><th>From</th><th>Why</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      identicalBlock +
+      `</section>`;
+  }
+
   function renderComparisonPair(group, pair, state, index) {
     const anchor = pair.anchor || pair.kept[0] || pair.cleanup[0] || null;
     const kept = pair.kept.length
@@ -1585,12 +1685,15 @@
             `<button class="btn btn-outline-warning btn-sm" type="button" data-maint-group-sidecars="cleanup" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>${escapeHtml(cleanupActionLabel())} all sidecars</button>` +
             `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-group-sidecars="keep" data-maint-group="${escapeHtml(group.id)}"${state.enabled ? '' : ' disabled'}>Keep all sidecars</button>` +
             `</div></div>` +
+            renderDuplicateSlotTable(group, state) +
+            `<details class="duplicate-file-detail mt-3" data-duplicate-file-detail="${escapeHtml(group.id)}"${state.fileDetailOpen ? ' open' : ''}>` +
+            `<summary>Every file and its action</summary>` +
             `<div class="small text-muted mt-2"><strong>Action meanings:</strong> Keep leaves a file untouched. ${escapeHtml(cleanupActionLabel())} removes it from the library${byId('maintenanceAction')?.value === 'delete' ? ' permanently' : ' and stores it in quarantine'}. Rename preserves a sidecar by changing only its filename to match the kept video.</div>` +
             `<div class="small text-muted mt-1"><strong>Comparison:</strong> files staying in the library are on the left; files leaving it are on the right. Highlighted values differ from the kept counterpart.</div>` +
             `<div class="duplicate-review-table mt-3" data-table-id="maintenance-duplicate-files" data-sort-mode="none">` +
             `<div class="duplicate-compare-columns" aria-hidden="true"><div><i class="bi bi-check-circle-fill"></i><span>Keeping</span></div><div><i class="bi ${byId('maintenanceAction')?.value === 'delete' ? 'bi-trash3-fill' : 'bi-archive-fill'}"></i><span>${byId('maintenanceAction')?.value === 'delete' ? 'Deleting' : 'Moving to quarantine'}</span></div></div>` +
             `<div class="duplicate-compare-pairs">${comparisons}</div>` +
-            `</div></div>`
+            `</div></details></div>`
           : '<div class="text-muted small mt-3">Open this group to load file details.</div>'))
       : '';
     return `<section class="maintenance-group${state.reviewRequired ? ' duplicate-group-review-required' : ''}" data-maint-group-card="${escapeHtml(group.id)}">` +
@@ -5538,6 +5641,13 @@
     byId('maintenanceGroups')?.addEventListener('click', event => {
       const page = event.target.closest('[data-maint-page]');
       const expand = event.target.closest('[data-maint-expand]');
+      const fileDetail = event.target.closest('[data-duplicate-file-detail] > summary');
+      if (fileDetail) {
+        const details = fileDetail.parentElement;
+        const detailState = groupState.get(details.getAttribute('data-duplicate-file-detail'));
+        if (detailState) detailState.fileDetailOpen = !details.open;
+        return;
+      }
       const defaults = event.target.closest('[data-maint-group-defaults]');
       const sidecars = event.target.closest('[data-maint-group-sidecars]');
       const acceptReview = event.target.closest('[data-maint-accept-review]');

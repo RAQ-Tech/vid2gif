@@ -841,6 +841,160 @@ th[aria-sort="descending"] .table-sort-icon {
   min-width: 0;
 }
 
+/* Slot comparison: one row per file role, showing which copy wins it. */
+.duplicate-slot-panel {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.duplicate-slot-heading h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.duplicate-slot-heading p {
+  margin: 2px 0 0;
+  font-size: 0.875rem;
+  color: var(--bs-secondary-color);
+}
+
+.duplicate-slot-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 0.8125rem;
+}
+
+.duplicate-slot-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.duplicate-slot-legend-item code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 26ch;
+}
+
+.duplicate-slot-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0 5px;
+}
+
+.duplicate-slot-source.is-keeper {
+  background: var(--bs-success-bg-subtle);
+  color: var(--bs-success-text-emphasis);
+}
+
+.duplicate-slot-source.is-other {
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-primary-text-emphasis);
+}
+
+.duplicate-slot-source.is-none {
+  background: var(--bs-secondary-bg);
+  color: var(--bs-secondary-color);
+}
+
+.duplicate-slot-keeper-tag {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bs-secondary-color);
+}
+
+.duplicate-slot-table {
+  margin-bottom: 0;
+  font-size: 0.875rem;
+}
+
+.duplicate-slot-table th {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--bs-secondary-color);
+  white-space: nowrap;
+}
+
+.duplicate-slot-table td {
+  vertical-align: top;
+}
+
+.duplicate-slot-table tr.is-flagged {
+  background: var(--bs-warning-bg-subtle);
+}
+
+.duplicate-slot-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.duplicate-slot-count {
+  display: block;
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color);
+}
+
+.duplicate-slot-file code {
+  word-break: break-all;
+}
+
+.duplicate-slot-why {
+  color: var(--bs-secondary-color);
+}
+
+.duplicate-slot-flag {
+  display: inline-block;
+  margin-top: 4px;
+  margin-right: 4px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: var(--bs-secondary-bg);
+  color: var(--bs-body-color);
+}
+
+.duplicate-slot-flag.is-critical {
+  background: var(--bs-warning-bg-subtle);
+  color: var(--bs-warning-text-emphasis);
+  font-weight: 600;
+}
+
+.duplicate-slot-identical {
+  font-size: 0.8125rem;
+  color: var(--bs-secondary-color);
+}
+
+.duplicate-slot-identical-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.duplicate-file-detail > summary {
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
 .duplicate-compare-columns,
 .duplicate-compare-pair-grid {
   display: grid;
