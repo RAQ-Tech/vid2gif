@@ -44,6 +44,10 @@ MAINTENANCE_LOG_DIR = os.path.join(STATE_ROOT, "maintenance-logs", "duplicates")
 MAINTENANCE_LOG_INDEX = os.path.join(MAINTENANCE_LOG_DIR, "index.json")
 MAINTENANCE_LOG_RETENTION_COUNT = 25
 MAINTENANCE_LOG_MAX_BYTES = 5 * 1024 * 1024
+# Restore records are what make a cleanup reversible, so they get a far larger
+# allowance than the informational ones and are only ever dropped at a ceiling
+# a realistic run will not reach.
+MAINTENANCE_LOG_RESTORE_CEILING_BYTES = 64 * 1024 * 1024
 DUPLICATE_GROUP_PAGE_DEFAULT = 10
 DUPLICATE_GROUP_PAGE_MAX = 100
 DUPLICATE_GROUP_LARGE_RESULT_COUNT = 100
@@ -2828,6 +2832,29 @@ def _log_record(record):
     return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
+def _is_restorable_record(record):
+    """True for records that describe a file this cleanup can put back."""
+    return bool(
+        isinstance(record, dict)
+        and record.get("type") == "file"
+        and record.get("result") == "applied"
+        and str(record.get("operation") or "") in {"move", "rename"}
+    )
+
+
+def _restore_key(record):
+    """Stable identity for one restorable file within a cleanup run.
+
+    Prefers the file id, but falls back to the path the file was moved to,
+    which is unique within a run even when an id is missing.
+    """
+    file_id = str((record or {}).get("file_id") or "").strip()
+    if file_id:
+        return f"id:{file_id}"
+    new_path = str((record or {}).get("new_path") or "").strip()
+    return f"path:{os.path.normcase(new_path)}" if new_path else ""
+
+
 def _write_cleanup_log(plan, result, records):
     os.makedirs(MAINTENANCE_LOG_DIR, exist_ok=True)
     log_id = f"{plan.get('id', _now_id())}.jsonl"
@@ -2847,13 +2874,29 @@ def _write_cleanup_log(plan, result, records):
         "total_applied_bytes": result.get("total_applied_bytes", 0),
         "move_root": plan.get("move_root", ""),
     }
+    # A record describing a moved or renamed file is the only thing that makes
+    # that file restorable, so it is never dropped to satisfy the size cap.
+    # Informational records (refused, missing, deferred) are truncated instead.
+    restorable = [record for record in records if _is_restorable_record(record)]
+    informational = [record for record in records if not _is_restorable_record(record)]
+
     written = 0
     truncated = False
+    restore_incomplete = False
     with open(path, "w", encoding="utf-8") as f:
         line = _log_record(header)
         f.write(line)
         written += len(line.encode("utf-8"))
-        for record in records:
+        for record in restorable:
+            line = _log_record(record)
+            size = len(line.encode("utf-8"))
+            if written + size > MAINTENANCE_LOG_RESTORE_CEILING_BYTES:
+                restore_incomplete = True
+                truncated = True
+                break
+            f.write(line)
+            written += size
+        for record in informational:
             line = _log_record(record)
             size = len(line.encode("utf-8"))
             if written + size > MAINTENANCE_LOG_MAX_BYTES:
@@ -2888,6 +2931,10 @@ def _write_cleanup_log(plan, result, records):
         "size_bytes": os.path.getsize(path),
         "size_label": format_size(os.path.getsize(path)),
         "truncated": truncated,
+        "restorable_count": len(restorable),
+        # Set only if restore records themselves had to be dropped, which means
+        # some files from this run can never be put back.
+        "restore_incomplete": restore_incomplete,
     }
     logs.insert(0, entry)
     for old in logs[MAINTENANCE_LOG_RETENTION_COUNT:]:
@@ -2909,9 +2956,13 @@ def list_duplicate_cleanup_logs():
             public.get("action") == "move"
             and int(public.get("applied_count") or 0) > 0
         )
-        public["restore_available"] = bool(
-            public["reversible"] and not public.get("restored_at")
+        remaining = (
+            _remaining_restorable_count(public.get("id")) if public["reversible"] else 0
         )
+        public["remaining_restorable_count"] = remaining
+        # Availability follows what is actually left, so a partial restore does
+        # not lock the rest of the run away.
+        public["restore_available"] = bool(public["reversible"] and remaining)
         logs.append(public)
     return logs
 
@@ -2935,15 +2986,22 @@ def read_duplicate_cleanup_log(log_id):
 
 
 def _cleanup_log_records(log_id):
+    """Return (index_entry, applied_records, already_restored_keys, error).
+
+    Restores append a marker back into the same JSONL file, so the log itself
+    is the record of what has and has not been put back. That keeps partial
+    restores repeatable without growing the index.
+    """
     clean_id = os.path.basename(str(log_id or ""))
     index = _read_json(MAINTENANCE_LOG_INDEX, {"logs": []})
     match = next((item for item in index.get("logs") or [] if item.get("id") == clean_id), None)
     if not match:
-        return None, None, "Log not found"
+        return None, None, None, "Log not found"
     path = match.get("path", "")
     if not path_is_under(path, MAINTENANCE_LOG_DIR) or not os.path.isfile(path):
-        return None, None, "Log not found"
+        return None, None, None, "Log not found"
     records = []
+    restored = set()
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -2953,9 +3011,111 @@ def _cleanup_log_records(log_id):
                     continue
                 if value.get("type") == "file" and value.get("result") == "applied":
                     records.append(value)
+                elif value.get("type") == "restore":
+                    key = str(value.get("restore_key") or "")
+                    if key:
+                        restored.add(key)
     except OSError:
-        return None, None, "Log not found"
-    return match, records, None
+        return None, None, None, "Log not found"
+    return match, records, restored, None
+
+
+def _append_restore_markers(log_entry, applied_items):
+    """Record which files were put back, so they are not offered again."""
+    path = str((log_entry or {}).get("path") or "")
+    if not path or not path_is_under(path, MAINTENANCE_LOG_DIR) or not applied_items:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            for item in applied_items:
+                handle.write(
+                    _log_record(
+                        {
+                            "type": "restore",
+                            "timestamp": utc_iso(),
+                            "restore_key": item.get("restore_key", ""),
+                            "file_id": item.get("file_id", ""),
+                            "restored_from": item.get("source_path", ""),
+                            "restored_to": item.get("destination_path", ""),
+                        }
+                    )
+                )
+    except OSError:
+        # A missing marker only means the file may be offered for restore
+        # again, which the plan builder then rejects because it has moved.
+        pass
+
+
+def _remaining_restorable_count(log_id):
+    _entry, records, restored_keys, err = _cleanup_log_records(log_id)
+    if err:
+        return 0
+    restored_keys = restored_keys or set()
+    return sum(
+        1
+        for record in records
+        if _is_restorable_record(record) and _restore_key(record) not in restored_keys
+    )
+
+
+def duplicate_cleanup_log_items(log_id, lib_root=LIB_ROOT):
+    """List every file a cleanup run moved, with its current restore state.
+
+    This is what a per-file undo view reads: one row per file, each knowing
+    whether it can still be put back and why not when it cannot.
+    """
+    entry, records, restored_keys, err = _cleanup_log_records(log_id)
+    if err:
+        return None, err
+    restored_keys = restored_keys or set()
+    root = os.path.realpath(lib_root)
+    reversible = entry.get("action") == "move"
+    items = []
+    for record in records:
+        if not _is_restorable_record(record):
+            continue
+        restore_key = _restore_key(record)
+        source = str(record.get("new_path") or "").strip()
+        target = str(record.get("old_path") or "").strip()
+        restored = bool(restore_key and restore_key in restored_keys)
+        if restored:
+            state, detail = "restored", "Already put back"
+        elif not reversible:
+            state, detail = "unavailable", "Permanent deletions cannot be restored"
+        elif not source or not os.path.isfile(source) or os.path.islink(source):
+            state, detail = "unavailable", "File is no longer where the cleanup left it"
+        elif not path_is_under(source, root) or not path_is_under(target, root):
+            state, detail = "unavailable", "Restore path is outside the library"
+        else:
+            state, detail = "restorable", "Can be put back"
+        items.append(
+            {
+                "file_id": record.get("file_id", ""),
+                "restore_key": restore_key,
+                "group_id": record.get("group_id", ""),
+                "operation": record.get("operation", ""),
+                "kind": record.get("kind", ""),
+                "current_path": source,
+                "current_name": os.path.basename(source),
+                "original_path": target,
+                "original_name": os.path.basename(target),
+                "size_bytes": int(record.get("size_bytes") or 0),
+                "size_label": format_size(record.get("size_bytes") or 0),
+                "state": state,
+                "detail": detail,
+            }
+        )
+    return {
+        "log_id": entry.get("id", ""),
+        "action": entry.get("action", ""),
+        "created_at": entry.get("created_at"),
+        "items": items,
+        "item_count": len(items),
+        "restorable_count": sum(1 for item in items if item["state"] == "restorable"),
+        "restored_count": sum(1 for item in items if item["state"] == "restored"),
+        "unavailable_count": sum(1 for item in items if item["state"] == "unavailable"),
+        "restore_incomplete": bool(entry.get("restore_incomplete")),
+    }, None
 
 
 def _unique_restore_destination(path, reserved=None):
@@ -2970,22 +3130,37 @@ def _unique_restore_destination(path, reserved=None):
     return candidate
 
 
-def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT):
-    entry, records, err = _cleanup_log_records(log_id)
+def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT, file_ids=None):
+    """Build a restore plan for a cleanup run, or for named files within it.
+
+    ``file_ids`` selects individual files so a run can be unwound a piece at a
+    time; omitting it offers everything still restorable. Files already put
+    back by an earlier restore are excluded rather than blocking the whole log.
+    """
+    entry, records, restored_keys, err = _cleanup_log_records(log_id)
     if err:
         return None, err
     if entry.get("action") != "move":
         return None, "Permanent deletions cannot be restored"
-    if entry.get("restored_at"):
-        return None, "This cleanup log has already been restored"
+    restored_keys = restored_keys or set()
+    selected = {str(value) for value in (file_ids or []) if str(value or "").strip()}
     root = os.path.realpath(lib_root)
     files = []
     unavailable = []
     reserved = set()
     vacated = set()
+    already_restored = 0
     for record in reversed(records):
         operation = str(record.get("operation") or "")
         if operation not in {"move", "rename"}:
+            continue
+        restore_key = _restore_key(record)
+        if restore_key and restore_key in restored_keys:
+            already_restored += 1
+            continue
+        if selected and not (
+            str(record.get("file_id") or "") in selected or restore_key in selected
+        ):
             continue
         raw_source = str(record.get("new_path") or "").strip()
         raw_requested = str(record.get("old_path") or "").strip()
@@ -3012,6 +3187,7 @@ def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT):
         files.append(
             {
                 "file_id": record.get("file_id", ""),
+                "restore_key": restore_key,
                 "source_path": source,
                 "destination_path": destination,
                 "requested_destination_path": requested,
@@ -3027,6 +3203,10 @@ def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT):
         reserved.add(os.path.normcase(destination))
         vacated.add(os.path.normcase(source))
     if not files:
+        if selected:
+            return None, "None of the selected files are still restorable"
+        if already_restored:
+            return None, "Every file from this cleanup has already been put back"
         return None, "No moved files from this cleanup are currently restorable"
     plan = {
         "id": _now_id(),
@@ -3039,6 +3219,8 @@ def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT):
         "collision_adjusted_count": sum(bool(item["collision_adjusted"]) for item in files),
         "unavailable": unavailable,
         "unavailable_count": len(unavailable),
+        "already_restored_count": already_restored,
+        "partial": bool(selected),
     }
     with maintenance_lock:
         duplicate_restore_plans[plan["id"]] = plan
@@ -3096,14 +3278,22 @@ def apply_duplicate_restore_plan(plan_id):
 
     finished_at = utc_iso()
     index = _read_json(MAINTENANCE_LOG_INDEX, {"logs": []})
-    for entry in index.get("logs") or []:
-        if entry.get("id") == plan.get("log_id"):
-            entry["last_restore_attempt_at"] = finished_at
-            entry["restored_count"] = int(entry.get("restored_count") or 0) + len(applied)
-            entry["restore_refused_count"] = len(refused)
-            if not refused:
-                entry["restored_at"] = finished_at
-            break
+    log_entry = next(
+        (item for item in index.get("logs") or [] if item.get("id") == plan.get("log_id")),
+        None,
+    )
+    # Markers go in before the index update so a crash between the two leaves
+    # files marked restored rather than offered a second time.
+    _append_restore_markers(log_entry, applied)
+    if log_entry is not None:
+        log_entry["last_restore_attempt_at"] = finished_at
+        log_entry["restored_count"] = int(log_entry.get("restored_count") or 0) + len(applied)
+        log_entry["restore_refused_count"] = len(refused)
+        remaining = _remaining_restorable_count(log_entry.get("id"))
+        log_entry["remaining_restorable_count"] = remaining
+        # Only a run with nothing left to put back counts as fully restored.
+        if remaining == 0:
+            log_entry["restored_at"] = finished_at
     _write_json(MAINTENANCE_LOG_INDEX, index)
     with maintenance_lock:
         plan["status"] = "applied"

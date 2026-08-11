@@ -1969,3 +1969,162 @@ def test_public_group_exposes_slots_and_summary(monkeypatch, tmp_path):
     # Same-size sidecars are interchangeable: keep the keeper's, flag nothing.
     assert nfo["identical"] is True
     assert nfo["needs_review"] is False
+
+
+def _cleanup_two_duplicates(lib, tmp_path, monkeypatch):
+    """Quarantine two duplicate videos and return the resulting cleanup log."""
+    log_dir = tmp_path / "state" / "duplicate-logs"
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_DIR", str(log_dir))
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_INDEX", str(log_dir / "index.json"))
+    movie = lib / "Movie"
+    keeper = _write(movie / "Movie.1080p.mkv", b"a" * 400)
+    first = _write(movie / "Movie.720p.mkv", b"b" * 100)
+    second = _write(movie / "Movie.480p.mkv", b"c" * 50)
+    scan = _scan(
+        lib,
+        lib,
+        monkeypatch,
+        {
+            keeper.name: {"width": 1920, "height": 1080, "bit_rate": 8_000_000},
+            first.name: {"width": 1280, "height": 720, "bit_rate": 4_000_000},
+            second.name: {"width": 854, "height": 480, "bit_rate": 1_000_000},
+        },
+    )
+    plan, err = maintenance.build_duplicate_cleanup_plan(
+        {
+            "scan_id": scan["id"],
+            "action": "move",
+            "selection": {"mode": "all_eligible", "excluded_group_ids": []},
+            "groups": [],
+        },
+        lib_root=str(lib),
+    )
+    assert err is None
+    result, apply_err = maintenance.apply_duplicate_cleanup_plan(plan["id"])
+    assert apply_err is None
+    return result["log"]["id"], first, second
+
+
+def test_cleanup_log_items_list_each_moved_file_with_its_restore_state(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    log_id, first, second = _cleanup_two_duplicates(lib, tmp_path, monkeypatch)
+
+    payload, err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
+
+    assert err is None
+    assert payload["restorable_count"] == 2
+    assert payload["restored_count"] == 0
+    names = {item["original_name"] for item in payload["items"]}
+    assert names == {first.name, second.name}
+    assert all(item["state"] == "restorable" for item in payload["items"])
+
+
+def test_a_single_file_can_be_restored_without_unwinding_the_run(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    log_id, first, second = _cleanup_two_duplicates(lib, tmp_path, monkeypatch)
+    assert not first.exists() and not second.exists()
+
+    payload, _err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
+    target = next(item for item in payload["items"] if item["original_name"] == first.name)
+
+    plan, err = maintenance.build_duplicate_restore_plan(
+        log_id, lib_root=str(lib), file_ids=[target["file_id"]]
+    )
+    assert err is None
+    assert plan["file_count"] == 1
+    assert plan["partial"] is True
+
+    restored, apply_err = maintenance.apply_duplicate_restore_plan(plan["id"])
+    assert apply_err is None
+    assert restored["refused_count"] == 0
+    # Only the chosen file came back.
+    assert first.exists()
+    assert not second.exists()
+
+
+def test_the_rest_of_a_run_stays_restorable_after_a_partial_restore(monkeypatch, tmp_path):
+    """The old code set restored_at on first use and refused every later restore."""
+    lib = tmp_path / "library"
+    log_id, first, second = _cleanup_two_duplicates(lib, tmp_path, monkeypatch)
+    payload, _err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
+    first_item = next(item for item in payload["items"] if item["original_name"] == first.name)
+
+    plan, _err = maintenance.build_duplicate_restore_plan(
+        log_id, lib_root=str(lib), file_ids=[first_item["file_id"]]
+    )
+    maintenance.apply_duplicate_restore_plan(plan["id"])
+
+    after = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))[0]
+    assert after["restored_count"] == 1
+    assert after["restorable_count"] == 1
+    logs = maintenance.list_duplicate_cleanup_logs()
+    entry = next(item for item in logs if item["id"] == log_id)
+    assert entry["restore_available"] is True
+    assert entry["remaining_restorable_count"] == 1
+
+    # A second restore of the remaining file must still succeed.
+    second_plan, second_err = maintenance.build_duplicate_restore_plan(log_id, lib_root=str(lib))
+    assert second_err is None
+    assert second_plan["file_count"] == 1
+    assert second_plan["already_restored_count"] == 1
+    maintenance.apply_duplicate_restore_plan(second_plan["id"])
+
+    assert first.exists() and second.exists()
+    final = maintenance.list_duplicate_cleanup_logs()
+    final_entry = next(item for item in final if item["id"] == log_id)
+    assert final_entry["restore_available"] is False
+    assert final_entry["restored_at"]
+
+
+def test_an_already_restored_file_is_not_offered_again(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    log_id, first, _second = _cleanup_two_duplicates(lib, tmp_path, monkeypatch)
+    payload, _err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
+    target = next(item for item in payload["items"] if item["original_name"] == first.name)
+
+    plan, _err = maintenance.build_duplicate_restore_plan(
+        log_id, lib_root=str(lib), file_ids=[target["file_id"]]
+    )
+    maintenance.apply_duplicate_restore_plan(plan["id"])
+
+    again, err = maintenance.build_duplicate_restore_plan(
+        log_id, lib_root=str(lib), file_ids=[target["file_id"]]
+    )
+    assert again is None
+    assert err == "None of the selected files are still restorable"
+
+
+def test_restore_records_survive_the_informational_log_size_cap(monkeypatch, tmp_path):
+    """Truncation must drop informational records, never restore data."""
+    log_dir = tmp_path / "state" / "duplicate-logs"
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_DIR", str(log_dir))
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_INDEX", str(log_dir / "index.json"))
+    # A cap small enough that the informational records cannot all fit.
+    monkeypatch.setattr(maintenance, "MAINTENANCE_LOG_MAX_BYTES", 900)
+
+    records = []
+    for index in range(6):
+        records.append({
+            "type": "file", "result": "applied", "operation": "move",
+            "file_id": f"keep-{index}", "old_path": f"/library/Movie/old-{index}.mkv",
+            "new_path": f"/library/.vid2gif-duplicates/old-{index}.mkv", "size_bytes": 10,
+        })
+    for index in range(200):
+        records.append({
+            "type": "file", "result": "refused", "file_id": f"noise-{index}",
+            "reason": "padding to overflow the informational budget",
+        })
+
+    entry = maintenance._write_cleanup_log(
+        {"id": "plan-1", "scan_id": "scan-1", "action": "move"},
+        {"applied_count": 6},
+        records,
+    )
+
+    assert entry["truncated"] is True
+    assert entry["restore_incomplete"] is False
+    assert entry["restorable_count"] == 6
+    # Every restorable record is still readable despite the truncation.
+    _match, parsed, _restored, err = maintenance._cleanup_log_records(entry["id"])
+    assert err is None
+    assert len([item for item in parsed if maintenance._is_restorable_record(item)]) == 6

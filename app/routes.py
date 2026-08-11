@@ -964,9 +964,22 @@ def api_maintenance_duplicates_log(log_id):
     return jsonify({"log": log})
 
 
+@app.route("/api/maintenance/duplicates/logs/<log_id>/items")
+def api_maintenance_duplicates_log_items(log_id):
+    payload, err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=LIB_ROOT)
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
 @app.route("/api/maintenance/duplicates/logs/<log_id>/restore/plan", methods=["POST"])
 def api_maintenance_duplicates_restore_plan(log_id):
-    plan, err = maintenance.build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT)
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("file_ids")
+    file_ids = [str(value) for value in raw_ids if str(value or "").strip()] if isinstance(raw_ids, list) else None
+    plan, err = maintenance.build_duplicate_restore_plan(
+        log_id, lib_root=LIB_ROOT, file_ids=file_ids
+    )
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"plan": plan})
