@@ -1924,3 +1924,48 @@ def test_legacy_duplicate_scan_projects_emby_identity_as_not_checked(monkeypatch
 
     assert public["emby_mapping"]["status"] == "not_checked"
     assert "rescan" in public["emby_mapping"]["message"].lower()
+
+
+def test_scan_attaches_resolved_slots_to_each_group(monkeypatch, tmp_path):
+    """Slots are resolved once at scan time and travel with the group payload."""
+    lib = tmp_path / "library"
+    folder = lib / "Movie"
+    _write(folder / "Movie.1080p.mkv", b"a" * 200)
+    _write(folder / "Movie.720p.mkv", b"b" * 100)
+    # Only the losing copy carries a background image.
+    _write(folder / "Movie.720p-background.png", b"c" * 50)
+
+    scan = _scan(lib, folder, monkeypatch)
+    group = scan["groups"][0]
+
+    slot_keys = {slot["slot_key"] for slot in group["slots"]}
+    assert "background:-background.png" in slot_keys
+
+    background = next(
+        slot for slot in group["slots"] if slot["slot_key"] == "background:-background.png"
+    )
+    # The orphan sidecar is adopted and renamed onto the surviving stem.
+    assert background["borrowed"] is True
+    assert os.path.basename(background["destination_path"]) == "Movie.1080p-background.png"
+    assert group["slot_summary"]["borrowed_count"] == 1
+
+
+def test_public_group_exposes_slots_and_summary(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Movie"
+    _write(folder / "Movie.1080p.mkv", b"a" * 200)
+    _write(folder / "Movie.720p.mkv", b"b" * 100)
+    _write(folder / "Movie.1080p.nfo", b"n" * 40)
+    _write(folder / "Movie.720p.nfo", b"n" * 40)
+
+    scan = _scan(lib, folder, monkeypatch)
+    group_id = scan["groups"][0]["id"]
+    payload, err = maintenance.group_payload(scan["id"], group_id)
+
+    assert err is None
+    group = payload["group"]
+    assert group["slot_summary"]["slot_count"] >= 1
+    nfo = next(slot for slot in group["slots"] if slot["role"] == "nfo")
+    # Same-size sidecars are interchangeable: keep the keeper's, flag nothing.
+    assert nfo["identical"] is True
+    assert nfo["needs_review"] is False

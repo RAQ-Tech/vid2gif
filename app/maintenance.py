@@ -10,6 +10,7 @@ import time
 
 from . import app_settings
 from . import duplicate_review_store
+from . import duplicate_slots
 from . import emby_catalog
 from . import emby_playback
 from . import emby_sync
@@ -1099,6 +1100,13 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
     impact_issue_id = "duplicate:" + hashlib.sha256(
         "|".join(sorted(video["id"] for video in videos)).encode("utf-8")
     ).hexdigest()[:24]
+    # Resolved once per group at scan time: the ranking probes artwork and BIF
+    # files, which is far too expensive to redo on every page render. Slots that
+    # are uncontested or byte-identical never reach a probe at all.
+    try:
+        slots = duplicate_slots.resolve_group_slots(videos, recommended, settings)
+    except Exception:
+        slots = []
     return {
         "id": group_id,
         "impact_issue_id": impact_issue_id,
@@ -1117,6 +1125,8 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
         "accessory_count": accessory_count,
         "folder_file_count": len(folder_files),
         "keeper_rule": settings.get("keeper_rule") or "quality",
+        "slots": slots,
+        "slot_summary": duplicate_slots.slot_summary(slots),
     }
 
 
@@ -1231,6 +1241,8 @@ def _public_group(group, review_state=None):
         "needs_review": bool(review_flags or review_state.get("requires_review")),
         "review_flags": review_flags,
         "subtitle_signals": _group_subtitle_signals(group),
+        "slots": copy.deepcopy(group.get("slots") or []),
+        "slot_summary": copy.deepcopy(group.get("slot_summary") or {}),
     }
 
 
@@ -1282,6 +1294,9 @@ def _public_group_summary(group, review_state=None):
         "needs_review": bool(review_flags or review_state.get("requires_review")),
         "review_flags": review_flags,
         "subtitle_signals": _group_subtitle_signals(group),
+        # Summary only: the collapsed card shows the mix of source copies
+        # without paying to ship every slot for every group on the page.
+        "slot_summary": copy.deepcopy(group.get("slot_summary") or {}),
     }
 
 
