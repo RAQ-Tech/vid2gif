@@ -199,8 +199,12 @@ overwriting existing files.
 BIF generation escalates rather than giving up on the first error. A video is
 first extracted normally, then retried with a decoder that tolerates damaged
 packets, then retried again at reduced width -- a partial preview is better than
-none. Only a video that fails all three is recorded as a failure, and the record
-says which tactics were tried. Failures caused by the machine rather than the
+none. Escalation is driven by the result, not only by errors: a video whose
+presentation timestamps are unusable extracts exactly one frame while ffmpeg
+exits cleanly, so a short result counts as a failure and moves on to the tactic
+that rebuilds timestamps. Only a video that fails all three is recorded as a
+failure, and the record says which tactics were tried and how many frames each
+produced. Failures caused by the machine rather than the
 file (a stall, a busy disk, a video that changed mid-run) are cleared at the
 start of the next scan and tried again automatically; the rest stay listed with
 a "Try again" control so they are never a dead end.

@@ -3470,22 +3470,39 @@ def _failure_is_retryable(exc):
     return any(marker in text for marker in transient_markers)
 
 
-def _extract_frames_with_retries(video, item_work, width, interval_seconds, run):
-    """Extract frames, easing decoder strictness until something comes out.
+def _frame_count_is_sufficient(frame_count, expected_frames):
+    """Match the installer's tolerance so we only retry what it would reject."""
+    if not frame_count:
+        return False
+    if not expected_frames:
+        return True
+    return abs(frame_count - expected_frames) <= 1
 
-    Returns (frames, tactic_used, attempts). Raises the last error only when
-    every tactic has been tried, so a single damaged packet no longer costs the
-    whole preview.
+
+def _extract_frames_with_retries(
+    video, item_work, width, interval_seconds, run, expected_frames=None
+):
+    """Extract frames, easing decoder strictness until the output is usable.
+
+    Escalation is driven by the result, not just by errors. A video whose
+    presentation timestamps are broken extracts exactly one frame without
+    failing -- the selector's time delta never advances -- and that is the most
+    common way a preview goes missing. Treating a short result as a failure is
+    what lets the timestamp-rebuilding tactic actually run.
+
+    Returns (frames, tactic_used, attempts) for the best attempt made.
     """
     attempts = []
     last_error = None
+    best = None
     for index, tactic in enumerate(EXTRACTION_TACTICS):
-        # Each attempt gets a clean directory so partial output from a failed
-        # tactic can never be mistaken for this one's frames.
-        if os.path.isdir(item_work):
-            shutil.rmtree(item_work, ignore_errors=True)
-        os.makedirs(item_work, exist_ok=True)
-        pattern = os.path.join(item_work, "%08d.jpg")
+        # Attempts keep separate directories so a short result stays available
+        # as a fallback after a later tactic fails outright.
+        attempt_dir = os.path.join(item_work, f"attempt-{tactic['key']}")
+        if os.path.isdir(attempt_dir):
+            shutil.rmtree(attempt_dir, ignore_errors=True)
+        os.makedirs(attempt_dir, exist_ok=True)
+        pattern = os.path.join(attempt_dir, "%08d.jpg")
         tactic_width = _tactic_width(width, tactic)
         if index:
             run.update({"current_stage": f"Retrying: {tactic['label'].lower()}"})
@@ -3500,18 +3517,29 @@ def _extract_frames_with_retries(video, item_work, width, interval_seconds, run)
             continue
         frames = sorted(
             (
-                os.path.join(item_work, name)
-                for name in os.listdir(item_work)
+                os.path.join(attempt_dir, name)
+                for name in os.listdir(attempt_dir)
                 if name.lower().endswith(".jpg")
             ),
             key=str.lower,
         )
-        if frames:
-            attempts.append({"tactic": tactic["key"], "frame_count": len(frames)})
+        attempts.append({
+            "tactic": tactic["key"],
+            "frame_count": len(frames),
+            "expected_frame_count": expected_frames or 0,
+        })
+        if _frame_count_is_sufficient(len(frames), expected_frames):
             return frames, tactic, attempts
-        # A clean exit with no frames is still a failure worth escalating.
-        last_error = RuntimeError("FFmpeg produced no frames")
-        attempts.append({"tactic": tactic["key"], "error": "No frames produced"})
+        if frames and (best is None or len(frames) > len(best[0])):
+            best = (frames, tactic)
+        last_error = RuntimeError(
+            f"Extraction produced {len(frames)} frames"
+            + (f" of an expected {expected_frames}" if expected_frames else "")
+        )
+    if best:
+        # Nothing reached the expected count; hand back the fullest attempt so
+        # the installer reports the precise shortfall rather than a bare error.
+        return best[0], best[1], attempts
     raise last_error or RuntimeError("Frame extraction produced no usable frames")
 
 
@@ -3650,13 +3678,13 @@ def _execute_generation(run, plan):
                     raise RuntimeError("Video changed after the missing-BIF scan")
                 item_work = os.path.join(work_root, item["item_id"])
                 frames, tactic_used, attempts = _extract_frames_with_retries(
-                    video, item_work, plan["width"], plan["interval_seconds"], run
+                    video, item_work, plan["width"], plan["interval_seconds"], run,
+                    expected_frames=expected_frames,
                 )
                 result["extraction_tactic"] = tactic_used.get("key")
                 result["extraction_attempts"] = attempts
                 if tactic_used is not EXTRACTION_TACTICS[0]:
                     result["degraded"] = True
-                pattern = os.path.join(item_work, "%08d.jpg")
                 run.update(
                     {
                         "current_stage": "Packaging preview",

@@ -1829,3 +1829,75 @@ def test_clearing_issues_lets_a_permanent_failure_be_tried_again(monkeypatch, tm
 
     video_preview_maintenance.clear_generation_issues()
     assert video_preview_maintenance._generation_issues()["records"] == {}
+
+
+def test_a_single_frame_result_escalates_instead_of_being_accepted(tmp_path, monkeypatch):
+    """The real-world failure: broken timestamps yield exactly one frame.
+
+    ffmpeg exits cleanly, so nothing looks wrong until the installer rejects
+    the BIF for having 1 frame where 199 were expected. Escalation has to be
+    driven by the result, not only by errors, or the timestamp-rebuilding
+    tactic never gets a chance to run.
+    """
+    work = tmp_path / "work"
+    tried = []
+
+    def fake_extract(_video, pattern, _width, _interval, _run, tactic=None):
+        tried.append(tactic["key"])
+        Path(pattern % 1).parent.mkdir(parents=True, exist_ok=True)
+        if tactic["key"] == "strict":
+            # Only the very first frame is selected; the time delta never moves.
+            _write(Path(pattern % 1), _jpeg(b"frame-zero"))
+            return
+        for index in range(1, 200):
+            _write(Path(pattern % index), _jpeg(b"frame-%d" % index))
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+
+    frames, tactic, attempts = video_preview_maintenance._extract_frames_with_retries(
+        "/library/Movie.mkv", str(work), 320, 10, {}, expected_frames=199,
+    )
+
+    assert tried == ["strict", "tolerant"]
+    assert tactic["key"] == "tolerant"
+    assert len(frames) == 199
+    assert attempts[0]["frame_count"] == 1
+    assert attempts[0]["expected_frame_count"] == 199
+
+
+def test_a_frame_count_within_tolerance_is_accepted_without_retrying():
+    # Matches the installer's own +/-1 allowance.
+    assert video_preview_maintenance._frame_count_is_sufficient(199, 199) is True
+    assert video_preview_maintenance._frame_count_is_sufficient(198, 199) is True
+    assert video_preview_maintenance._frame_count_is_sufficient(200, 199) is True
+    assert video_preview_maintenance._frame_count_is_sufficient(1, 199) is False
+    assert video_preview_maintenance._frame_count_is_sufficient(0, 199) is False
+    # With no expectation available, any frames at all count as usable.
+    assert video_preview_maintenance._frame_count_is_sufficient(3, None) is True
+    assert video_preview_maintenance._frame_count_is_sufficient(0, None) is False
+
+
+def test_the_fullest_attempt_survives_when_no_tactic_reaches_the_target(tmp_path, monkeypatch):
+    """A later tactic failing outright must not discard an earlier partial."""
+    work = tmp_path / "work"
+
+    def fake_extract(_video, pattern, _width, _interval, _run, tactic=None):
+        Path(pattern % 1).parent.mkdir(parents=True, exist_ok=True)
+        if tactic["key"] == "strict":
+            _write(Path(pattern % 1), _jpeg(b"one"))
+            return
+        if tactic["key"] == "tolerant":
+            for index in range(1, 51):
+                _write(Path(pattern % index), _jpeg(b"partial"))
+            return
+        raise RuntimeError("reduced pass could not decode anything")
+
+    monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
+
+    frames, tactic, _attempts = video_preview_maintenance._extract_frames_with_retries(
+        "/library/Movie.mkv", str(work), 320, 10, {}, expected_frames=199,
+    )
+
+    # 50 frames beats 1, and beats the tactic that produced none at all.
+    assert tactic["key"] == "tolerant"
+    assert len(frames) == 50
