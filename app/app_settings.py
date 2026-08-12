@@ -20,6 +20,10 @@ DEFAULT_DUPLICATE_MOVE_ROOT = os.path.join(LIB_ROOT, ".vid2gif-duplicates")
 # Windows dev machine would otherwise bake backslashes into the default.
 DEFAULT_QUARANTINE_ROOT = f"{LIB_ROOT.rstrip('/')}/.vid2gif-quarantine"
 DEFAULT_DAMAGED_MOVE_ROOT = f"{DEFAULT_QUARANTINE_ROOT}/damaged"
+DEFAULT_VIDEO_PREVIEW_REPAIR_ROOT = os.getenv(
+    "VIDEO_PREVIEW_REPAIR_ROOT", f"{DEFAULT_QUARANTINE_ROOT}/video-preview-repairs"
+)
+DEFAULT_SUBTITLE_QUARANTINE_ROOT = f"{DEFAULT_QUARANTINE_ROOT}/subtitles"
 DUPLICATE_GROUPING_MODES = {
     "balanced": "Balanced",
     "strict": "Strict stem",
@@ -52,6 +56,8 @@ _SETTING_KEYS = {
     "duplicate_grouping_mode",
     "duplicate_keeper_rule",
     "damaged_move_root",
+    "video_preview_repair_root",
+    "subtitle_quarantine_root",
     "library_local_path_prefix",
     "duplicate_subtitle_close_points",
     "duplicate_image_close_ratio",
@@ -105,6 +111,8 @@ def default_settings():
         "duplicate_grouping_mode": "balanced",
         "duplicate_keeper_rule": "quality",
         "damaged_move_root": DEFAULT_DAMAGED_MOVE_ROOT,
+        "video_preview_repair_root": DEFAULT_VIDEO_PREVIEW_REPAIR_ROOT,
+        "subtitle_quarantine_root": DEFAULT_SUBTITLE_QUARANTINE_ROOT,
         "library_local_path_prefix": str(os.getenv("LIBRARY_LOCAL_PATH_PREFIX", "") or "").strip(),
         "duplicate_subtitle_close_points": 8,
         "duplicate_image_close_ratio": 10,
@@ -316,6 +324,12 @@ def _coerce_settings(data):
         height = DEFAULT_TEST_LAB_PREVIEW_HEIGHT
     move_root = str(data.get("duplicate_move_root", defaults["duplicate_move_root"]) or "").strip()
     damaged_root = str(data.get("damaged_move_root", defaults["damaged_move_root"]) or "").strip()
+    repair_root = str(
+        data.get("video_preview_repair_root", defaults["video_preview_repair_root"]) or ""
+    ).strip()
+    subtitle_root = str(
+        data.get("subtitle_quarantine_root", defaults["subtitle_quarantine_root"]) or ""
+    ).strip()
     local_prefix = str(
         data.get("library_local_path_prefix", defaults["library_local_path_prefix"]) or ""
     ).strip().rstrip("/\\")
@@ -339,6 +353,8 @@ def _coerce_settings(data):
         ),
         "duplicate_move_root": move_root or defaults["duplicate_move_root"],
         "damaged_move_root": damaged_root or defaults["damaged_move_root"],
+        "video_preview_repair_root": repair_root or defaults["video_preview_repair_root"],
+        "subtitle_quarantine_root": subtitle_root or defaults["subtitle_quarantine_root"],
         "library_local_path_prefix": local_prefix,
         "duplicate_excluded_folders": parse_excluded_folders(
             data.get("duplicate_excluded_folders", defaults["duplicate_excluded_folders"])

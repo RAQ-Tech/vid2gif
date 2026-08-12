@@ -285,6 +285,8 @@ def _classify_video(video_path, folder_files, settings, lib_root, video_stems=No
 
 
 def _skip_dir(base, dirname, lib_root):
+    if media_scope.is_quarantine_path(os.path.join(base, dirname)):
+        return True
     path = os.path.join(base, dirname)
     if os.path.islink(path):
         return True
@@ -1210,6 +1212,24 @@ def items_payload(scan_id, status="review", offset=0, limit=ITEM_PAGE_DEFAULT, q
     }, None
 
 
+def _subtitle_quarantine_root(lib_root):
+    """Where quarantined subtitles go, honouring the configured destination.
+
+    Falls back to the legacy folder beside the library when the setting is
+    empty or points outside the mounted root.
+    """
+    fallback = os.path.realpath(os.path.join(lib_root, SUBTITLE_QUARANTINE_DIRNAME))
+    configured = str(
+        app_settings.load_settings().get("subtitle_quarantine_root") or ""
+    ).strip()
+    if not configured:
+        return fallback
+    real = os.path.realpath(configured)
+    if os.path.islink(real) or not path_is_under(real, lib_root):
+        return fallback
+    return real
+
+
 def _write_json_atomic(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
@@ -1284,7 +1304,7 @@ def build_action_plan(payload, lib_root=LIB_ROOT):
     if any(file_id not in actionable_ids for file_id in selected):
         return None, "Only flagged subtitle files can be changed"
     root = os.path.realpath(lib_root)
-    quarantine_root = os.path.realpath(os.path.join(root, SUBTITLE_QUARANTINE_DIRNAME))
+    quarantine_root = _subtitle_quarantine_root(root)
     files = []
     for file_id in selected:
         subtitle = files_by_id.get(file_id)

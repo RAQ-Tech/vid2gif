@@ -336,6 +336,8 @@ def settings_page():
                 "duplicate_move_root": request.form.get("duplicate_move_root"),
                 "duplicate_excluded_folders": request.form.get("duplicate_excluded_folders"),
                 "damaged_move_root": request.form.get("damaged_move_root"),
+                "video_preview_repair_root": request.form.get("video_preview_repair_root"),
+                "subtitle_quarantine_root": request.form.get("subtitle_quarantine_root"),
                 "library_local_path_prefix": request.form.get("library_local_path_prefix"),
                 "duplicate_subtitle_close_points": request.form.get("duplicate_subtitle_close_points"),
                 "duplicate_image_close_ratio": request.form.get("duplicate_image_close_ratio"),

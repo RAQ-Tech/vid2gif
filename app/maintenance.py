@@ -631,6 +631,7 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
             d
             for d in dirs
             if d != QUARANTINE_DIRNAME
+            and not media_scope.is_quarantine_path(os.path.join(base, d))
             and d.lower() not in excluded
             and not media_scope.is_non_main_video_dir(d)
             and not os.path.islink(os.path.join(base, d))

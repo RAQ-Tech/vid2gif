@@ -209,6 +209,12 @@ file (a stall, a busy disk, a video that changed mid-run) are cleared at the
 start of the next scan and tried again automatically; the rest stay listed with
 a "Try again" control so they are never a dead end.
 
+Every quarantine destination is configurable from the Settings page: duplicate
+cleanup, damaged videos, quarantined BIF previews and quarantined subtitles.
+Scans exclude those destinations by path rather than by folder name, so a
+renamed or relocated quarantine folder is still never walked back into the scan
+that emptied it.
+
 A video too damaged to preview can be quarantined from the missing-BIF list.
 It moves with its sidecars to the damaged destination, which defaults to a
 subfolder of `/library/.vid2gif-quarantine` and is kept separate from duplicate

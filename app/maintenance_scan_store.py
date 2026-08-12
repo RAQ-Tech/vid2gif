@@ -187,6 +187,10 @@ def capture_manifest(area, path, lib_root=None):
         dirs[:] = [
             name for name in dirs
             if name not in SKIP_DIRS
+            # Configured quarantine destinations are excluded by path, so the
+            # freshness manifest does not treat cleaned-up files as library
+            # content that changed.
+            and not media_scope.is_quarantine_path(os.path.join(base, name))
             and not (
                 area in {"overview", "duplicates", "video_previews", "subtitles", "actor_images"}
                 and media_scope.is_non_main_video_dir(name)

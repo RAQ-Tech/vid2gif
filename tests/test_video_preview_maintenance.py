@@ -2175,3 +2175,55 @@ def test_damaged_quarantine_refuses_a_destination_outside_the_library(monkeypatc
     assert result is None
     assert "inside the library" in err
     assert video.exists()
+
+
+def test_a_quarantined_video_is_not_rediscovered_by_the_next_scan(monkeypatch, tmp_path):
+    """Quarantine folders are configurable, so name-based skipping is not enough.
+
+    Chris nests them under a custom parent, and the damaged folder in
+    particular was never in any hardcoded skip list.
+    """
+    lib = tmp_path / "library"
+    _write(lib / "Keep Me" / "Keep Me.mkv")
+    damaged_root = lib / "vid2gif-quarantine" / ".vid2gif-damaged"
+    _write(damaged_root / "Studio" / "Broken.mkv")
+    repair_root = lib / "vid2gif-quarantine" / ".vid2gif-video-preview-repairs"
+    _write(repair_root / "Old-320-10.bif")
+
+    # The shared reset installs its own settings, so patch after it rather than
+    # before, or the quarantine destinations are thrown away.
+    _reset_preview_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        video_preview_maintenance.app_settings, "load_settings",
+        lambda: {
+            "damaged_move_root": str(damaged_root),
+            "video_preview_repair_root": str(repair_root),
+            "duplicate_move_root": str(lib / "vid2gif-quarantine" / ".vid2gif-duplicates"),
+            "subtitle_quarantine_root": str(lib / "vid2gif-quarantine" / "subs"),
+            "video_preview_bif_width": 320,
+            "video_preview_bif_interval_seconds": 10,
+        },
+    )
+
+    scan, err = video_preview_maintenance.start_scan(
+        str(lib), lib_root=str(lib), synchronous=True
+    )
+    assert err is None
+    names = {item["name"] for item in scan["items"]}
+
+    assert "Keep Me.mkv" in names
+    # The quarantined video must not come back as a missing preview.
+    assert "Broken.mkv" not in names
+
+
+def test_the_repair_destination_follows_the_configured_setting(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    configured = lib / "vid2gif-quarantine" / ".vid2gif-video-preview-repairs"
+    monkeypatch.setattr(
+        video_preview_maintenance.app_settings, "load_settings",
+        lambda: {"video_preview_repair_root": str(configured)},
+    )
+
+    resolved = video_preview_maintenance._default_repair_root(str(lib))
+
+    assert os.path.realpath(resolved) == os.path.realpath(str(configured))

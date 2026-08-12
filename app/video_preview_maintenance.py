@@ -296,6 +296,10 @@ def _skip_dir(base, dirname, lib_root):
     if dirname in {"_previews", "__pycache__"}:
         return True
     settings = app_settings.load_settings()
+    # Every configured quarantine destination is off limits, whatever it is
+    # named, so cleaned-up files are not rediscovered by the next scan.
+    if media_scope.is_quarantine_path(path, settings):
+        return True
     move_root = os.path.realpath(settings.get("duplicate_move_root") or "")
     if move_root and path_is_under(path, move_root) and path_is_under(move_root, lib_root):
         return True
@@ -1587,7 +1591,7 @@ def public_quality_scan(scan):
         "repairable_count": counts.get("repairable_count", 0),
         "results_page_size": ITEM_PAGE_DEFAULT,
         "large_result": (counts.get("bad_count", 0) + counts.get("warning_count", 0)) >= LARGE_RESULT_COUNT,
-        "default_repair_root": DEFAULT_REPAIR_ROOT,
+        "default_repair_root": _default_repair_root(LIB_ROOT),
         "recent_logs": list_recent_logs(),
         "emby_mapping": emby_catalog.public_summary(
             scan.get("emby_mapping"), app_settings.load_settings()
@@ -1990,7 +1994,13 @@ def _public_quality_item(item):
 
 
 def _default_repair_root(lib_root):
-    configured = str(DEFAULT_REPAIR_ROOT or "").strip()
+    # The saved setting wins; DEFAULT_REPAIR_ROOT stays as the env-var fallback
+    # so existing deployments that set it keep working.
+    configured = str(
+        app_settings.load_settings().get("video_preview_repair_root")
+        or DEFAULT_REPAIR_ROOT
+        or ""
+    ).strip()
     lib_real = os.path.realpath(lib_root)
     if not configured:
         return os.path.join(lib_real, ".vid2gif-video-preview-repairs")

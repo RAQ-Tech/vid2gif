@@ -57,3 +57,35 @@ def is_non_main_video_filename(filename):
 
 def is_main_video_filename(filename):
     return not is_non_main_video_filename(filename)
+
+
+# Quarantine destinations are configurable, so scans cannot recognise them by
+# name alone. Matching on the configured paths keeps a renamed or relocated
+# folder from being walked back into the very scan that emptied it.
+QUARANTINE_ROOT_SETTINGS = (
+    "duplicate_move_root",
+    "damaged_move_root",
+    "video_preview_repair_root",
+    "subtitle_quarantine_root",
+)
+
+
+def configured_quarantine_roots(settings=None):
+    from . import app_settings
+
+    settings = settings if settings is not None else app_settings.load_settings()
+    roots = []
+    for key in QUARANTINE_ROOT_SETTINGS:
+        value = str((settings or {}).get(key) or "").strip()
+        if value:
+            roots.append(os.path.realpath(value))
+    return roots
+
+
+def is_quarantine_path(path, settings=None):
+    from .utils import path_is_under
+
+    real = os.path.realpath(str(path or ""))
+    if not real:
+        return False
+    return any(path_is_under(real, root) for root in configured_quarantine_roots(settings))
