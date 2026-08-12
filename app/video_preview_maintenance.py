@@ -81,7 +81,7 @@ GENERATION_ISSUES_SCHEMA_VERSION = 1
 # A recorded failure only describes what the extraction code of the day could
 # manage. Bump this whenever the tactics change so previously failed videos are
 # offered again automatically instead of staying held by a stale verdict.
-EXTRACTION_LOGIC_VERSION = 3
+EXTRACTION_LOGIC_VERSION = 4
 GENERATION_STALL_TIMEOUT_SECONDS = max(
     30,
     _env_int("VIDEO_PREVIEW_GENERATION_STALL_TIMEOUT", 120),
@@ -3056,13 +3056,18 @@ def _manifest_generated_identity(path, manifest=None):
     return record.get("identity") or None
 
 
-def _record_generated_bif(path, width, interval_seconds):
+def _record_generated_bif(
+    path, width, interval_seconds, partial=False, frame_count=0, expected_frame_count=0
+):
     manifest = _generation_manifest()
     key = os.path.normcase(os.path.realpath(path))
     manifest.setdefault("records", {})[key] = {
         "path": os.path.realpath(path),
         "identity": _stat_identity(path) or {},
         "width": int(width),
+        "partial": bool(partial),
+        "frame_count": int(frame_count or 0),
+        "expected_frame_count": int(expected_frame_count or 0),
         "interval_seconds": int(interval_seconds),
         "generated_at": utc_iso(),
     }
@@ -3372,6 +3377,10 @@ EXTRACTION_TACTICS = (
     },
 )
 MIN_TACTIC_WIDTH = 160
+# A degraded preview has to still be worth having. Below these floors the BIF
+# covers so little of the runtime that an empty scrub bar is more honest.
+MIN_DEGRADED_FRAME_COUNT = 5
+MIN_DEGRADED_COVERAGE_RATIO = 0.10
 
 
 def _tactic_width(width, tactic):
@@ -3558,6 +3567,15 @@ def _failure_is_retryable(exc):
     return any(marker in text for marker in transient_markers)
 
 
+def _degraded_bif_is_useful(actual_count, expected_count):
+    """Is a short preview still worth writing beside the video?"""
+    if actual_count < MIN_DEGRADED_FRAME_COUNT:
+        return False
+    if not expected_count:
+        return True
+    return (actual_count / expected_count) >= MIN_DEGRADED_COVERAGE_RATIO
+
+
 def _frame_count_is_sufficient(frame_count, expected_frames):
     """Match the installer's tolerance so we only retry what it would reject."""
     if not frame_count:
@@ -3643,6 +3661,7 @@ def _install_generated_bif(
     lib_root=LIB_ROOT,
     expected_target=None,
     duration=None,
+    degraded=False,
 ):
     if _matching_bifs_for_video(video_path):
         raise FileExistsError("A matching BIF appeared after the generation plan was created")
@@ -3652,10 +3671,21 @@ def _install_generated_bif(
     if not parsed.get("image_count"):
         raise ValueError("Generated BIF contains no frames")
     expected_count = _expected_bif_frame_count(duration, interval_seconds)
-    if expected_count is not None and abs(parsed.get("image_count", 0) - expected_count) > 1:
-        raise ValueError(
-            f"Generated BIF frame count is unexpected ({parsed.get('image_count', 0)} / {expected_count})"
-        )
+    actual_count = parsed.get("image_count", 0)
+    if expected_count is not None and abs(actual_count - expected_count) > 1:
+        # A damaged source that still yielded a usable stretch of frames keeps
+        # its short preview rather than losing the work entirely. Healthy files
+        # stay on the strict count, because a shortfall there means the
+        # generation itself went wrong.
+        if degraded and _degraded_bif_is_useful(actual_count, expected_count):
+            # Mark and fall through: the preview still has to be installed and
+            # recorded, so this must not short-circuit the rest of the function.
+            parsed["degraded"] = True
+            parsed["expected_image_count"] = expected_count
+        else:
+            raise ValueError(
+                f"Generated BIF frame count is unexpected ({actual_count} / {expected_count})"
+            )
     staged_identity = regular_file_identity(work_bif)
     atomic_install_file(
         work_bif,
@@ -3664,7 +3694,12 @@ def _install_generated_bif(
         expected_source=staged_identity,
         expected_target=expected_target,
     )
-    _record_generated_bif(target, width, interval_seconds)
+    _record_generated_bif(
+        target, width, interval_seconds,
+        partial=bool(parsed.get("degraded")),
+        frame_count=parsed.get("image_count", 0),
+        expected_frame_count=parsed.get("expected_image_count") or 0,
+    )
     return parsed
 
 
@@ -3737,6 +3772,7 @@ def _execute_generation(run, plan):
     _persist_generation_run(run, force=True)
     results = []
     generated = 0
+    partial_count = 0
     refused = 0
     work_root = os.path.join(GENERATION_ROOT, "work", run["id"])
     try:
@@ -3773,7 +3809,11 @@ def _execute_generation(run, plan):
                 )
                 result["extraction_tactic"] = tactic_used.get("key")
                 result["extraction_attempts"] = attempts
-                if tactic_used is not EXTRACTION_TACTICS[0]:
+                strict_failed = any(
+                    attempt.get("tactic") == EXTRACTION_TACTICS[0]["key"] and attempt.get("error")
+                    for attempt in attempts
+                )
+                if tactic_used is not EXTRACTION_TACTICS[0] and strict_failed:
                     result["degraded"] = True
                 run.update(
                     {
@@ -3798,13 +3838,28 @@ def _execute_generation(run, plan):
                     lib_root=plan["lib_root"],
                     expected_target=item.get("output_state"),
                     duration=duration,
+                    degraded=bool(result.get("degraded")),
                 )
                 result.update({
                     "status": "generated",
                     "frame_count": parsed.get("image_count", 0),
                     "output_size_bytes": os.path.getsize(item["output_path"]),
                 })
+                if parsed.get("degraded"):
+                    expected = parsed.get("expected_image_count") or 0
+                    actual = parsed.get("image_count", 0)
+                    result["partial"] = True
+                    result["expected_frame_count"] = expected
+                    result["coverage_percent"] = (
+                        round(100 * actual / expected) if expected else None
+                    )
+                    result["reason"] = (
+                        f"Partial preview: {actual} of {expected} frames recovered "
+                        "from a damaged video"
+                    )
                 generated += 1
+                if result.get("partial"):
+                    partial_count += 1
             except ScanCancelled:
                 raise
             except Exception as exc:
@@ -3819,6 +3874,7 @@ def _execute_generation(run, plan):
             run.update({
                 "processed_count": index,
                 "generated_count": generated,
+                "partial_count": partial_count,
                 "refused_count": refused,
                 "progress_percent": int(100 * index / max(1, plan["file_count"])),
                 "progress_label": f"Processed {index} of {plan['file_count']} videos",
@@ -3878,7 +3934,13 @@ def _execute_generation(run, plan):
         run["emby_notification"] = notification
         run["result"]["emby_notification"] = notification
         _persist_generation_run(run, force=True)
-        _write_log("bif-generation", {"plan_id": plan["id"], "generated_count": generated, "refused_count": refused, "items": results})
+        _write_log("bif-generation", {
+            "plan_id": plan["id"],
+            "generated_count": generated,
+            "partial_count": partial_count,
+            "refused_count": refused,
+            "items": results,
+        })
         impact_metrics.record_maintenance_action(
             plan.get("id"),
             "video_previews",

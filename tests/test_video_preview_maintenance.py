@@ -2013,3 +2013,85 @@ def test_stream_inventory_is_recorded_when_no_tactic_reaches_the_target(tmp_path
 
     inventory = next(a["stream_inventory"] for a in attempts if "stream_inventory" in a)
     assert inventory[0]["attached_pic"] == 1
+
+
+def test_a_short_preview_is_only_useful_above_the_floors():
+    # Too few frames to scrub with, whatever the ratio.
+    assert video_preview_maintenance._degraded_bif_is_useful(4, 10) is False
+    # 30% of a long video is a real stretch of the timeline.
+    assert video_preview_maintenance._degraded_bif_is_useful(59, 199) is True
+    assert video_preview_maintenance._degraded_bif_is_useful(223, 285) is True
+    # A sliver of a long video is not worth writing.
+    assert video_preview_maintenance._degraded_bif_is_useful(10, 500) is False
+
+
+def test_a_damaged_source_keeps_its_partial_preview(monkeypatch, tmp_path):
+    """59 of 199 frames from a corrupt file beats discarding the work."""
+    target = tmp_path / "Movie-320-10.bif"
+    work = _write(tmp_path / "work.bif", b"bif")
+    monkeypatch.setattr(video_preview_maintenance, "_matching_bifs_for_video", lambda _p: [])
+    monkeypatch.setattr(
+        video_preview_maintenance, "parse_bif",
+        lambda _p: {"valid": True, "image_count": 59, "timestamp_multiplier_ms": 10000},
+    )
+    monkeypatch.setattr(video_preview_maintenance, "_expected_bif_frame_count", lambda *_a: 199)
+    monkeypatch.setattr(video_preview_maintenance, "atomic_install_file", lambda *a, **k: None)
+    monkeypatch.setattr(video_preview_maintenance, "regular_file_identity", lambda _p: {})
+    recorded = {}
+    monkeypatch.setattr(
+        video_preview_maintenance, "_record_generated_bif",
+        lambda *a, **k: recorded.update(k),
+    )
+
+    parsed = video_preview_maintenance._install_generated_bif(
+        str(work), str(target), "/library/Movie.mp4", 320, 10,
+        lib_root=str(tmp_path), duration=1990, degraded=True,
+    )
+
+    assert parsed["degraded"] is True
+    assert parsed["expected_image_count"] == 199
+    assert recorded["partial"] is True
+    assert recorded["frame_count"] == 59
+
+
+def test_a_healthy_source_still_requires_a_complete_preview(monkeypatch, tmp_path):
+    """The strict count guards against generation going wrong on a good file."""
+    target = tmp_path / "Movie-320-10.bif"
+    work = _write(tmp_path / "work.bif", b"bif")
+    monkeypatch.setattr(video_preview_maintenance, "_matching_bifs_for_video", lambda _p: [])
+    monkeypatch.setattr(
+        video_preview_maintenance, "parse_bif",
+        lambda _p: {"valid": True, "image_count": 59, "timestamp_multiplier_ms": 10000},
+    )
+    monkeypatch.setattr(video_preview_maintenance, "_expected_bif_frame_count", lambda *_a: 199)
+
+    try:
+        video_preview_maintenance._install_generated_bif(
+            str(work), str(target), "/library/Movie.mp4", 320, 10,
+            lib_root=str(tmp_path), duration=1990, degraded=False,
+        )
+    except ValueError as exc:
+        assert "59 / 199" in str(exc)
+    else:
+        raise AssertionError("a healthy source must not accept a short preview")
+
+
+def test_a_barely_populated_preview_is_refused_even_when_degraded(monkeypatch, tmp_path):
+    target = tmp_path / "Movie-320-10.bif"
+    work = _write(tmp_path / "work.bif", b"bif")
+    monkeypatch.setattr(video_preview_maintenance, "_matching_bifs_for_video", lambda _p: [])
+    monkeypatch.setattr(
+        video_preview_maintenance, "parse_bif",
+        lambda _p: {"valid": True, "image_count": 3, "timestamp_multiplier_ms": 10000},
+    )
+    monkeypatch.setattr(video_preview_maintenance, "_expected_bif_frame_count", lambda *_a: 199)
+
+    try:
+        video_preview_maintenance._install_generated_bif(
+            str(work), str(target), "/library/Movie.mp4", 320, 10,
+            lib_root=str(tmp_path), duration=1990, degraded=True,
+        )
+    except ValueError as exc:
+        assert "3 / 199" in str(exc)
+    else:
+        raise AssertionError("three frames is not a usable preview")
