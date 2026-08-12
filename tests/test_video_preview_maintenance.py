@@ -2095,3 +2095,83 @@ def test_a_barely_populated_preview_is_refused_even_when_degraded(monkeypatch, t
         assert "3 / 199" in str(exc)
     else:
         raise AssertionError("three frames is not a usable preview")
+
+
+def test_container_paths_translate_to_a_pasteable_local_path():
+    settings = {"library_local_path_prefix": r"\\ARTEMIS\media\Emby_Media"}
+
+    result = video_preview_maintenance.local_library_path(
+        "/library/XXX/Blacked Raw/Some Title", settings
+    )
+
+    assert result == r"\\ARTEMIS\media\Emby_Media\XXX\Blacked Raw\Some Title"
+
+
+def test_a_trailing_separator_on_the_prefix_does_not_double_up():
+    result = video_preview_maintenance.local_library_path(
+        "/library/XXX", {"library_local_path_prefix": "\\\\ARTEMIS\\media\\"}
+    )
+
+    assert result == r"\\ARTEMIS\media\XXX"
+
+
+def test_a_forward_slash_prefix_keeps_forward_slashes():
+    result = video_preview_maintenance.local_library_path(
+        "/library/XXX/Title", {"library_local_path_prefix": "/mnt/media"}
+    )
+
+    assert result == "/mnt/media/XXX/Title"
+
+
+def test_local_path_is_empty_without_a_configured_prefix():
+    assert video_preview_maintenance.local_library_path("/library/XXX", {}) == ""
+    # A path outside the library has no meaningful local equivalent.
+    assert video_preview_maintenance.local_library_path(
+        "/somewhere/else", {"library_local_path_prefix": r"\\ARTEMIS\media"}
+    ) == ""
+
+
+def test_quarantining_a_damaged_video_takes_its_sidecars_along(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    folder = lib / "Studio" / "Broken Title"
+    video = _write(folder / "Broken Title.mp4", b"video")
+    srt = _write(folder / "Broken Title.eng.srt", b"subs")
+    poster = _write(folder / "Broken Title-poster.jpg", b"art")
+    unrelated = _write(folder / "Another Movie.mp4", b"keep me")
+
+    damaged_root = lib / ".vid2gif-quarantine" / "damaged"
+    monkeypatch.setattr(
+        video_preview_maintenance.app_settings, "load_settings",
+        lambda: {"damaged_move_root": str(damaged_root)},
+    )
+    monkeypatch.setattr(video_preview_maintenance, "_write_log", lambda *a, **k: None)
+
+    result, err = video_preview_maintenance.quarantine_damaged_video(
+        str(video), lib_root=str(lib)
+    )
+
+    assert err is None
+    assert result["moved_count"] == 3
+    assert not video.exists() and not srt.exists() and not poster.exists()
+    # A different video in the same folder is untouched.
+    assert unrelated.exists()
+    moved_root = damaged_root / "Studio" / "Broken Title"
+    assert (moved_root / "Broken Title.mp4").read_bytes() == b"video"
+    assert (moved_root / "Broken Title.eng.srt").read_bytes() == b"subs"
+
+
+def test_damaged_quarantine_refuses_a_destination_outside_the_library(monkeypatch, tmp_path):
+    lib = tmp_path / "library"
+    video = _write(lib / "Movie" / "Movie.mp4", b"video")
+    monkeypatch.setattr(
+        video_preview_maintenance.app_settings, "load_settings",
+        lambda: {"damaged_move_root": str(tmp_path / "outside")},
+    )
+
+    result, err = video_preview_maintenance.quarantine_damaged_video(
+        str(video), lib_root=str(lib)
+    )
+
+    assert result is None
+    assert "inside the library" in err
+    assert video.exists()

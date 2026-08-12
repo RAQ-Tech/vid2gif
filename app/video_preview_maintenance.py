@@ -770,11 +770,15 @@ def items_payload(scan_id, status="missing", offset=0, limit=ITEM_PAGE_DEFAULT, 
     )
     total = len(items)
     page = copy.deepcopy(items[offset : offset + limit])
+    local_settings = app_settings.load_settings()
     for item in page:
         issue = issue_by_id.get(item.get("id"))
         if issue:
             item["generation_held"] = True
             item["previous_generation_issue"] = issue
+        item["local_folder_path"] = local_library_path(
+            os.path.dirname(item.get("path") or ""), local_settings
+        )
     return {
         "scan": public_scan(scan),
         "status": status,
@@ -3499,6 +3503,91 @@ def _run_frame_extraction(
         with stderr_lock:
             error_data = bytes(stderr_tail)
         raise RuntimeError(_ffmpeg_error_summary(error_data))
+
+
+def local_library_path(container_path, settings=None):
+    """Translate a container path into one the user's file manager can open.
+
+    A browser cannot open a file:// location from a web page, so the useful
+    thing to hand back is a path that can be pasted into Explorer.
+    """
+    settings = settings if settings is not None else app_settings.load_settings()
+    prefix = str((settings or {}).get("library_local_path_prefix") or "").strip()
+    path = str(container_path or "")
+    if not prefix or not path:
+        return ""
+    root = LIB_ROOT.rstrip("/")
+    if not path.startswith(root):
+        return ""
+    remainder = path[len(root):].lstrip("/")
+    separator = "\\" if "\\" in prefix else "/"
+    tail = remainder.replace("/", separator)
+    return f"{prefix.rstrip('/' + chr(92))}{separator}{tail}" if tail else prefix
+
+
+def quarantine_damaged_video(video_path, lib_root=LIB_ROOT):
+    """Move a video and its sidecars out of the library, keeping them together.
+
+    Damaged media goes to its own destination rather than the duplicates
+    folder: the two are unrelated problems and mixing them makes either pile
+    harder to reason about later.
+    """
+    settings = app_settings.load_settings()
+    root = os.path.realpath(lib_root)
+    real_video = os.path.realpath(str(video_path or ""))
+    if not real_video or not path_is_under(real_video, root):
+        return None, "Video is outside the library"
+    if os.path.islink(real_video) or not os.path.isfile(real_video):
+        return None, "Video is missing"
+    destination_root = str(settings.get("damaged_move_root") or "").strip()
+    if not destination_root or not path_is_under(os.path.realpath(destination_root), root):
+        return None, "Damaged destination must stay inside the library"
+
+    folder = os.path.dirname(real_video)
+    stem = os.path.splitext(os.path.basename(real_video))[0]
+    relative_folder = os.path.relpath(folder, root)
+    target_folder = os.path.realpath(os.path.join(destination_root, relative_folder))
+    if not path_is_under(target_folder, root):
+        return None, "Damaged destination must stay inside the library"
+
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None, "Video folder could not be read"
+    # Sidecars share the video's stem, so they travel with it rather than being
+    # orphaned beside a video that is no longer there.
+    companions = [
+        name for name in names
+        if os.path.splitext(name)[0].casefold().startswith(stem.casefold())
+        and os.path.isfile(os.path.join(folder, name))
+        and not os.path.islink(os.path.join(folder, name))
+    ]
+    moved, refused = [], []
+    os.makedirs(target_folder, exist_ok=True)
+    for name in sorted(companions, key=str.lower):
+        source = os.path.realpath(os.path.join(folder, name))
+        destination = os.path.join(target_folder, name)
+        try:
+            atomic_quarantine_file(source, destination, root=root)
+        except Exception as exc:
+            refused.append({"path": source, "reason": str(exc)})
+            continue
+        moved.append({"source_path": source, "destination_path": destination, "name": name})
+    _write_log("damaged-quarantine", {
+        "video": real_video,
+        "destination_root": target_folder,
+        "moved": moved,
+        "refused": refused,
+    })
+    if not moved:
+        return None, (refused[0]["reason"] if refused else "Nothing was moved")
+    return {
+        "moved_count": len(moved),
+        "refused_count": len(refused),
+        "destination": target_folder,
+        "moved": moved,
+        "refused": refused,
+    }, None
 
 
 def probe_stream_inventory(path, timeout=FFPROBE_TIMEOUT_SECONDS):

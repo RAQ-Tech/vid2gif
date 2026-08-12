@@ -174,6 +174,16 @@
             <input id="duplicate_move_root" name="duplicate_move_root" class="form-control" value="{{ settings.duplicate_move_root }}" placeholder="/library/.vid2gif-duplicates">
             <div class="form-text">Move destinations must stay inside the mounted library root, but can be outside the specific Emby library folder being scanned.</div>
           </div>
+          <div class="col-md-8">
+            <label class="form-label" for="damaged_move_root">Damaged video destination</label>
+            <input id="damaged_move_root" name="damaged_move_root" class="form-control" value="{{ settings.damaged_move_root }}" placeholder="/library/.vid2gif-quarantine/damaged">
+            <div class="form-text">Videos too damaged to preview are moved here, kept separate from duplicate cleanup so the two piles stay distinct.</div>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label" for="library_local_path_prefix">Library path on your computer</label>
+            <input id="library_local_path_prefix" name="library_local_path_prefix" class="form-control" value="{{ settings.library_local_path_prefix }}" placeholder="\ARTEMIS\media\Emby_Media">
+            <div class="form-text">What <code>/library</code> looks like from your desktop. Used by "Copy folder path" so the path can be pasted into a file manager. Browsers cannot open a folder directly from a web page, so copying is the closest thing available.</div>
+          </div>
           <div class="col-md-4">
             <label class="form-label" for="duplicate_excluded_folders">Excluded folder names</label>
             <input id="duplicate_excluded_folders" name="duplicate_excluded_folders" class="form-control" value="{{ duplicate_excluded_folders_text }}" placeholder="trailers, extras, samples">

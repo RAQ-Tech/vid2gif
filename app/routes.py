@@ -335,6 +335,8 @@ def settings_page():
                 "duplicate_accessory_policy": request.form.get("duplicate_accessory_policy"),
                 "duplicate_move_root": request.form.get("duplicate_move_root"),
                 "duplicate_excluded_folders": request.form.get("duplicate_excluded_folders"),
+                "damaged_move_root": request.form.get("damaged_move_root"),
+                "library_local_path_prefix": request.form.get("library_local_path_prefix"),
                 "duplicate_subtitle_close_points": request.form.get("duplicate_subtitle_close_points"),
                 "duplicate_image_close_ratio": request.form.get("duplicate_image_close_ratio"),
                 "duplicate_runtime_tolerance_seconds": request.form.get("duplicate_runtime_tolerance_seconds"),
@@ -1176,6 +1178,17 @@ def api_maintenance_video_previews_generation_settings():
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"settings": settings})
+
+
+@app.route("/api/maintenance/video-previews/damaged/quarantine", methods=["POST"])
+def api_maintenance_video_previews_quarantine_damaged():
+    data = request.get_json(silent=True) or {}
+    result, err = video_preview_maintenance.quarantine_damaged_video(
+        data.get("path"), lib_root=LIB_ROOT
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"result": result})
 
 
 @app.route("/api/maintenance/video-previews/generation/issues/clear", methods=["POST"])

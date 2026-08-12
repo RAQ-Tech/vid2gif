@@ -2942,12 +2942,20 @@
       const retryButton = issue && !issue.retryable
         ? `<button class="btn btn-outline-secondary btn-sm mt-2 d-block" type="button" data-preview-retry="${escapeHtml(item.id)}">Try again</button>`
         : '';
+      // Browsers refuse to open file:// from a web page, so the workable move
+      // is handing over a path that can be pasted into a file manager.
+      const copyButton = issue && item.local_folder_path
+        ? `<button class="btn btn-outline-secondary btn-sm mt-2 d-block" type="button" data-preview-copy-path="${escapeHtml(item.local_folder_path)}">Copy folder path</button>`
+        : '';
+      const quarantineButton = issue && !issue.retryable
+        ? `<button class="btn btn-outline-danger btn-sm mt-2 d-block" type="button" data-preview-quarantine="${escapeHtml(item.path)}" data-preview-quarantine-name="${escapeHtml(item.name || '')}">Quarantine video</button>`
+        : '';
       const detail = issue
         ? `${item.detail || ''} Previous attempt: ${issue.reason || 'could not complete'}.${tactics}${attemptText}`
         : (item.detail || '');
       return `<tr>` +
         `<td>${item.status === 'missing' ? `<input class="form-check-input" type="checkbox" data-preview-generate="${escapeHtml(item.id)}" aria-label="Generate BIF for ${escapeHtml(item.name)}"${previewItemIsSelected(item) ? ' checked' : ''}>` : ''}</td>` +
-        `<td class="preview-status-cell">${previewStatusBadge(item.status)}${issueBadge}${retryButton}</td>` +
+        `<td class="preview-status-cell">${previewStatusBadge(item.status)}${issueBadge}${retryButton}${copyButton}${quarantineButton}</td>` +
         `<td class="path-cell"><code title="${escapeHtml(item.path)}">${escapeHtml(item.relative_path || item.name)}</code></td>` +
         `<td>${escapeHtml(item.size_label || '')}</td>` +
         `<td class="preview-detail-cell"><div class="preview-detail-text" title="${escapeHtml(detail)}">${escapeHtml(detail)}</div></td>` +
@@ -5877,6 +5885,46 @@
     });
 
     byId('previewItems')?.addEventListener('click', async event => {
+      const copyPath = event.target.closest('[data-preview-copy-path]');
+      if (copyPath) {
+        const value = copyPath.getAttribute('data-preview-copy-path');
+        try {
+          await navigator.clipboard.writeText(value);
+          setPreviewMessage('Folder path copied', `Paste into your file manager: ${value}`);
+        } catch (_e) {
+          // Clipboard access can be refused; showing the path still lets the
+          // user select and copy it by hand.
+          setPreviewMessage('Copy the folder path manually', value);
+        }
+        return;
+      }
+      const quarantine = event.target.closest('[data-preview-quarantine]');
+      if (quarantine) {
+        const path = quarantine.getAttribute('data-preview-quarantine');
+        const name = quarantine.getAttribute('data-preview-quarantine-name') || 'this video';
+        if (!window.confirm(`Move ${name} and its sidecars out of the library?
+
+They go to the damaged quarantine folder and can be moved back by hand.`)) return;
+        quarantine.disabled = true;
+        try {
+          const res = await fetch('/api/maintenance/video-previews/damaged/quarantine', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path}),
+          });
+          const data = await readJsonResponse(res);
+          if (!res.ok) throw new Error(data.error || 'The video could not be quarantined');
+          const moved = data.result?.moved_count || 0;
+          setPreviewMessage(
+            `${moved} file${moved === 1 ? '' : 's'} moved to damaged quarantine`,
+            data.result?.destination || '',
+          );
+          loadPreviewItems(previewItemsPage?.offset || 0);
+        } catch (e) {
+          quarantine.disabled = false;
+          setPreviewMessage('The video could not be quarantined', e.message || '');
+        }
+        return;
+      }
       const retryAll = event.target.closest('[data-preview-retry-all]');
       if (retryAll) {
         retryAll.disabled = true;

@@ -209,6 +209,15 @@ file (a stall, a busy disk, a video that changed mid-run) are cleared at the
 start of the next scan and tried again automatically; the rest stay listed with
 a "Try again" control so they are never a dead end.
 
+A video too damaged to preview can be quarantined from the missing-BIF list.
+It moves with its sidecars to the damaged destination, which defaults to a
+subfolder of `/library/.vid2gif-quarantine` and is kept separate from duplicate
+cleanup so the two piles stay distinct. Setting a library path prefix (what
+`/library` looks like from your own computer) adds a "Copy folder path" control
+for inspecting a file before deciding. Browsers refuse to open a folder directly
+from a web page regardless of HTTP or HTTPS, so copying the path is the closest
+available behaviour.
+
 Video preview maintenance separates cleanup from generation. Bad and warning
 BIFs can be quarantined or deleted first; a fresh scan then provides the missing
 videos eligible for direct BIF generation. Width and interval settings persist,
