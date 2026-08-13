@@ -34,6 +34,7 @@ Test Lab bundle, and run tests:
 pip install -r requirements-dev.txt
 npm ci --ignore-scripts
 python -m pip_audit -r requirements.txt
+python -m pip_audit -r requirements-dev.txt
 npm audit --audit-level=low
 npm run test:frontend
 npm run build:frontend
@@ -42,6 +43,17 @@ python -m pytest
 
 Node.js is only required for frontend development. Docker and deployed instances
 serve the generated `app/static/test-lab.bundle.js` file directly.
+
+`tests/conftest.py` points `STATE_ROOT` at a temporary directory before any
+`app` module is imported, so the suite never writes to the real `/state`. Export
+`STATE_ROOT` yourself to override that.
+
+Browser tests start a Flask server from a virtualenv at `.venv`. If your
+interpreter lives somewhere else, point `VID2GIF_TEST_PYTHON` at it:
+
+```bash
+VID2GIF_TEST_PYTHON=/path/to/python npm run test:browser
+```
 
 ## Installation
 
@@ -56,6 +68,14 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
+
+   On Windows, activate the virtualenv with `.venv\Scripts\Activate.ps1`
+   (PowerShell) or `.venv\Scripts\activate.bat` (Command Prompt) instead.
+
+   ffmpeg, ffprobe, and gifsicle are not Python packages and must be installed
+   separately and available on `PATH`. Without them the app still starts and
+   every page renders, but `/healthz` reports unhealthy and GIF generation
+   fails. The Docker image installs all three.
 
 2. Launch the application:
 

@@ -25,8 +25,9 @@ Run these from the repository root.
 python -m pytest
 ```
 
-520 Python tests, ~35s. **Set `STATE_ROOT` first** (see Gotchas) or the import of
-`app/config.py` will try to create `/state` on the real filesystem.
+520 Python tests, ~35s. `tests/conftest.py` points `STATE_ROOT` at a temp
+directory before any `app` module is imported, so this is safe to run bare.
+Export `STATE_ROOT` to override it.
 
 ```bash
 npm run test:frontend
@@ -126,7 +127,8 @@ state out of process memory first.
 - **Read `DESIGN.md` before any user-facing UI work.** It is a real design
   system with an enforced implementation checklist, not decoration.
 - **Tests live in `tests/`, one file per module**, using plain pytest functions
-  with `monkeypatch` and `tmp_path`. There is no `conftest.py`; each test file
+  with `monkeypatch` and `tmp_path`. `tests/conftest.py` exists only to default
+  `STATE_ROOT` to a temp directory — it defines no fixtures. Each test file
   builds and resets its own state. Follow the existing patterns.
 - **Rebuild and commit `app/static/*.bundle.js`** whenever you change anything
   under `frontend/test-lab/` or `frontend/tables/`. CI fails if the checked-in
@@ -142,21 +144,24 @@ state out of process memory first.
 ## Gotchas
 
 - **`app/config.py:41` creates directories at import time.** Any `import app.*`
-  will `mkdir` under `STATE_ROOT`, defaulting to `/state` — meaning `C:\state`
-  on Windows or a permission error on Linux. Always export `STATE_ROOT` (and
-  usually `LIB_ROOT`) to a scratch directory before running Python locally. CI
-  sets `STATE_ROOT=/tmp/vid2gif-state`.
+  will `mkdir` under `STATE_ROOT`, defaulting to `/state` — a stray `state`
+  folder at the drive root on Windows, or a permission error on Linux.
+  `tests/conftest.py` handles this for pytest, but anything else that imports
+  `app` (a REPL, a script, `python -m app.main`) still needs `STATE_ROOT`
+  exported. Do not default `LIB_ROOT` the same way: several tests assert
+  against the literal `/library` container path.
 - **`/healthz` returns 503 on a normal dev machine.** It fails when ffmpeg,
   ffprobe, or the three worker threads are absent, which is the usual state
   outside Docker. Pages still render.
 - **`playwright.config.js:14` hard-codes `.venv/Scripts/python.exe` on Windows.**
   Browser tests need a virtualenv at `.venv`, or `VID2GIF_TEST_PYTHON` pointing
   at a Python that has Flask installed.
-- **Line endings.** `.gitattributes` forces LF for source files, but this
-  Windows checkout has `core.autocrlf=true` and `.gitattributes` does not cover
-  `*.txt` or `*.css`. Rebuilding the frontend makes
-  `app/static/test-lab.bundle.js.LEGAL.txt` show as modified in `git status`
-  even when its content is identical; `git checkout --` on it is safe.
+- **Line endings.** This Windows checkout has `core.autocrlf=true`, so
+  `.gitattributes` is what keeps committed files LF. It now covers `*.css` and
+  `*.txt` as well, which is what stops a frontend rebuild from dirtying
+  `app/static/test-lab.bundle.js.LEGAL.txt` — the file CI checks with
+  `git diff --exit-code`. Extend `.gitattributes` when adding a new text
+  extension.
 - **The UI loads Bootstrap, Bootstrap Icons, and Inter from public CDNs**
   (`app/templates/base.html:8-9,63`). The app will look broken on a genuinely
   offline network.

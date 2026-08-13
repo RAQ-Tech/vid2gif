@@ -46,41 +46,7 @@ protection is not mistaken for encryption at rest.
 
 ## Developer experience
 
-### 4. Running pytest without `STATE_ROOT` writes outside the repository
-
-`app/config.py:41` calls `os.makedirs` at import time on paths derived from
-`STATE_ROOT`, which defaults to `/state`. A contributor who runs
-`python -m pytest` on a fresh clone creates `C:\state` on Windows or hits a
-permission error on Linux. CI works around it with an env var; there is no
-`conftest.py`, `pytest.ini`, or `pyproject.toml` to make the default safe.
-
-Add a `tests/conftest.py` that points `STATE_ROOT` and `LIB_ROOT` at a temporary
-directory before `app` is imported.
-
-### 5. Windows setup is undocumented despite being supported
-
-`playwright.config.js:14` has an explicit Windows branch expecting
-`.venv/Scripts/python.exe`, but `README.md`'s installation section only gives
-`source .venv/bin/activate`. A Windows contributor following the README ends up
-with browser tests that fail on a missing interpreter, with no obvious cause.
-
-Add the Windows activation command and note the `VID2GIF_TEST_PYTHON` escape
-hatch.
-
-### 6. `.gitattributes` does not cover `.txt` or `.css`
-
-`.gitattributes` normalizes `.py`, `.js`, `.md`, `.json`, `.html`, `.sh`, and
-`.yml` to LF, but not `*.txt` or `*.css`. That leaves
-`app/static/test-lab.bundle.js.LEGAL.txt` unnormalized — and CI checks exactly
-that file with `git diff --exit-code` after rebuilding the bundles. On a Windows
-checkout with `core.autocrlf=true`, rebuilding the frontend makes the file
-appear modified. Two past commits ("Normalize test_main.py to LF...",
-"...normalize js/json line endings") show this class of problem has already cost
-time.
-
-Add `*.txt text eol=lf` and `*.css text eol=lf`.
-
-### 7. No linter or formatter anywhere
+### 4. No linter or formatter anywhere
 
 `README.md` asks contributors to follow PEP 8, but nothing checks it: there is
 no ruff, flake8, or black in `requirements-dev.txt`, and no lint step in
@@ -89,7 +55,7 @@ no ruff, flake8, or black in `requirements-dev.txt`, and no lint step in
 Add ruff to `requirements-dev.txt` and a CI step. Expect a first pass of
 mechanical fixes.
 
-### 8. No coverage measurement
+### 5. No coverage measurement
 
 The suite is large and well-structured, but nothing reports which branches of
 the safety-critical modules (`file_safety.py`, `maintenance.py`,
@@ -99,7 +65,7 @@ Add `pytest-cov` and report the number in CI, without gating on it initially.
 
 ## Test coverage gaps
 
-### 9. Browser tests cover four of the seven maintenance tabs
+### 6. Browser tests cover four of the seven maintenance tabs
 
 `frontend/browser/` has specs for posters, duplicates, duplicate slots, restore,
 BIF, the activity strip, and GIF job creation. There is no browser or
@@ -114,7 +80,7 @@ operations through the UI.
 
 ## Documentation
 
-### 10. Actor image maintenance is entirely undocumented
+### 7. Actor image maintenance is entirely undocumented
 
 `app/actor_image_maintenance.py` is 1,537 lines with a full Maintenance tab, a
 dashboard workstream, eleven API endpoints, and 338 lines of tests. `README.md`
@@ -127,14 +93,14 @@ including what it writes to the library.
 
 ## Lower priority
 
-### 11. `TEMPLATES_AUTO_RELOAD` is on in production
+### 8. `TEMPLATES_AUTO_RELOAD` is on in production
 
 `app/routes.py:59` sets `app.config["TEMPLATES_AUTO_RELOAD"] = True`
 unconditionally, so the container stats every template on every request. Harmless
 at LAN scale, but it is dev configuration shipped to production. Gate it on a
 debug flag.
 
-### 12. Several modules have outgrown one file
+### 9. Several modules have outgrown one file
 
 `app/video_preview_maintenance.py` (4,211 lines), `app/maintenance.py` (4,127),
 `app/poster_maintenance.py` (1,950), `app/routes.py` (1,776), and
@@ -146,7 +112,7 @@ already visible in the module names (`duplicate_slots.py` and
 Split opportunistically when touching one of these for another reason, not as a
 standalone refactor.
 
-### 13. Dashboard impact metrics cannot be backfilled
+### 10. Dashboard impact metrics cannot be backfilled
 
 `README.md` states the dashboard tracks impact only from first launch after the
 feature was installed and does not backfill. Existing installations therefore
@@ -155,3 +121,16 @@ show a lifetime total that understates real work. The bounded audit logs under
 
 A one-time backfill would make the lifetime number trustworthy for existing
 users. Worth doing only if that number is meant to be authoritative.
+
+## Open questions
+
+These need a decision from Chris; they are not engineering calls.
+
+### Delete the stray `C:\state` folder?
+
+Test runs on this machine before 2026-08-13 wrote 2.1 MB of app state to
+`C:\state` (created 2026-08-07, last written 2026-08-11) because `STATE_ROOT`
+was unset. `tests/conftest.py` now prevents new ones. The folder holds only test
+leftovers as far as I can tell — settings, logs, an empty job queue — but it is
+outside the repository and deleting it is not reversible from git, so it is left
+in place. Say the word and it goes.
