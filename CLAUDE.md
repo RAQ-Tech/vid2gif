@@ -25,9 +25,16 @@ Run these from the repository root.
 python -m pytest
 ```
 
-520 Python tests, ~35s. `tests/conftest.py` points `STATE_ROOT` at a temp
+529 Python tests, ~35s. `tests/conftest.py` points `STATE_ROOT` at a temp
 directory before any `app` module is imported, so this is safe to run bare.
 Export `STATE_ROOT` to override it.
+
+```bash
+python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+```
+
+What CI runs. Coverage sits at ~83%; the floor is 80. Raise the floor as
+coverage improves — never lower it to accommodate a regression.
 
 ```bash
 python -m ruff check .

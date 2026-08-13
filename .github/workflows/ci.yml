@@ -64,8 +64,11 @@ jobs:
           npm run build:frontend
           git diff --exit-code -- app/static
 
+      # --cov-fail-under guards against silent erosion; it sits below the
+      # current figure so an ordinary change has room, and is meant to be
+      # raised as coverage improves rather than lowered to fit a regression.
       - name: Run tests
-        run: python -m pytest
+        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 
       - name: Run browser and accessibility tests
         run: npm run test:browser

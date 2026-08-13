@@ -41,7 +41,7 @@ python -m ruff check .
 npm audit --audit-level=low
 npm run test:frontend
 npm run build:frontend
-python -m pytest
+python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```
 
 Node.js is only required for frontend development. Docker and deployed instances

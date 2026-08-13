@@ -10,13 +10,19 @@ exactly from source.
 
 ## Test coverage
 
-### 1. No coverage measurement
+### 1. Cover the error paths in file_safety.py
 
-The suite is large and well-structured, but nothing reports which branches of
-the safety-critical modules (`file_safety.py`, `maintenance.py`,
-`video_preview_maintenance.py`) are actually exercised.
+file_safety.py is the module that decides whether it is safe to touch a user's
+file -- symlink rejection, identity capture, atomic install, same-filesystem
+moves -- and the coverage run puts it at 75%, among the lowest in the codebase.
+`subtitle_quality.py` (73%), `ffmpeg_utils.py` (75%), and `test_lab.py` (77%)
+are the next lowest. `routes.py` sits at 71%, but that is mostly thin endpoint
+wrappers whose logic is tested through the modules underneath.
 
-Add `pytest-cov` and report the number in CI, without gating on it initially.
+Uncovered lines in `file_safety.py` are the error branches: unreadable files,
+cross-device moves, races where the destination appears mid-operation. Those are
+exactly the paths that matter when something goes wrong with someone's library.
+Worth writing tests for before chasing the overall percentage.
 
 ### 2. Browser tests cover four of the seven maintenance tabs
 
