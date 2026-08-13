@@ -2420,7 +2420,7 @@ def _planned_operation(item, keep_video, action, settings, lib_root, override_op
     return default_operation, default_target, reason
 
 
-def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):
+def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     _ensure_duplicate_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Invalid request"
@@ -3611,7 +3611,7 @@ def duplicate_apply_status(apply_id=None):
     return {"apply": public_apply_run(run)}, None
 
 
-def apply_duplicate_cleanup_plan(plan_id, apply_run=None):
+def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
     with maintenance_lock:
         plan = cleanup_plans.get(str(plan_id or ""))
     if not plan:

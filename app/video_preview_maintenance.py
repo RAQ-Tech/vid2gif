@@ -843,7 +843,7 @@ def _quality_file_identity(path, lib_root):
     }
 
 
-def parse_bif(path, sample_limit=QUALITY_SAMPLE_LIMIT):
+def parse_bif(path, sample_limit=QUALITY_SAMPLE_LIMIT):  # noqa: C901
     errors = []
     path = os.path.realpath(path)
     stat = _safe_stat(path)
@@ -2471,7 +2471,7 @@ def quality_apply_status(apply_id=None):
     return {"apply": public_quality_apply_run(run)}, None
 
 
-def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):
+def apply_quality_repair_plan(plan_id, apply_run=None, opener=None):  # noqa: C901
     with preview_lock:
         plan = quality_plans.get(str(plan_id or ""))
     if not plan:

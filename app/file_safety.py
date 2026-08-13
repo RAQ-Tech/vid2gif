@@ -127,7 +127,7 @@ def _fsync_directory(path):
         os.close(fd)
 
 
-def atomic_install_file(
+def atomic_install_file(  # noqa: C901
     source,
     target,
     *,

@@ -544,7 +544,7 @@ def _public_item(candidate, root, status, message=""):
     }
 
 
-def _process_candidate(candidate, root):
+def _process_candidate(candidate, root):  # noqa: C901
     background = candidate["background_path"]
     poster = candidate["poster_path"]
     backup = candidate["backup_path"]
@@ -749,7 +749,7 @@ def _check_poster_cancelled(scan):
         raise PosterScanCancelled()
 
 
-def _analyze_candidate(candidate, root):
+def _analyze_candidate(candidate, root):  # noqa: C901
     background = candidate["background_path"]
     poster = candidate["poster_path"]
     backup = candidate["backup_path"]
@@ -1462,7 +1462,7 @@ def _empty_counters():
     }
 
 
-def _scan_and_apply(run, lib_root, settings):
+def _scan_and_apply(run, lib_root, settings):  # noqa: C901
     manifest = load_manifest()
     folders = manifest.setdefault("folders", {})
     records = manifest.setdefault("records", {})

@@ -1025,7 +1025,7 @@ def _finish_run(run):
     _run_progress(run, now=now)
 
 
-def worker():
+def worker():  # noqa: C901
     while True:
         try:
             run_id = test_lab_queue.get(timeout=0.2)

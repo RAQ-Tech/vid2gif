@@ -1,0 +1,22 @@
+# Ruff configuration.
+#
+# Deliberately narrow: this exists to track function complexity, not to enforce a
+# repo-wide style. Broadening `select` would surface hundreds of unrelated findings
+# and drown the one signal this file is here to carry.
+
+target-version = "py311"
+line-length = 120
+extend-exclude = [".venv", "node_modules"]
+
+[lint]
+select = [
+    "C901",   # mccabe: over-complex functions
+]
+
+[lint.mccabe]
+# Cyclomatic complexity ceiling. The 17 functions already above this line carry an
+# explicit `# noqa: C901`, so `ruff check` is clean today — this is a ratchet against
+# new tangle, not a demand to refactor on the spot. Those noqa comments are the debt
+# list; the worst are build_duplicate_cleanup_plan (54) and
+# apply_duplicate_cleanup_plan (43), both in app/maintenance.py.
+max-complexity = 15
