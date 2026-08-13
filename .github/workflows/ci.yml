@@ -38,6 +38,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
+      - name: Lint
+        run: python -m ruff check .
+
       - name: Audit runtime dependencies
         run: python -m pip_audit -r requirements.txt
 

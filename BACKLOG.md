@@ -10,16 +10,7 @@ exactly from source.
 
 ## Developer experience
 
-### 1. No linter or formatter anywhere
-
-`README.md` asks contributors to follow PEP 8, but nothing checks it: there is
-no ruff, flake8, or black in `requirements-dev.txt`, and no lint step in
-`.github/workflows/ci.yml`. Style drift across 45,000 lines is left to review.
-
-Add ruff to `requirements-dev.txt` and a CI step. Expect a first pass of
-mechanical fixes.
-
-### 2. No coverage measurement
+### 1. No coverage measurement
 
 The suite is large and well-structured, but nothing reports which branches of
 the safety-critical modules (`file_safety.py`, `maintenance.py`,
@@ -29,7 +20,7 @@ Add `pytest-cov` and report the number in CI, without gating on it initially.
 
 ## Test coverage gaps
 
-### 3. Browser tests cover four of the seven maintenance tabs
+### 2. Browser tests cover four of the seven maintenance tabs
 
 `frontend/browser/` has specs for posters, duplicates, duplicate slots, restore,
 BIF, the activity strip, and GIF job creation. There is no browser or
@@ -44,7 +35,7 @@ operations through the UI.
 
 ## Documentation
 
-### 4. Actor image maintenance is entirely undocumented
+### 3. Actor image maintenance is entirely undocumented
 
 `app/actor_image_maintenance.py` is 1,537 lines with a full Maintenance tab, a
 dashboard workstream, eleven API endpoints, and 338 lines of tests. `README.md`
@@ -56,6 +47,18 @@ Add a README section matching the depth of the duplicate and subtitle sections,
 including what it writes to the library.
 
 ## Lower priority
+
+### 4. No formatter, and 1,267 lines exceed 88 columns
+
+`ruff check` now runs in CI, but `E501` (line too long) is switched off in
+`ruff.toml`. 1,267 lines exceed ruff's default 88 columns and 133 exceed 120,
+concentrated in `maintenance.py`, `video_preview_maintenance.py`, and
+`poster_maintenance.py`. Rewrapping them by hand would be a large diff through
+the code that moves users' files, for no behavioural gain.
+
+Adopting `ruff format` would do it mechanically and consistently, but it would
+touch nearly every Python file in one commit. Worth doing deliberately, on a
+quiet branch, not folded into other work.
 
 ### 5. Several modules have outgrown one file
 

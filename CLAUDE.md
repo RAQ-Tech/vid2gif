@@ -30,6 +30,13 @@ directory before any `app` module is imported, so this is safe to run bare.
 Export `STATE_ROOT` to override it.
 
 ```bash
+python -m ruff check .
+```
+
+Lints `app/`, `tests/`, and `scripts/` with pycodestyle, pyflakes, and bugbear
+rules; config in `ruff.toml`. Line length (`E501`) is deliberately not enforced.
+
+```bash
 npm run test:frontend
 ```
 
@@ -141,8 +148,10 @@ state out of process memory first.
   a CDN host reappears.
 - **Runtime dependencies go in `requirements.txt`; dev-only tools in
   `requirements-dev.txt`.** A test asserts the split.
-- PEP 8, and Python only — Node is a frontend build tool, never a runtime
-  dependency of the deployed container.
+- PEP 8 as enforced by `ruff check` (CI runs it). Python only — Node is a
+  frontend build tool, never a runtime dependency of the deployed container.
+- **`app/wsgi.py` re-exports `app` via `__all__`.** It reads as unused but it is
+  the WSGI callable gunicorn loads. Do not let a cleanup remove it.
 - Commit messages are a short imperative sentence describing the user-visible
   outcome ("Keep partial previews recovered from damaged videos"), not the
   mechanism.

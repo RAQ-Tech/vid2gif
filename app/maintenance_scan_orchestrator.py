@@ -8,7 +8,6 @@ from . import actor_image_maintenance
 from . import config
 from . import dashboard
 from . import maintenance
-from . import maintenance_scan_store
 from . import task_progress
 from . import poster_maintenance
 from . import subtitle_maintenance

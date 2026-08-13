@@ -16,7 +16,7 @@ from . import maintenance_scan_store
 from . import media_scope
 from . import task_progress
 from . import poster_maintenance
-from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
+from .config import LIB_ROOT, STATE_ROOT
 from .file_safety import regular_file_identity
 from .operation_gate import coordinated_library_operation, library_operation
 from .progress import format_size, utc_iso

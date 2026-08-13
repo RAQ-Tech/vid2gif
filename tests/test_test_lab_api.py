@@ -1,9 +1,9 @@
 import json
-import os
 
 import pytest
 
 from app import routes, test_lab
+from app.process_runner import ProcessResult
 
 
 def _reset_lab_roots(monkeypatch, tmp_path):
@@ -417,7 +417,7 @@ def test_test_lab_preview_worker_creates_scaled_preview(monkeypatch, tmp_path):
         output = args[args.index("--output") + 1]
         with open(output, "wb") as f:
             f.write(_gif_bytes(height=720))
-        return test_lab.ProcessResult(returncode=0)
+        return ProcessResult(returncode=0)
 
     monkeypatch.setattr(test_lab, "run_streaming_process", fake_run)
 

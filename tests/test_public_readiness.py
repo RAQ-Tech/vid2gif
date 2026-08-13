@@ -477,8 +477,11 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "werkzeug==3.1.8" in requirements
     assert "pytest==9.0.3" in dev_requirements
     assert "pip-audit==2.10.1" in dev_requirements
+    assert "ruff==0.16.3" in dev_requirements
+    assert "ruff" not in requirements
     assert "python -m pip_audit -r requirements.txt" in workflow
     assert "python -m pip_audit -r requirements-dev.txt" in workflow
+    assert "python -m ruff check ." in workflow
 
 
 def test_templates_never_reach_for_a_third_party_cdn():

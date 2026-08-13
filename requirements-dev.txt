@@ -1,3 +1,4 @@
 -r requirements.txt
 pip-audit==2.10.1
+ruff==0.16.3
 pytest==9.0.3

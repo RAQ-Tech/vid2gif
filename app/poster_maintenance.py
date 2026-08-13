@@ -1167,7 +1167,8 @@ def poster_items_payload(
 ):
     _ensure_poster_cache_loaded()
     try:
-        offset = max(0, int(offset or 0)); limit = max(1, min(100, int(limit or 10)))
+        offset = max(0, int(offset or 0))
+        limit = max(1, min(100, int(limit or 10)))
     except (TypeError, ValueError):
         offset, limit = 0, 10
     with _poster_scan_lock:
@@ -1200,7 +1201,8 @@ def poster_items_payload(
         },
         "background",
     )
-    total = len(items); page = items[offset:offset + limit]
+    total = len(items)
+    page = items[offset:offset + limit]
     return {
         "scan": public_poster_scan(scan), "offset": offset, "limit": limit,
         "sort": sort, "direction": direction,
@@ -1716,7 +1718,7 @@ def _execute_run(run, lib_root, settings):
             ):
                 catalog, _summary = emby_catalog.load_catalog(emby_settings)
                 mappings = emby_settings.get("emby_path_mappings") or []
-                for change, candidate in zip(changes, candidates):
+                for change, candidate in zip(changes, candidates, strict=True):
                     match = emby_catalog.match_paths(catalog, _poster_video_paths({"candidate": candidate}), mappings)
                     if match.get("emby_match_status") == "unmatched":
                         match = emby_catalog.match_path(catalog, os.path.dirname(candidate.get("poster_path") or ""), mappings)

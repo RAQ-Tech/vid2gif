@@ -637,8 +637,8 @@ def test_copy_keeper_canonicalization_preserves_best_existing_canonical_subtitle
 def test_cleanup_plan_moves_equivalent_accessory(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
-    keep = _write(movie / "Movie.1080p.mkv", b"a" * 200)
-    remove = _write(movie / "Movie.720p.mkv", b"b" * 100)
+    _write(movie / "Movie.1080p.mkv", b"a" * 200)
+    _write(movie / "Movie.720p.mkv", b"b" * 100)
     keeper_sidecar = _write(movie / "Movie.1080p.en.srt", b"keeper")
     duplicate_sidecar = _write(movie / "Movie.720p.en.srt", b"duplicate")
     scan = _scan(lib, lib, monkeypatch)
