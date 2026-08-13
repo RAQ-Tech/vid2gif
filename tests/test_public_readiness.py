@@ -417,6 +417,33 @@ def test_dockerfile_uses_gunicorn_wsgi_entrypoint():
     assert "/app/main.py" not in dockerfile
 
 
+def test_container_runs_exactly_one_gunicorn_worker():
+    """All live state is in-process, so a second worker silently breaks it.
+
+    Job queues, scan runs, and cleanup plans are module-level dicts guarded by
+    threading.Lock. A second gunicorn worker is a second process with its own
+    copy: progress reports against the wrong run, cancellation misses, and the
+    file-identity checks that make duplicate cleanup safe compare against
+    identities captured somewhere else. Threads share the state; processes do not.
+    """
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert '"--workers", "1"' in dockerfile, (
+        "The container must run a single gunicorn worker. Move the module-level "
+        "state in jobs.py and the *_maintenance.py modules out of process memory "
+        "before raising this."
+    )
+    assert '"--workers", "2"' not in dockerfile
+
+    # The workers are daemon threads started by wsgi.py; without them the queue
+    # accepts jobs that nothing ever runs.
+    wsgi = (ROOT / "app" / "wsgi.py").read_text()
+    for starter in ("start_worker()",
+                    "start_test_lab_worker()",
+                    "start_landscape_poster_worker()"):
+        assert starter in wsgi, f"wsgi.py no longer calls {starter}"
+
+
 def test_entrypoint_chowns_library_only_when_requested():
     entrypoint = (ROOT / "docker-entrypoint.sh").read_text()
 

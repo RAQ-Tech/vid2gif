@@ -56,7 +56,14 @@ from .jobs import (
 from .progress import format_duration, format_size, mark_job_finished
 
 app = Flask(__name__)
-app.config["TEMPLATES_AUTO_RELOAD"] = True
+# Reload templates from disk on every request so `python -m app.main` picks up
+# edits without a restart. The container has no one editing templates and would
+# just be paying a stat() per template per request, so let it be turned off
+# there; the Dockerfile sets it.
+app.config["TEMPLATES_AUTO_RELOAD"] = (
+    os.getenv("TEMPLATES_AUTO_RELOAD", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 
 QUEUE_LIMITS = (10, 25, 50, 100)
 SCAN_CACHE_TTL_SECONDS = 300

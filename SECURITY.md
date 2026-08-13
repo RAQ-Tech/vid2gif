@@ -40,6 +40,15 @@ This limits the blast radius of the unauthenticated endpoint; it is not a
 substitute for keeping the app off the public internet. The archive still
 contains library paths, file names, maintenance logs, and job history.
 
+### Credentials at Rest
+
+Redaction applies to the backup archive only. The Emby API key is stored in
+plain text in `/state/app_settings.json`, because the app has to present it to
+Emby on every request and holds no secret with which to encrypt it. Anyone who
+can read the `/state` volume -- another container sharing the mount, a host
+user, a filesystem backup -- can read the key. Treat `/state` as sensitive, and
+prefer an Emby key scoped to the smallest set of permissions vid2gif needs.
+
 ## Reporting Issues
 
 For security issues, open a private report through GitHub's security advisory

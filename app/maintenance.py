@@ -2282,6 +2282,11 @@ def duplicate_refresh_status(refresh_id=None):
         _prune_duplicate_refresh_runs_locked()
         if refresh_id:
             run = duplicate_refresh_runs.get(str(refresh_id or ""))
+            # Only a caller that named a run it cannot get back is an error.
+            # Asking "is anything refreshing?" before anything ever has is the
+            # normal state of the page on load, and matches duplicate_apply_status.
+            if not run:
+                return None, "Refresh run not found"
         elif duplicate_refresh_runs:
             run = max(
                 duplicate_refresh_runs.values(),
@@ -2289,8 +2294,6 @@ def duplicate_refresh_status(refresh_id=None):
             )
         else:
             run = None
-    if not run:
-        return None, "Refresh run not found"
     return {"refresh": _public_refresh_run(run)}, None
 
 

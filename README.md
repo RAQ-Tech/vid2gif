@@ -22,7 +22,9 @@ The System page can download the whole `/state` directory as a zip. That
 endpoint is unauthenticated like the rest of the app, so stored credentials
 (currently the Emby API key) are blanked out of the archive before it is sent
 and are listed under `redacted` in the backup manifest. Restoring a backup
-therefore requires re-entering the Emby API key on the Settings page. See
+therefore requires re-entering the Emby API key on the Settings page. That
+redaction covers the archive only -- the key itself is stored in plain text in
+`/state/app_settings.json`, so treat the `/state` volume as sensitive. See
 [`SECURITY.md`](SECURITY.md) for the full data-exposure model.
 
 ## Testing

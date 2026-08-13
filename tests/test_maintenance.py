@@ -2305,3 +2305,37 @@ def test_out_of_range_margins_fall_back_to_defaults(monkeypatch, tmp_path):
     assert saved["duplicate_subtitle_close_points"] == 8
     assert saved["duplicate_image_close_ratio"] == 10
     assert saved["duplicate_runtime_tolerance_seconds"] == 60
+
+
+def test_refresh_status_reports_idle_instead_of_404_before_any_run():
+    """The maintenance page polls this on load, before a refresh can exist.
+
+    Answering 404 to "is anything refreshing?" put two console errors on every
+    visit to Library Maintenance. The frontend already reads a null payload as
+    idle, which is what the sibling apply endpoint returns.
+    """
+    maintenance.duplicate_refresh_runs.clear()
+
+    payload, err = maintenance.duplicate_refresh_status()
+
+    assert err is None
+    assert payload == {"refresh": None}
+
+    res = routes.app.test_client().get("/api/maintenance/duplicates/refresh/status")
+    assert res.status_code == 200
+    assert res.get_json() == {"refresh": None}
+
+
+def test_refresh_status_still_404s_for_a_run_id_that_does_not_exist():
+    """A caller naming a specific run it cannot get back is a real error."""
+    maintenance.duplicate_refresh_runs.clear()
+
+    payload, err = maintenance.duplicate_refresh_status("no-such-run")
+
+    assert payload is None
+    assert err == "Refresh run not found"
+
+    res = routes.app.test_client().get(
+        "/api/maintenance/duplicates/refresh/status?refresh_id=no-such-run"
+    )
+    assert res.status_code == 404

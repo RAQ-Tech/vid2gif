@@ -95,3 +95,37 @@ def test_gif_optimizer_env_overrides(monkeypatch):
 def test_gif_optimizer_invalid_timeout_uses_default(monkeypatch):
     with config_with_env(monkeypatch, GIF_OPTIMIZE_TIMEOUT="soon") as config:
         assert config.GIF_OPTIMIZE_TIMEOUT == 600
+
+
+def test_template_auto_reload_defaults_on_and_the_image_turns_it_off(monkeypatch):
+    """Dev reloads templates on every request; the container should not.
+
+    Nobody edits templates inside the image, so the per-request stat() is pure
+    overhead there. The default stays on so `python -m app.main` behaves as it
+    always has.
+    """
+    import importlib
+    import sys
+
+    def reloaded_routes():
+        for name in ("app.routes", "routes"):
+            sys.modules.pop(name, None)
+        return importlib.import_module("app.routes")
+
+    try:
+        monkeypatch.delenv("TEMPLATES_AUTO_RELOAD", raising=False)
+        assert reloaded_routes().app.config["TEMPLATES_AUTO_RELOAD"] is True
+
+        for value in ("0", "false", "OFF", "no"):
+            monkeypatch.setenv("TEMPLATES_AUTO_RELOAD", value)
+            assert reloaded_routes().app.config["TEMPLATES_AUTO_RELOAD"] is False, value
+
+        for value in ("1", "true", "anything-else"):
+            monkeypatch.setenv("TEMPLATES_AUTO_RELOAD", value)
+            assert reloaded_routes().app.config["TEMPLATES_AUTO_RELOAD"] is True, value
+    finally:
+        monkeypatch.delenv("TEMPLATES_AUTO_RELOAD", raising=False)
+        reloaded_routes()
+
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "TEMPLATES_AUTO_RELOAD=0" in dockerfile
