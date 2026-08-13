@@ -1,3 +1,11 @@
+# Default for everything: normalize to LF in the repository, and let git detect
+# binary content by inspection rather than by extension. This checkout runs with
+# core.autocrlf=true, so without a default any newly added text file gets
+# committed with CRLF -- which is how *.css, *.txt, *.mjs, *.toml and .coveragerc
+# each slipped through in turn. The explicit rules below stay as documentation of
+# intent; the vendor override at the end is the one that genuinely matters.
+* text=auto eol=lf
+
 *.html text eol=lf
 *.js text eol=lf
 *.mjs text eol=lf
