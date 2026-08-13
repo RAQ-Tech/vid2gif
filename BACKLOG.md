@@ -8,9 +8,23 @@ Nothing here is a known-broken feature. The test suite passes in full
 (520 Python tests, 19 frontend tests) and the checked-in bundles reproduce
 exactly from source.
 
-## Developer experience
+## Correctness
 
-### 1. No coverage measurement
+### 1. Actor name matching drops accents instead of folding them
+
+`normalize_actor_name` (`app/actor_image_maintenance.py:90-94`) strips anything
+outside `[a-z0-9 ]`, so `Amélie` normalizes to `amlie` while `Amelie`
+normalizes to `amelie` -- they do not match. Verified by running the function.
+For a library with international names this silently produces "no candidate" for
+actors whose image is sitting right there under a differently-spelled filename.
+
+Folding with `unicodedata.normalize("NFKD", ...)` before stripping would match
+both spellings. Cheap to do; it changes matching behaviour, so it wants a test
+per direction.
+
+## Test coverage
+
+### 2. No coverage measurement
 
 The suite is large and well-structured, but nothing reports which branches of
 the safety-critical modules (`file_safety.py`, `maintenance.py`,
@@ -18,9 +32,7 @@ the safety-critical modules (`file_safety.py`, `maintenance.py`,
 
 Add `pytest-cov` and report the number in CI, without gating on it initially.
 
-## Test coverage gaps
-
-### 2. Browser tests cover four of the seven maintenance tabs
+### 3. Browser tests cover four of the seven maintenance tabs
 
 `frontend/browser/` has specs for posters, duplicates, duplicate slots, restore,
 BIF, the activity strip, and GIF job creation. There is no browser or
@@ -32,19 +44,6 @@ these are where the axe contrast and focus-order checks pay off.
 
 Prioritize subtitles and actor images: both perform quarantine and delete
 operations through the UI.
-
-## Documentation
-
-### 3. Actor image maintenance is entirely undocumented
-
-`app/actor_image_maintenance.py` is 1,537 lines with a full Maintenance tab, a
-dashboard workstream, eleven API endpoints, and 338 lines of tests. `README.md`
-mentions it zero times, while every other workstream gets several paragraphs. A
-user cannot discover what the feature does, what it writes, or whether it is
-safe.
-
-Add a README section matching the depth of the duplicate and subtitle sections,
-including what it writes to the library.
 
 ## Lower priority
 
@@ -81,4 +80,3 @@ show a lifetime total that understates real work. The bounded audit logs under
 
 A one-time backfill would make the lifetime number trustworthy for existing
 users. Worth doing only if that number is meant to be authoritative.
-

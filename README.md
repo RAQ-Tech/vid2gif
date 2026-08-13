@@ -270,6 +270,35 @@ by the previous scan of that folder as long as the video file itself hasn't
 changed, instead of re-probing it with FFprobe every time. Use Full Coverage
 Rescan to ignore that cache and re-probe every video.
 
+Actor image maintenance fills in Emby people who have no picture, using images
+that are already sitting in the library. It is the one workstream that never
+writes to `/library`: it reads, and everything it changes it changes in Emby.
+It therefore needs an Emby URL and API key on the Settings page, and does
+nothing without them.
+
+A scan asks Emby which people appear in the scanned folders and which of them
+have no primary image, then looks through those folders for an image file whose
+name matches the actor's. Matching is on a normalized name, so case, spacing,
+separators such as `_ - .`, punctuation, and a trailing video stem do not
+defeat it. Accented letters are dropped rather than folded to their plain
+equivalent, so `Amelie` and `Amélie` do not match each other; name the file
+the way Emby spells the actor. Every candidate must be a real file under the
+library root -- symlinks and paths outside it are skipped. An actor with exactly
+one match is listed as ready; several plausible matches are listed as ambiguous
+and left for a person to settle rather than guessed at. Actors with no match are
+listed too, so the gap is visible.
+
+Review then applies: selected images are uploaded to Emby as that person's
+primary image, one at a time, with per-file progress and the same cancellation
+and library-access coordination as every other scan. An actor who already has an
+image in Emby is refused rather than overwritten. Nothing is renamed, moved, or
+deleted in the library, and the source images stay exactly where they were.
+
+Individual actors can be marked ignored, handled manually, or blocked. Those
+decisions persist in `/state/actor-images/exceptions.json` and survive rescans,
+so a name that will never match automatically stops asking. Each applied run
+writes a bounded JSONL log under `/state/maintenance-logs/actor-images`.
+
 The dashboard tracks maintenance impact from the first launch after this
 feature is installed. It does not backfill bounded historical logs. Distinct
 actionable issues, completed fixes, quarantine/delete totals, milestones, daily
