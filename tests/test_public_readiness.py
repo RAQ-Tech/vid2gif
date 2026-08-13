@@ -448,9 +448,10 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "flask-socketio" not in requirements
     assert "gunicorn==26.0.0" in requirements
     assert "werkzeug==3.1.8" in requirements
-    assert "pytest==8.1.1" in dev_requirements
+    assert "pytest==9.0.3" in dev_requirements
     assert "pip-audit==2.10.1" in dev_requirements
     assert "python -m pip_audit -r requirements.txt" in workflow
+    assert "python -m pip_audit -r requirements-dev.txt" in workflow
 
 
 def test_container_publish_waits_for_the_test_suite():

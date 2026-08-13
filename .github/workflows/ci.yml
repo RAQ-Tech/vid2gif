@@ -41,6 +41,11 @@ jobs:
       - name: Audit runtime dependencies
         run: python -m pip_audit -r requirements.txt
 
+      # Dev tools never reach the published image, but an advisory against one
+      # still lands on the default branch and on every contributor's machine.
+      - name: Audit development dependencies
+        run: python -m pip_audit -r requirements-dev.txt
+
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
 
