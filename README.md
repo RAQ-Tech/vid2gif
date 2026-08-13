@@ -279,10 +279,10 @@ nothing without them.
 A scan asks Emby which people appear in the scanned folders and which of them
 have no primary image, then looks through those folders for an image file whose
 name matches the actor's. Matching is on a normalized name, so case, spacing,
-separators such as `_ - .`, punctuation, and a trailing video stem do not
-defeat it. Accented letters are dropped rather than folded to their plain
-equivalent, so `Amelie` and `Amélie` do not match each other; name the file
-the way Emby spells the actor. Every candidate must be a real file under the
+separators such as `_ - .`, punctuation, accents, and a trailing video stem do
+not defeat it -- `Amelie` and `Amélie` match each other, so the file does not
+have to spell the actor the way Emby does. Every candidate must be a real file
+under the
 library root -- symlinks and paths outside it are skipped. An actor with exactly
 one match is listed as ready; several plausible matches are listed as ambiguous
 and left for a person to settle rather than guessed at. Actors with no match are

@@ -336,3 +336,76 @@ def test_actor_routes_and_ui_assets(monkeypatch, tmp_path):
     assert "fetch('/api/maintenance/actor-images/plan'" in script
     assert "fetch('/api/maintenance/actor-images/apply'" in script
     assert "escapeHtml(item.name" in script
+
+
+def test_accented_names_match_their_plain_spelling(monkeypatch, tmp_path):
+    """Emby and the filesystem rarely agree on accents.
+
+    Normalization used to strip anything outside [a-z0-9 ], which deleted the
+    accented letter instead of folding it: "Amelie" with an acute e became
+    "amlie" and matched nothing.
+    """
+    normalize = actor_image_maintenance.normalize_actor_name
+
+    assert normalize("Amélie Poulain") == normalize("Amelie Poulain")
+    assert normalize("Björk") == normalize("Bjork")
+    assert normalize("Zoë Saldaña") == normalize("Zoe Saldana")
+    assert normalize("Åsa-Britt") == normalize("Asa Britt")
+
+    # Folding must not collapse genuinely different names.
+    assert normalize("Ana de Armas") != normalize("Ana de Armax")
+
+    # And it still finds the file on disk, which is the point.
+    lib = tmp_path / "library"
+    folder = lib / "Movie"
+    folder.mkdir(parents=True)
+    (folder / "Movie.mkv").write_bytes(b"video")
+    (folder / "Amelie Poulain.jpg").write_bytes(b"image")
+
+    candidates = actor_image_maintenance.find_actor_image_candidates(
+        "Amélie Poulain", [str(folder / "Movie.mkv")], lib_root=str(lib)
+    )
+    assert [item["match_name"] for item in candidates] == ["Amelie Poulain"]
+
+
+def test_name_keyed_exceptions_survive_the_normalization_change(monkeypatch, tmp_path):
+    """An orphaned exception means an ignored actor starts asking again."""
+    exceptions_path = tmp_path / "exceptions.json"
+    monkeypatch.setattr(actor_image_maintenance, "EXCEPTIONS_PATH", str(exceptions_path))
+
+    # "amlie poulain" is what the old normalization produced for an accented name.
+    exceptions_path.write_text(json.dumps({"exceptions": {
+        "name:amlie poulain": {"name": "Amélie Poulain", "status": "ignored", "note": "no photo"},
+        "id:12345": {"person_id": "12345", "name": "Someone", "status": "blocked"},
+    }}), encoding="utf-8")
+
+    loaded = actor_image_maintenance.load_exceptions()
+
+    assert "name:amlie poulain" not in loaded
+    assert loaded["name:amelie poulain"]["status"] == "ignored"
+    assert loaded["name:amelie poulain"]["note"] == "no photo"
+    # id-keyed entries are untouched.
+    assert loaded["id:12345"]["status"] == "blocked"
+
+    # The migration is persisted, not recomputed on every load.
+    on_disk = json.loads(exceptions_path.read_text(encoding="utf-8"))["exceptions"]
+    assert "name:amelie poulain" in on_disk
+    assert "name:amlie poulain" not in on_disk
+
+    # Idempotent.
+    assert actor_image_maintenance.load_exceptions() == loaded
+
+
+def test_migration_does_not_clobber_an_entry_already_on_the_new_key(monkeypatch, tmp_path):
+    exceptions_path = tmp_path / "exceptions.json"
+    monkeypatch.setattr(actor_image_maintenance, "EXCEPTIONS_PATH", str(exceptions_path))
+
+    exceptions_path.write_text(json.dumps({"exceptions": {
+        "name:amlie poulain": {"name": "Amélie Poulain", "status": "ignored", "note": "stale"},
+        "name:amelie poulain": {"name": "Amelie Poulain", "status": "blocked", "note": "current"},
+    }}), encoding="utf-8")
+
+    loaded = actor_image_maintenance.load_exceptions()
+
+    assert loaded["name:amelie poulain"]["note"] == "current"
+    assert "name:amlie poulain" not in loaded
