@@ -80,3 +80,16 @@ show a lifetime total that understates real work. The bounded audit logs under
 
 A one-time backfill would make the lifetime number trustworthy for existing
 users. Worth doing only if that number is meant to be authoritative.
+
+## Open questions
+
+These need a decision from Chris; they are not engineering calls.
+
+### Delete the stray `C:\state` folder?
+
+Test runs on this machine before 2026-08-13 wrote 2.1 MB of app state to
+`C:\state` (created 2026-08-07, last written 2026-08-11) because `STATE_ROOT`
+was unset. `tests/conftest.py` now prevents new ones. The folder holds only test
+leftovers as far as I can tell -- settings, logs, an empty job queue -- but it is
+outside the repository and deleting it is not reversible from git, so it is left
+in place. Say the word and it goes.
