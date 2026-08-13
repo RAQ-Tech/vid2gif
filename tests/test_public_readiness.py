@@ -454,6 +454,65 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "python -m pip_audit -r requirements-dev.txt" in workflow
 
 
+def test_templates_never_reach_for_a_third_party_cdn():
+    """The app is a private-LAN tool; its own interface must not need the internet.
+
+    Bootstrap, Bootstrap Icons, and Inter used to load from jsdelivr and Google
+    Fonts, so an isolated network lost the stylesheet, the icons, and the
+    typeface. They are vendored under app/static/vendor now.
+    """
+    template_dir = ROOT / "app" / "templates"
+    static_dir = ROOT / "app" / "static"
+    vendor_dir = static_dir / "vendor"
+
+    hosts = ("cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com",
+             "unpkg.com", "cdnjs.cloudflare.com", "stackpath.bootstrapcdn.com")
+
+    sources = list(template_dir.rglob("*.html"))
+    sources += [
+        path for path in static_dir.rglob("*.js")
+        if vendor_dir not in path.parents
+    ]
+    sources += [
+        path for path in static_dir.rglob("*.css")
+        if vendor_dir not in path.parents
+    ]
+    assert sources, "No templates or static sources found"
+
+    for path in sources:
+        content = path.read_text(encoding="utf-8")
+        for host in hosts:
+            assert host not in content, (
+                f"{path.relative_to(ROOT)} loads an asset from {host}; "
+                "vendor it under app/static/vendor instead"
+            )
+
+
+def test_vendored_frontend_assets_are_present():
+    """A missing vendor file is an unstyled app, so fail loudly at test time."""
+    vendor = ROOT / "app" / "static" / "vendor"
+    expected = (
+        "bootstrap/bootstrap.min.css",
+        "bootstrap/bootstrap.bundle.min.js",
+        "bootstrap-icons/bootstrap-icons.css",
+        "bootstrap-icons/fonts/bootstrap-icons.woff2",
+        "inter/inter.css",
+        "inter/files/inter-latin-400-normal.woff2",
+        "inter/files/inter-latin-600-normal.woff2",
+    )
+    for relative in expected:
+        path = vendor / relative
+        assert path.is_file(), f"missing vendored asset: {relative}"
+        assert path.stat().st_size > 0, f"empty vendored asset: {relative}"
+
+    base = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
+    for filename in ("vendor/bootstrap/bootstrap.min.css",
+                     "vendor/bootstrap-icons/bootstrap-icons.css",
+                     "vendor/inter/inter.css",
+                     "vendor/bootstrap/bootstrap.bundle.min.js"):
+        assert filename in base, f"base.html no longer links {filename}"
+
+
 def test_container_publish_waits_for_the_test_suite():
     """A commit that fails tests must never publish an image to GHCR."""
     workflow_dir = ROOT / ".github" / "workflows"

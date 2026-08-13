@@ -59,7 +59,7 @@ jobs:
         run: |
           npm run test:frontend
           npm run build:frontend
-          git diff --exit-code -- app/static/test-lab.bundle.js app/static/test-lab.bundle.js.LEGAL.txt app/static/workspace-tables.bundle.js
+          git diff --exit-code -- app/static
 
       - name: Run tests
         run: python -m pytest

@@ -10,20 +10,7 @@ exactly from source.
 
 ## Correctness and deployment risk
 
-### 1. The UI depends on public CDNs it is not supposed to be able to reach
-
-`app/templates/base.html:8-9,63` loads Bootstrap CSS, Bootstrap JS, Bootstrap
-Icons, and the Inter font from `cdn.jsdelivr.net` and `fonts.googleapis.com`.
-`SECURITY.md` positions vid2gif as a trusted-LAN tool that should sit behind a
-firewall, and `DESIGN.md` mandates Inter and Bootstrap Icons throughout — so on
-a genuinely isolated network the interface loses its stylesheet, its icons, and
-its typeface. None of the three tags carry an `integrity` attribute either, so
-the app also inherits whatever those CDNs serve.
-
-Vendor the three assets into `app/static/` and serve them locally. If they must
-stay remote, add SRI hashes as a stopgap.
-
-### 2. Nothing enforces the single-gunicorn-worker constraint
+### 1. Nothing enforces the single-gunicorn-worker constraint
 
 All job, scan, and plan state lives in module-level dictionaries guarded by
 `threading.Lock` (`app/jobs.py`, and every `*_maintenance.py`). `Dockerfile:32`
@@ -34,7 +21,7 @@ silently break progress reporting, cancellation, and duplicate-apply safety.
 Document the constraint next to the `CMD`, and consider a startup check that
 refuses to run with more than one worker.
 
-### 3. The Emby API key is stored in plaintext at rest
+### 2. The Emby API key is stored in plaintext at rest
 
 `app/app_settings.py:131` persists `emby_api_key` into
 `/state/app_settings.json`. The `/system/backup` endpoint already redacts it
@@ -46,7 +33,7 @@ protection is not mistaken for encryption at rest.
 
 ## Developer experience
 
-### 4. No linter or formatter anywhere
+### 3. No linter or formatter anywhere
 
 `README.md` asks contributors to follow PEP 8, but nothing checks it: there is
 no ruff, flake8, or black in `requirements-dev.txt`, and no lint step in
@@ -55,7 +42,7 @@ no ruff, flake8, or black in `requirements-dev.txt`, and no lint step in
 Add ruff to `requirements-dev.txt` and a CI step. Expect a first pass of
 mechanical fixes.
 
-### 5. No coverage measurement
+### 4. No coverage measurement
 
 The suite is large and well-structured, but nothing reports which branches of
 the safety-critical modules (`file_safety.py`, `maintenance.py`,
@@ -65,7 +52,7 @@ Add `pytest-cov` and report the number in CI, without gating on it initially.
 
 ## Test coverage gaps
 
-### 6. Browser tests cover four of the seven maintenance tabs
+### 5. Browser tests cover four of the seven maintenance tabs
 
 `frontend/browser/` has specs for posters, duplicates, duplicate slots, restore,
 BIF, the activity strip, and GIF job creation. There is no browser or
@@ -80,7 +67,7 @@ operations through the UI.
 
 ## Documentation
 
-### 7. Actor image maintenance is entirely undocumented
+### 6. Actor image maintenance is entirely undocumented
 
 `app/actor_image_maintenance.py` is 1,537 lines with a full Maintenance tab, a
 dashboard workstream, eleven API endpoints, and 338 lines of tests. `README.md`
@@ -93,14 +80,14 @@ including what it writes to the library.
 
 ## Lower priority
 
-### 8. `TEMPLATES_AUTO_RELOAD` is on in production
+### 7. `TEMPLATES_AUTO_RELOAD` is on in production
 
 `app/routes.py:59` sets `app.config["TEMPLATES_AUTO_RELOAD"] = True`
 unconditionally, so the container stats every template on every request. Harmless
 at LAN scale, but it is dev configuration shipped to production. Gate it on a
 debug flag.
 
-### 9. Several modules have outgrown one file
+### 8. Several modules have outgrown one file
 
 `app/video_preview_maintenance.py` (4,211 lines), `app/maintenance.py` (4,127),
 `app/poster_maintenance.py` (1,950), `app/routes.py` (1,776), and
@@ -112,7 +99,7 @@ already visible in the module names (`duplicate_slots.py` and
 Split opportunistically when touching one of these for another reason, not as a
 standalone refactor.
 
-### 10. Dashboard impact metrics cannot be backfilled
+### 9. Dashboard impact metrics cannot be backfilled
 
 `README.md` states the dashboard tracks impact only from first launch after the
 feature was installed and does not backfill. Existing installations therefore
@@ -121,6 +108,16 @@ show a lifetime total that understates real work. The bounded audit logs under
 
 A one-time backfill would make the lifetime number trustworthy for existing
 users. Worth doing only if that number is meant to be authoritative.
+
+### 10. The maintenance page polls an endpoint that 404s when idle
+
+`/api/maintenance/duplicates/refresh/status` returns 404 whenever no duplicate
+refresh run exists (`app/routes.py:953-958`), but `maintenance.js` polls it on
+every page load. Opening Library Maintenance therefore logs two console errors
+before the user does anything. Observed live in the browser, not inferred.
+
+Return an idle payload instead, the way the sibling status endpoints do, and
+reserve 404 for a `refresh_id` that was genuinely never issued.
 
 ## Open questions
 

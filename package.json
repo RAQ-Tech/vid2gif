@@ -3,11 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:frontend": "esbuild frontend/test-lab/index.js --bundle --minify --legal-comments=linked --target=es2020 --outfile=app/static/test-lab.bundle.js && esbuild frontend/tables/index.js --bundle --minify --legal-comments=none --target=es2020 --outfile=app/static/workspace-tables.bundle.js",
+    "vendor:assets": "node scripts/vendor-assets.mjs",
+    "build:frontend": "npm run vendor:assets && esbuild frontend/test-lab/index.js --bundle --minify --legal-comments=linked --target=es2020 --outfile=app/static/test-lab.bundle.js && esbuild frontend/tables/index.js --bundle --minify --legal-comments=none --target=es2020 --outfile=app/static/workspace-tables.bundle.js",
     "test:frontend": "node --test frontend/test-lab/*.test.js frontend/dashboard/*.test.js frontend/tables/*.test.js",
     "test:browser": "playwright test"
   },
   "dependencies": {
+    "@fontsource/inter": "5.3.0",
+    "bootstrap": "5.3.2",
+    "bootstrap-icons": "1.10.5",
     "gifuct-js": "2.1.2",
     "sortablejs": "1.15.7"
   },

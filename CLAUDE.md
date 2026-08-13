@@ -40,8 +40,9 @@ local modules and Node built-ins.
 npm run build:frontend
 ```
 
-Bundles `frontend/test-lab/` and `frontend/tables/` into `app/static/*.bundle.js`
-with esbuild. Requires `npm ci --ignore-scripts`.
+Copies the vendored third-party assets (`npm run vendor:assets`), then bundles
+`frontend/test-lab/` and `frontend/tables/` into `app/static/*.bundle.js` with
+esbuild. Requires `npm ci --ignore-scripts`.
 
 ```bash
 npm run test:browser
@@ -130,9 +131,14 @@ state out of process memory first.
   with `monkeypatch` and `tmp_path`. `tests/conftest.py` exists only to default
   `STATE_ROOT` to a temp directory — it defines no fixtures. Each test file
   builds and resets its own state. Follow the existing patterns.
-- **Rebuild and commit `app/static/*.bundle.js`** whenever you change anything
-  under `frontend/test-lab/` or `frontend/tables/`. CI fails if the checked-in
-  bundle differs from a fresh build.
+- **Rebuild and commit everything under `app/static/`** whenever you change
+  anything under `frontend/test-lab/`, `frontend/tables/`, or the pinned
+  frontend packages. CI runs `git diff --exit-code -- app/static`, so the
+  checked-in bundles and `app/static/vendor/` must match a fresh build.
+- **No third-party CDNs in templates or static sources.** Bootstrap, Bootstrap
+  Icons, and Inter are vendored under `app/static/vendor/` by
+  `scripts/vendor-assets.mjs`. Add new assets there — a test fails the build if
+  a CDN host reappears.
 - **Runtime dependencies go in `requirements.txt`; dev-only tools in
   `requirements-dev.txt`.** A test asserts the split.
 - PEP 8, and Python only — Node is a frontend build tool, never a runtime
@@ -162,9 +168,10 @@ state out of process memory first.
   `app/static/test-lab.bundle.js.LEGAL.txt` — the file CI checks with
   `git diff --exit-code`. Extend `.gitattributes` when adding a new text
   extension.
-- **The UI loads Bootstrap, Bootstrap Icons, and Inter from public CDNs**
-  (`app/templates/base.html:8-9,63`). The app will look broken on a genuinely
-  offline network.
+- **`app/static/vendor/` is generated, never hand-edited.** It is copied byte
+  for byte from the pinned npm packages; `.gitattributes` marks it `-text` so
+  the fonts and minified files survive intact on Windows. Change versions in
+  `package.json` and rerun the build.
 - **ffmpeg, ffprobe, and gifsicle are not Python packages.** They must be on
   `PATH`. The Docker image installs them; a local checkout may not have them,
   and a handful of tests skip themselves when they are missing.
