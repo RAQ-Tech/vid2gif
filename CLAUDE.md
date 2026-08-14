@@ -165,13 +165,14 @@ state out of process memory first.
 
 ## Gotchas
 
-- **`app/config.py:41` creates directories at import time.** Any `import app.*`
-  will `mkdir` under `STATE_ROOT`, defaulting to `/state` — a stray `state`
-  folder at the drive root on Windows, or a permission error on Linux.
-  `tests/conftest.py` handles this for pytest, but anything else that imports
-  `app` (a REPL, a script, `python -m app.main`) still needs `STATE_ROOT`
-  exported. Do not default `LIB_ROOT` the same way: several tests assert
-  against the literal `/library` container path.
+- **`app/config.py` creates state directories at import time**, so any
+  `import app.*` has a filesystem side effect. It will not invent the root
+  itself: an explicit `STATE_ROOT` is created, but the `/state` default is used
+  only when it already exists (the container case). Anywhere else it raises
+  `StateRootError` telling you to set `STATE_ROOT`, rather than leaving a stray
+  folder at the drive root. `tests/conftest.py` sets it for pytest. Do not
+  default `LIB_ROOT` the same way: several tests assert against the literal
+  `/library` container path.
 - **`/healthz` returns 503 on a normal dev machine.** It fails when ffmpeg,
   ffprobe, or the three worker threads are absent, which is the usual state
   outside Docker. Pages still render.
