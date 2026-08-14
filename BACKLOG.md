@@ -4,27 +4,14 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 538 Python tests, of which 529 pass on a Windows checkout and 535
-on CI's Linux runner (symlink-dependent tests skip on Windows). 19 frontend
-tests, 31 browser tests. `ruff check` is clean, coverage is 83.04% against an
-80% floor, and CI is green on `main`.
+Current state: 538 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 529 of them, since nine need symlinks or media tools. 19
+frontend tests, 31 browser tests. `ruff check` is clean, coverage is 83.15%
+against an 80% floor, and CI is green on `main`.
 
 ## Test coverage
 
-### 1. The tests that verify real GIF output never run anywhere
-
-Exactly three tests skip on CI: two GIF frame regression tests that need ffmpeg
-and ffprobe (`tests/test_ffmpeg_utils.py:271`) and one that needs gifsicle
-(`tests/test_gif_optimizer.py:226`). The CI runner installs neither, so they
-skip there as well as on a typical dev machine -- meaning the checks that
-confirm the app's headline feature produces correct frames, and that
-optimization does not corrupt them, currently run nowhere automated.
-
-The Docker image already installs all three tools. Adding
-`sudo apt-get install -y ffmpeg gifsicle` to the tests job would activate them
-for a few seconds of runtime. This is the cheapest real coverage win available.
-
-### 2. Cover the error paths in file_safety.py
+### 1. Cover the error paths in file_safety.py
 
 file_safety.py is the module that decides whether it is safe to touch a user's
 file -- symlink rejection, identity capture, atomic install, same-filesystem
@@ -38,7 +25,7 @@ cross-device moves, races where the destination appears mid-operation. Those are
 exactly the paths that matter when something goes wrong with someone's library.
 Worth writing tests for before chasing the overall percentage.
 
-### 3. Browser tests cover three of the seven maintenance tabs
+### 2. Browser tests cover three of the seven maintenance tabs
 
 `frontend/browser/` drives `/maintenance#duplicates` (three specs),
 `/maintenance#video-previews`, `/maintenance#posters`, and the `/gifs` page.
@@ -54,7 +41,7 @@ operations through the UI.
 
 ## Repository housekeeping
 
-### 4. Draft PR #43 now conflicts with everything merged today
+### 3. Draft PR #43 now conflicts with everything merged today
 
 [PR #43](https://github.com/RAQ-Tech/vid2gif/pull/43), "Add AGENTS.md, and give
 the project a complexity linter", was opened on 2026-08-13 before this session's
@@ -66,15 +53,9 @@ while `CLAUDE.md` has been serving that role.
 Decide which file is authoritative before rebasing it, and fold its complexity
 linter into the existing `ruff.toml` rather than alongside it.
 
-### 5. Merged branches still on the remote
-
-Nine `claude/*` branches are merged into `main` but still present on the origin.
-Harmless, but they make the branch list hard to read. Delete them once their
-work is confirmed landed.
-
 ## Lower priority
 
-### 6. No formatter, and 1,267 lines exceed 88 columns
+### 4. No formatter, and 1,267 lines exceed 88 columns
 
 `ruff check` now runs in CI, but `E501` (line too long) is switched off in
 `ruff.toml`. 1,267 lines exceed ruff's default 88 columns and 133 exceed 120,
@@ -86,7 +67,7 @@ Adopting `ruff format` would do it mechanically and consistently, but it would
 touch nearly every Python file in one commit. Worth doing deliberately, on a
 quiet branch, not folded into other work.
 
-### 7. Several modules have outgrown one file
+### 5. Several modules have outgrown one file
 
 `app/video_preview_maintenance.py` (4,211 lines), `app/maintenance.py` (4,127),
 `app/poster_maintenance.py` (1,950), `app/routes.py` (1,776), and
@@ -98,7 +79,7 @@ already visible in the module names (`duplicate_slots.py` and
 Split opportunistically when touching one of these for another reason, not as a
 standalone refactor.
 
-### 8. Dashboard impact metrics cannot be backfilled
+### 6. Dashboard impact metrics cannot be backfilled
 
 `README.md` states the dashboard tracks impact only from first launch after the
 feature was installed and does not backfill. Existing installations therefore
