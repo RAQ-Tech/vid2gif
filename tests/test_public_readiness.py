@@ -485,6 +485,9 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "python -m pip_audit -r requirements-dev.txt" in workflow
     assert "python -m ruff check ." in workflow
     assert "--cov-fail-under=80" in workflow
+    # Without ffmpeg and gifsicle on the runner, the GIF frame regression
+    # tests and the optimization test skip and prove nothing.
+    assert "ffmpeg gifsicle" in workflow
 
 
 def test_templates_never_reach_for_a_third_party_cdn():
