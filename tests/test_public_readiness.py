@@ -417,6 +417,33 @@ def test_dockerfile_uses_gunicorn_wsgi_entrypoint():
     assert "/app/main.py" not in dockerfile
 
 
+def test_container_runs_exactly_one_gunicorn_worker():
+    """All live state is in-process, so a second worker silently breaks it.
+
+    Job queues, scan runs, and cleanup plans are module-level dicts guarded by
+    threading.Lock. A second gunicorn worker is a second process with its own
+    copy: progress reports against the wrong run, cancellation misses, and the
+    file-identity checks that make duplicate cleanup safe compare against
+    identities captured somewhere else. Threads share the state; processes do not.
+    """
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert '"--workers", "1"' in dockerfile, (
+        "The container must run a single gunicorn worker. Move the module-level "
+        "state in jobs.py and the *_maintenance.py modules out of process memory "
+        "before raising this."
+    )
+    assert '"--workers", "2"' not in dockerfile
+
+    # The workers are daemon threads started by wsgi.py; without them the queue
+    # accepts jobs that nothing ever runs.
+    wsgi = (ROOT / "app" / "wsgi.py").read_text()
+    for starter in ("start_worker()",
+                    "start_test_lab_worker()",
+                    "start_landscape_poster_worker()"):
+        assert starter in wsgi, f"wsgi.py no longer calls {starter}"
+
+
 def test_entrypoint_chowns_library_only_when_requested():
     entrypoint = (ROOT / "docker-entrypoint.sh").read_text()
 
@@ -450,8 +477,76 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "werkzeug==3.1.8" in requirements
     assert "pytest==9.0.3" in dev_requirements
     assert "pip-audit==2.10.1" in dev_requirements
+    assert "ruff==0.16.3" in dev_requirements
+    assert "pytest-cov==7.1.0" in dev_requirements
+    assert "pytest-cov" not in requirements
+    assert "ruff" not in requirements
     assert "python -m pip_audit -r requirements.txt" in workflow
     assert "python -m pip_audit -r requirements-dev.txt" in workflow
+    assert "python -m ruff check ." in workflow
+    assert "--cov-fail-under=80" in workflow
+    # Without ffmpeg and gifsicle on the runner, the GIF frame regression
+    # tests and the optimization test skip and prove nothing.
+    assert "ffmpeg gifsicle" in workflow
+
+
+def test_templates_never_reach_for_a_third_party_cdn():
+    """The app is a private-LAN tool; its own interface must not need the internet.
+
+    Bootstrap, Bootstrap Icons, and Inter used to load from jsdelivr and Google
+    Fonts, so an isolated network lost the stylesheet, the icons, and the
+    typeface. They are vendored under app/static/vendor now.
+    """
+    template_dir = ROOT / "app" / "templates"
+    static_dir = ROOT / "app" / "static"
+    vendor_dir = static_dir / "vendor"
+
+    hosts = ("cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com",
+             "unpkg.com", "cdnjs.cloudflare.com", "stackpath.bootstrapcdn.com")
+
+    sources = list(template_dir.rglob("*.html"))
+    sources += [
+        path for path in static_dir.rglob("*.js")
+        if vendor_dir not in path.parents
+    ]
+    sources += [
+        path for path in static_dir.rglob("*.css")
+        if vendor_dir not in path.parents
+    ]
+    assert sources, "No templates or static sources found"
+
+    for path in sources:
+        content = path.read_text(encoding="utf-8")
+        for host in hosts:
+            assert host not in content, (
+                f"{path.relative_to(ROOT)} loads an asset from {host}; "
+                "vendor it under app/static/vendor instead"
+            )
+
+
+def test_vendored_frontend_assets_are_present():
+    """A missing vendor file is an unstyled app, so fail loudly at test time."""
+    vendor = ROOT / "app" / "static" / "vendor"
+    expected = (
+        "bootstrap/bootstrap.min.css",
+        "bootstrap/bootstrap.bundle.min.js",
+        "bootstrap-icons/bootstrap-icons.css",
+        "bootstrap-icons/fonts/bootstrap-icons.woff2",
+        "inter/inter.css",
+        "inter/files/inter-latin-400-normal.woff2",
+        "inter/files/inter-latin-600-normal.woff2",
+    )
+    for relative in expected:
+        path = vendor / relative
+        assert path.is_file(), f"missing vendored asset: {relative}"
+        assert path.stat().st_size > 0, f"empty vendored asset: {relative}"
+
+    base = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
+    for filename in ("vendor/bootstrap/bootstrap.min.css",
+                     "vendor/bootstrap-icons/bootstrap-icons.css",
+                     "vendor/inter/inter.css",
+                     "vendor/bootstrap/bootstrap.bundle.min.js"):
+        assert filename in base, f"base.html no longer links {filename}"
 
 
 def test_container_publish_waits_for_the_test_suite():

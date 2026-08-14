@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import urllib.parse
 
 from . import emby_catalog
@@ -16,7 +17,7 @@ from . import maintenance_scan_store
 from . import media_scope
 from . import task_progress
 from . import poster_maintenance
-from .config import LIB_ROOT, STATE_ROOT, VIDEO_EXTS
+from .config import LIB_ROOT, STATE_ROOT
 from .file_safety import regular_file_identity
 from .operation_gate import coordinated_library_operation, library_operation
 from .progress import format_size, utc_iso
@@ -90,6 +91,12 @@ def _relative_path(path, root):
 def normalize_actor_name(value):
     text = str(value or "").lower()
     text = re.sub(r"[_\-\.]+", " ", text)
+    # Decompose accented letters and drop the combining marks, so an actor Emby
+    # spells "Amelie" with an acute e still matches a file named the plain way.
+    # Stripping [^a-z0-9 ] on its own deleted the accented letter outright,
+    # turning that name into "amlie" and matching nothing.
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub(r"[^a-z0-9 ]+", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -291,10 +298,40 @@ def _exception_public(item):
     }
 
 
+def _migrate_exception_keys(exceptions):
+    """Re-key name-keyed exceptions that were stored before accents folded.
+
+    Only entries without a person_id are keyed by name, so this is rare -- but
+    an orphaned entry means an actor the user told us to ignore starts asking
+    again. Returns the mapping and whether anything moved.
+    """
+    changed = False
+    for key in list(exceptions):
+        if not key.startswith("name:"):
+            continue
+        entry = exceptions.get(key)
+        if not isinstance(entry, dict):
+            continue
+        current = _person_key("", entry.get("name"))
+        if current == key:
+            continue
+        # An entry already saved under the new key wins; drop the stale one.
+        if current not in exceptions:
+            exceptions[current] = entry
+        exceptions.pop(key, None)
+        changed = True
+    return exceptions, changed
+
+
 def load_exceptions():
     data = _read_json(EXCEPTIONS_PATH, {"exceptions": {}})
     exceptions = data.get("exceptions")
-    return exceptions if isinstance(exceptions, dict) else {}
+    if not isinstance(exceptions, dict):
+        return {}
+    exceptions, changed = _migrate_exception_keys(exceptions)
+    if changed:
+        save_exceptions(exceptions)
+    return exceptions
 
 
 def save_exceptions(exceptions):

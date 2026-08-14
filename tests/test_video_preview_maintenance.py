@@ -1373,7 +1373,7 @@ def test_frame_extraction_drains_large_stderr_without_pipe_deadlock(monkeypatch,
             10,
             {"id": "noisy", "file_count": 1, "processed_count": 0},
         )
-        assert False, "Expected noisy FFmpeg failure"
+        raise AssertionError("Expected noisy FFmpeg failure")
     except RuntimeError as exc:
         assert len(str(exc)) <= 2000
     assert time.monotonic() - started < 5
@@ -1420,7 +1420,7 @@ def test_frame_extraction_times_out_when_no_frames_advance(monkeypatch, tmp_path
             10,
             {"id": "stalled", "file_count": 1, "processed_count": 0},
         )
-        assert False, "Expected stalled FFmpeg failure"
+        raise AssertionError("Expected stalled FFmpeg failure")
     except RuntimeError as exc:
         assert "no frame progress" in str(exc)
     assert "-xerror" in commands[0]

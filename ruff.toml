@@ -1,22 +1,32 @@
-# Ruff configuration.
-#
-# Deliberately narrow: this exists to track function complexity, not to enforce a
-# repo-wide style. Broadening `select` would surface hundreds of unrelated findings
-# and drown the one signal this file is here to carry.
+# Lint configuration. The project has no pyproject.toml because the app is not
+# packaged, so ruff reads its settings from here.
 
 target-version = "py311"
 line-length = 120
-extend-exclude = [".venv", "node_modules"]
+extend-exclude = ["app/static/vendor"]
 
 [lint]
-select = [
-    "C901",   # mccabe: over-complex functions
-]
+# E/W  pycodestyle, F pyflakes (unused and undefined names), B bugbear
+# (correctness traps such as closures over loop variables), C901 mccabe
+# (functions that have grown past the point of being safely changeable).
+select = ["E", "W", "F", "B", "C901"]
+
+# E501 (line too long) is not enforced. 1267 lines exceed the default limit and
+# rewrapping them across maintenance.py, video_preview_maintenance.py, and
+# poster_maintenance.py would be a large diff through safety-critical code for
+# no behavioural gain. Adopting a formatter is the way to fix this properly, and
+# that is a separate decision -- see BACKLOG.md.
+ignore = ["E501"]
 
 [lint.mccabe]
-# Cyclomatic complexity ceiling. The 17 functions already above this line carry an
-# explicit `# noqa: C901`, so `ruff check` is clean today — this is a ratchet against
-# new tangle, not a demand to refactor on the spot. Those noqa comments are the debt
-# list; the worst are build_duplicate_cleanup_plan (54) and
-# apply_duplicate_cleanup_plan (43), both in app/maintenance.py.
+# Cyclomatic complexity ceiling. Functions already above it carry an explicit
+# `# noqa: C901`, so `ruff check .` is clean today -- this is a ratchet against new
+# tangle, not a demand to refactor on the spot. Those noqa comments are the debt
+# list; the worst are build_duplicate_cleanup_plan and apply_duplicate_cleanup_plan
+# in app/maintenance.py, both on the path that deletes files.
 max-complexity = 15
+
+[lint.per-file-ignores]
+# Test modules append the repository root to sys.path before importing `app`,
+# so their imports legitimately follow executable statements.
+"tests/*" = ["E402"]

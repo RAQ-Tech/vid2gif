@@ -1,0 +1,16 @@
+[run]
+source = app
+branch = False
+
+[report]
+# Report the modules with the least coverage first; that is where the next test
+# is worth writing.
+sort = Cover
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+
+[html]
+directory = htmlcov

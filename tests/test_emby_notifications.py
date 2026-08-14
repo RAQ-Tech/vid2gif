@@ -57,7 +57,9 @@ def test_notification_uses_header_query_fields_and_json_body_without_secrets():
 
 def test_warning_policy_skips_success_and_sends_aggregate_warning_once():
     calls = []
-    opener = lambda request, timeout: (calls.append(request) or FakeResponse())
+    def opener(request, timeout):
+        calls.append(request)
+        return FakeResponse()
     skipped = emby_notifications.notify_maintenance(
         "Duplicate cleanup", "success", status="success", attempted_count=2, succeeded_count=2, settings=settings(), opener=opener
     )
@@ -81,7 +83,9 @@ def test_warning_policy_skips_success_and_sends_aggregate_warning_once():
 
 def test_all_policy_sends_success_but_zero_cancel_and_off_do_not():
     calls = []
-    opener = lambda request, timeout: (calls.append(request) or FakeResponse())
+    def opener(request, timeout):
+        calls.append(request)
+        return FakeResponse()
     sent = emby_notifications.notify_maintenance(
         "Poster updates", "all", status="success", attempted_count=1, succeeded_count=1, settings=settings(emby_admin_notifications="all"), opener=opener
     )

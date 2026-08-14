@@ -116,7 +116,7 @@ def _load_store(create=False):
             return data, True
         except Exception:
             _last_error = f"Impact metrics could not be read: {primary_exc}"
-            raise primary_exc
+            raise primary_exc from None
 
 
 def _write_store(data):

@@ -32,7 +32,7 @@ from .ffmpeg_utils import (
 from .gif_optimizer import normalize_optimize_level, optimize_gif
 from .jobs import create_logger
 from .operation_gate import OperationCancelled, library_operation
-from .process_runner import ProcessResult, run_streaming_process
+from .process_runner import run_streaming_process
 from .progress import (
     TERMINAL_STATUSES,
     clamp_percent,
@@ -1049,7 +1049,7 @@ def worker():  # noqa: C901
                     state=run,
                     href="/gifs#test-lab",
                     cancel_url=f"/api/test-lab/runs/{run_id}/cancel",
-                    cancel_requested=lambda: bool(run.get("cancel_requested")),
+                    cancel_requested=lambda run=run: bool(run.get("cancel_requested")),
                 ) as activity:
                     with test_lab_lock:
                         now = time.time()

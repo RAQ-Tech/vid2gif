@@ -22,7 +22,9 @@ The System page can download the whole `/state` directory as a zip. That
 endpoint is unauthenticated like the rest of the app, so stored credentials
 (currently the Emby API key) are blanked out of the archive before it is sent
 and are listed under `redacted` in the backup manifest. Restoring a backup
-therefore requires re-entering the Emby API key on the Settings page. See
+therefore requires re-entering the Emby API key on the Settings page. That
+redaction covers the archive only -- the key itself is stored in plain text in
+`/state/app_settings.json`, so treat the `/state` volume as sensitive. See
 [`SECURITY.md`](SECURITY.md) for the full data-exposure model.
 
 ## Testing
@@ -34,14 +36,27 @@ Test Lab bundle, and run tests:
 pip install -r requirements-dev.txt
 npm ci --ignore-scripts
 python -m pip_audit -r requirements.txt
+python -m pip_audit -r requirements-dev.txt
+python -m ruff check .
 npm audit --audit-level=low
 npm run test:frontend
 npm run build:frontend
-python -m pytest
+python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```
 
 Node.js is only required for frontend development. Docker and deployed instances
 serve the generated `app/static/test-lab.bundle.js` file directly.
+
+`tests/conftest.py` points `STATE_ROOT` at a temporary directory before any
+`app` module is imported, so the suite never writes to the real `/state`. Export
+`STATE_ROOT` yourself to override that.
+
+Browser tests start a Flask server from a virtualenv at `.venv`. If your
+interpreter lives somewhere else, point `VID2GIF_TEST_PYTHON` at it:
+
+```bash
+VID2GIF_TEST_PYTHON=/path/to/python npm run test:browser
+```
 
 ## Installation
 
@@ -56,6 +71,14 @@ serve the generated `app/static/test-lab.bundle.js` file directly.
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
+
+   On Windows, activate the virtualenv with `.venv\Scripts\Activate.ps1`
+   (PowerShell) or `.venv\Scripts\activate.bat` (Command Prompt) instead.
+
+   ffmpeg, ffprobe, and gifsicle are not Python packages and must be installed
+   separately and available on `PATH`. Without them the app still starts and
+   every page renders, but `/healthz` reports unhealthy and GIF generation
+   fails. The Docker image installs all three.
 
 2. Launch the application:
 
@@ -247,6 +270,35 @@ by the previous scan of that folder as long as the video file itself hasn't
 changed, instead of re-probing it with FFprobe every time. Use Full Coverage
 Rescan to ignore that cache and re-probe every video.
 
+Actor image maintenance fills in Emby people who have no picture, using images
+that are already sitting in the library. It is the one workstream that never
+writes to `/library`: it reads, and everything it changes it changes in Emby.
+It therefore needs an Emby URL and API key on the Settings page, and does
+nothing without them.
+
+A scan asks Emby which people appear in the scanned folders and which of them
+have no primary image, then looks through those folders for an image file whose
+name matches the actor's. Matching is on a normalized name, so case, spacing,
+separators such as `_ - .`, punctuation, accents, and a trailing video stem do
+not defeat it -- `Amelie` and `Amélie` match each other, so the file does not
+have to spell the actor the way Emby does. Every candidate must be a real file
+under the
+library root -- symlinks and paths outside it are skipped. An actor with exactly
+one match is listed as ready; several plausible matches are listed as ambiguous
+and left for a person to settle rather than guessed at. Actors with no match are
+listed too, so the gap is visible.
+
+Review then applies: selected images are uploaded to Emby as that person's
+primary image, one at a time, with per-file progress and the same cancellation
+and library-access coordination as every other scan. An actor who already has an
+image in Emby is refused rather than overwritten. Nothing is renamed, moved, or
+deleted in the library, and the source images stay exactly where they were.
+
+Individual actors can be marked ignored, handled manually, or blocked. Those
+decisions persist in `/state/actor-images/exceptions.json` and survive rescans,
+so a name that will never match automatically stops asking. Each applied run
+writes a bounded JSONL log under `/state/maintenance-logs/actor-images`.
+
 The dashboard tracks maintenance impact from the first launch after this
 feature is installed. It does not backfill bounded historical logs. Distinct
 actionable issues, completed fixes, quarantine/delete totals, milestones, daily
@@ -271,7 +323,7 @@ increase processing time.
 ## Contributing
 
 - Follow [`DESIGN.md`](DESIGN.md) for user-facing interface and interaction work.
-- Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines.
+- Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines; `python -m ruff check .` enforces them and runs in CI.
 - Add tests under [`tests/`](tests/) and ensure they pass with `python -m pytest`.
 - Run `npm run test:frontend` and rebuild the checked-in frontend bundle after changing Test Lab source files.
 - Run `npm run test:browser` for Chromium interaction, responsive-layout, and accessibility checks.

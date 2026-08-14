@@ -1,6 +1,5 @@
 import sys
 import threading
-import time
 
 from app.process_runner import run_streaming_process
 

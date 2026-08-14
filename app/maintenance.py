@@ -1030,7 +1030,7 @@ def _apply_subtitle_quality_defaults(videos, recommended, action, lib_root):
         target = _accessory_destination(winner, recommended)
         if not target or not path_is_under(target, lib_root):
             continue
-        for video, accessory in entries:
+        for _video, accessory in entries:
             if accessory.get("id") == winner.get("id"):
                 accessory.update(
                     default_operation="rename",
@@ -1452,7 +1452,6 @@ def _upgrade_duplicate_scan_groups(scan):
         videos = list(group.get("videos") or [])
         if not videos:
             continue
-        folder = group.get("folder") or os.path.dirname(videos[0].get("path", ""))
         if not group.get("review_key"):
             group["review_key"] = _group_review_key(videos[0].get("path", ""), settings, lib_root)
         if not group.get("settings_fingerprint"):
@@ -2282,6 +2281,11 @@ def duplicate_refresh_status(refresh_id=None):
         _prune_duplicate_refresh_runs_locked()
         if refresh_id:
             run = duplicate_refresh_runs.get(str(refresh_id or ""))
+            # Only a caller that named a run it cannot get back is an error.
+            # Asking "is anything refreshing?" before anything ever has is the
+            # normal state of the page on load, and matches duplicate_apply_status.
+            if not run:
+                return None, "Refresh run not found"
         elif duplicate_refresh_runs:
             run = max(
                 duplicate_refresh_runs.values(),
@@ -2289,8 +2293,6 @@ def duplicate_refresh_status(refresh_id=None):
             )
         else:
             run = None
-    if not run:
-        return None, "Refresh run not found"
     return {"refresh": _public_refresh_run(run)}, None
 
 

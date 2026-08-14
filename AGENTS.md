@@ -106,50 +106,56 @@ worker would silently get its own copy of every scan, plan, and job queue.
 
 ## Verification and delivery
 
-**Export `STATE_ROOT` to a scratch directory before running anything in Python.**
-`app/config.py` creates directories at import time, so any `import app.*` will `mkdir` under
-`STATE_ROOT` — defaulting to `/state`, which means a permission error on Linux or `C:\state`
-on Windows. CI sets `STATE_ROOT=/tmp/vid2gif-state` and nothing else.
-
-**Do not set `LIB_ROOT` when running the suite.** Five path-translation tests in
-`test_video_preview_maintenance.py` and `test_api_add.py` assert against the default and fail
-against an override — they are testing the container-to-local path mapping itself. Set it
-only when actually serving a library.
-
 ```bash
-export STATE_ROOT=/tmp/vid2gif-state          # first, always; and only this
 pip install -r requirements-dev.txt
 npm ci --ignore-scripts
-python -m pytest                              # ~520 tests, ~35s
+python -m pytest                              # ~539 tests, ~35s; safe to run bare
+python -m ruff check .                        # what CI lints with
 npm run test:frontend                         # 19 Node tests, needs no node_modules
 npm run build:frontend
 python -m app.main                            # dev server on port 904, workers started
 ```
 
+CI runs pytest under coverage with a floor: `python -m pytest --cov=app
+--cov-report=term-missing --cov-fail-under=80`. Coverage sits around 83%. Raise the floor as
+coverage improves — never lower it to accommodate a regression.
+
+**`STATE_ROOT` is why `tests/conftest.py` exists.** `app/config.py` creates its directories
+at import time, so any `import app.*` has a filesystem side effect before a single test runs
+— a stray folder at the drive root on Windows, an outright failure on Linux. `conftest.py`
+points `STATE_ROOT` at a temp directory before the first `app` import, so a bare
+`python -m pytest` is now safe. An explicitly exported `STATE_ROOT` still wins.
+
+**Do not set `LIB_ROOT` when running the suite.** `conftest.py` deliberately leaves it alone:
+nothing creates it at import time, and several tests assert against the `/library` container
+path directly, so an override fails them. Set it only when actually serving a library.
+
 `npm run test:browser` runs Playwright + axe accessibility checks against a real Flask server
 on port 19040; it additionally needs `npx playwright install --with-deps chromium` and a
 `.venv`.
 
-`npm run build:frontend` produces two bundles — `app/static/test-lab.bundle.js` and
-`app/static/workspace-tables.bundle.js` — and both are checked in and served directly by
-Docker and deployed instances. **Rebuild and commit them whenever anything under
-`frontend/` changes**; CI runs `git diff --exit-code` on the built bundles and fails if the
-checked-in copy differs from a fresh build. Node is only needed for development, never at
-runtime in the deployed container.
+`npm run build:frontend` first vendors third-party assets (`npm run vendor:assets`), then
+bundles `frontend/test-lab/` and `frontend/tables/` into `app/static/`. **Rebuild and commit
+everything under `app/static/`** whenever you change anything under `frontend/` or the pinned
+frontend packages — CI runs `git diff --exit-code -- app/static`, so the checked-in bundles
+and `app/static/vendor/` must match a fresh build. Node is only needed for development, never
+at runtime in the deployed container.
 
-CI additionally runs `python -m pip_audit -r requirements.txt` and
+CI additionally runs `python -m pip_audit` over both requirements files and
 `npm audit --audit-level=low`; a new dependency carrying an advisory will fail the build. The
 image publishes to GHCR only if every one of those steps passed.
 
-Functions are capped at complexity 15 (`ruff` rule `C901`, configured in `ruff.toml`).
-Existing offenders carry an explicit `# noqa: C901` and are accepted debt — new code should
-not add more. The worst are `build_duplicate_cleanup_plan` (54) and
-`apply_duplicate_cleanup_plan` (43), both in `app/maintenance.py`, and both on the path that
-deletes files — worth untangling before they hide a bug.
+Functions are capped at complexity 15 (`ruff` rule `C901`, in `ruff.toml` alongside the
+pycodestyle/pyflakes/bugbear selection). Existing offenders carry an explicit `# noqa: C901`
+and are accepted debt — new code should not add more. The worst are
+`build_duplicate_cleanup_plan` (54) and `apply_duplicate_cleanup_plan` (43), both in
+`app/maintenance.py`, and both on the path that deletes files — worth untangling before they
+hide a bug.
 
 **Tests live in `tests/`, one file per module**, as plain pytest functions using
-`monkeypatch` and `tmp_path`. There is no `conftest.py` — each test file builds and resets
-its own state. Follow the existing patterns rather than introducing shared fixtures.
+`monkeypatch` and `tmp_path`. `tests/conftest.py` exists only to default `STATE_ROOT` — it
+defines no fixtures, and each test file builds and resets its own state. Follow the existing
+patterns rather than introducing shared fixtures.
 
 **Runtime dependencies go in `requirements.txt`, dev-only tools in `requirements-dev.txt`.**
 A test asserts the split, so putting a dev tool in the runtime file fails the suite. Python
@@ -174,13 +180,14 @@ These are environment quirks, not bugs to fix. Each has cost someone an afternoo
 - **`playwright.config.js` hard-codes `.venv/Scripts/python.exe` on Windows.** Browser tests
   need a virtualenv at `.venv`, or `VID2GIF_TEST_PYTHON` pointing at a Python that has Flask
   installed.
-- **Line endings.** `.gitattributes` forces LF for source files but does not cover `*.txt` or
-  `*.css`, so on a Windows checkout with `core.autocrlf=true`, rebuilding the frontend makes
-  `app/static/test-lab.bundle.js.LEGAL.txt` show as modified even when its content is
-  identical. `git checkout --` on it is safe.
-- **The UI loads Bootstrap, Bootstrap Icons, and Inter from public CDNs**
-  (`app/templates/base.html`). The app looks broken on a genuinely offline network — worth
-  knowing before debugging a styling report from an air-gapped install.
+- **`app/wsgi.py` re-exports `app` via `__all__`.** It reads as an unused import, but it is
+  the WSGI callable gunicorn loads — the Dockerfile runs `app.wsgi:app`. Do not let a linter
+  or a tidy-up delete the production entry point.
+- **Third-party assets are vendored, not fetched.** Bootstrap, Bootstrap Icons, and Inter
+  live under `app/static/vendor/`, copied by `scripts/vendor-assets.mjs` from the packages
+  pinned in `package-lock.json`. Add new assets the same way — a test fails the build if a CDN
+  host reappears in a template, and `app/static/vendor/**` is marked `-text` in
+  `.gitattributes` so the bytes stay identical to the upstream package.
 
 ## Repository privacy — never commit personal data
 

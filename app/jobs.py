@@ -754,7 +754,10 @@ def worker():
                     state=job,
                     href="/gifs#logs",
                     cancel_url=f"/api/jobs/{job_id}/cancel",
-                    cancel_requested=lambda: bool(job.get("cancel_requested")),
+                    # Bound as a default so the closure captures this
+                    # iteration's job rather than whatever `job` points at
+                    # when the callable eventually runs.
+                    cancel_requested=lambda job=job: bool(job.get("cancel_requested")),
                 ) as activity:
                     _process_job(job)
                     activity.set_outcome(job.get("status"))
