@@ -65,9 +65,13 @@ def _iter_jsonl_headers(directory, suffix=".jsonl"):
         if not first.strip():
             continue
         try:
-            yield name, json.loads(first)
+            header = json.loads(first)
         except ValueError:
             continue
+        # Valid JSON is not necessarily an object. A list or a bare number here
+        # would reach .get() and raise, and this runs during start-up.
+        if isinstance(header, dict):
+            yield name, header
 
 
 def _iter_json_entries(directory):
@@ -80,9 +84,11 @@ def _iter_json_entries(directory):
             continue
         try:
             with open(os.path.join(directory, name), "r", encoding="utf-8") as handle:
-                yield name, json.load(handle)
+                entry = json.load(handle)
         except (OSError, ValueError):
             continue
+        if isinstance(entry, dict):
+            yield name, entry
 
 
 def _operations_for(action, file_count, byte_count):
@@ -281,6 +287,26 @@ def ensure_backfilled(now=None):
     """
     if impact_metrics.get_backfill_report() is not None:
         return None
-    report = run(now=now)
+    try:
+        report = run(now=now)
+    except Exception as exc:
+        # This is called at import time from app/wsgi.py. Recovering an old
+        # total is a nicety; serving the app is not. Whatever is wrong with the
+        # logs, it must not stop gunicorn from starting -- record the failure
+        # and carry on with an un-backfilled total.
+        report = {
+            "ran_at": now or utc_iso(),
+            "events_found": 0,
+            "events_applied": 0,
+            "events_already_recorded": 0,
+            "files_recovered": 0,
+            "bytes_recovered": 0,
+            "runs_missing_byte_totals": 0,
+            "survey": {},
+            "error": f"The audit logs could not be replayed: {exc}",
+            "not_recoverable": [
+                "Everything: the audit logs could not be read, so no earlier history was recovered into this total."
+            ],
+        }
     impact_metrics.set_backfill_report(report)
     return report

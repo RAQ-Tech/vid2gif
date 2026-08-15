@@ -293,3 +293,162 @@ def test_survey_counts_logs_without_changing_anything(monkeypatch, tmp_path):
     assert survey["actor_image_logs"] == 1
     assert survey["subtitle_logs"] == 0
     assert impact_metrics.get_backfill_report() is None
+
+
+# ---------------------------------------------------------------------------
+# Error paths. A backfill that dies on one damaged log would leave the whole
+# lifetime figure unrecovered, so every reader skips what it cannot parse.
+# ---------------------------------------------------------------------------
+
+
+def test_a_log_that_cannot_be_opened_is_skipped(monkeypatch, tmp_path):
+    logs = _reset(monkeypatch, tmp_path)
+    _write_jsonl(
+        logs / "duplicates" / "readable.jsonl",
+        {
+            "type": "summary",
+            "timestamp": "2026-01-05T10:00:00+00:00",
+            "action": "move",
+            "applied_count": 2,
+            "total_applied_bytes": 20,
+        },
+    )
+    _write_jsonl(
+        logs / "duplicates" / "locked.jsonl",
+        {
+            "type": "summary",
+            "timestamp": "2026-01-06T10:00:00+00:00",
+            "action": "move",
+            "applied_count": 99,
+            "total_applied_bytes": 999,
+        },
+    )
+
+    import builtins
+
+    real_open = builtins.open
+
+    def refuse_locked(path, *args, **kwargs):
+        if "locked" in str(path):
+            raise OSError("Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", refuse_locked)
+
+    report = impact_backfill.run()
+
+    # The readable log still counts; the unreadable one is passed over rather
+    # than taking the whole recovery down with it.
+    assert report["events_found"] == 1
+    assert report["files_recovered"] == 2
+
+
+def test_a_subtitle_entry_that_is_not_an_object_is_skipped(monkeypatch, tmp_path):
+    logs = _reset(monkeypatch, tmp_path)
+    subtitles = logs / "subtitles"
+    subtitles.mkdir(parents=True)
+    (subtitles / "broken.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (subtitles / "truncated.json").write_text('{"operation": "quarantine",', encoding="utf-8")
+    (subtitles / "good.json").write_text(
+        json.dumps(
+            {
+                "id": "good",
+                "created_at": "2026-01-07T10:00:00+00:00",
+                "operation": "delete",
+                "applied_count": 1,
+                "applied_bytes": 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = impact_backfill.run()
+
+    assert report["events_found"] == 1
+    assert impact_metrics.status_payload()["operations"]["deleted_bytes"] == 64
+
+
+def test_a_run_that_applied_nothing_contributes_nothing(monkeypatch, tmp_path):
+    """An apply that touched no files is not an event worth recording."""
+    logs = _reset(monkeypatch, tmp_path)
+    _write_jsonl(
+        logs / "duplicates" / "empty-run.jsonl",
+        {
+            "type": "summary",
+            "timestamp": "2026-01-05T10:00:00+00:00",
+            "action": "move",
+            "applied_count": 0,
+            "total_applied_bytes": 0,
+        },
+    )
+
+    report = impact_backfill.run()
+
+    assert report["events_found"] == 0
+    assert report["files_recovered"] == 0
+
+
+def test_an_unrecognised_action_is_counted_but_not_guessed_at(monkeypatch, tmp_path):
+    """Better to record it as "other" than to assume it was a deletion."""
+    logs = _reset(monkeypatch, tmp_path)
+    _write_jsonl(
+        logs / "duplicates" / "odd.jsonl",
+        {
+            "type": "summary",
+            "timestamp": "2026-01-05T10:00:00+00:00",
+            "action": "some-future-action",
+            "applied_count": 3,
+            "total_applied_bytes": 30,
+        },
+    )
+
+    impact_backfill.run()
+
+    operations = impact_metrics.status_payload()["operations"]
+    assert operations["other_files"] == 3
+    assert operations["other_bytes"] == 30
+    assert operations["deleted_files"] == 0, "an unknown action must not be read as a delete"
+    assert operations["quarantined_files"] == 0
+
+
+def test_an_unreadable_log_directory_is_not_fatal(monkeypatch, tmp_path):
+    _reset(monkeypatch, tmp_path)
+
+    def refuse(_path):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(impact_backfill.os, "listdir", refuse)
+
+    report = impact_backfill.run()
+
+    assert report["events_found"] == 0
+    assert report["survey"]["duplicate_logs"] == 0
+
+
+def test_a_backfill_that_blows_up_cannot_stop_the_app_starting(monkeypatch, tmp_path):
+    """ensure_backfilled runs at import in app/wsgi.py.
+
+    Recovering an old total is a nicety; serving the app is not. Whatever is
+    wrong with the logs, gunicorn still has to start.
+    """
+    _reset(monkeypatch, tmp_path)
+
+    def explode(**_kwargs):
+        raise RuntimeError("something unforeseen in the logs")
+
+    monkeypatch.setattr(impact_backfill, "run", explode)
+
+    report = impact_backfill.ensure_backfilled()
+
+    assert report is not None, "the failure must still be recorded"
+    assert "could not be replayed" in report["error"]
+    assert report["events_applied"] == 0
+    assert report["not_recoverable"]
+
+    # And it is stored, so start-up does not retry a broken sweep every boot.
+    assert impact_metrics.get_backfill_report()["error"]
+    assert impact_backfill.ensure_backfilled() is None
+
+    # The dashboard still renders, carrying the failure rather than hiding it.
+    payload = impact_metrics.status_payload()
+    assert payload["backfill"]["error"]
