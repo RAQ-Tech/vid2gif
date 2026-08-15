@@ -350,7 +350,7 @@ def _normalize_filter(ref, label, width, height):
     return f"{scale}{pad}[{label}]"
 
 
-def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None):
+def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None):  # noqa: C901
     stream, err = _source_video_info(video)
     if err:
         return False, err

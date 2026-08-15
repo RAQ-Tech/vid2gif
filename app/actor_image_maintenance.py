@@ -981,7 +981,7 @@ def _candidate_by_id(item, candidate_id=""):
     return item.get("recommended_candidate")
 
 
-def build_import_plan(payload, lib_root=LIB_ROOT):
+def build_import_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     _ensure_cache_loaded()
     if not isinstance(payload, dict):
         return None, "Plan payload is invalid"

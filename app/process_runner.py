@@ -32,7 +32,7 @@ def _terminate_process(process, grace_seconds=3.0):
             pass
 
 
-def run_streaming_process(
+def run_streaming_process(  # noqa: C901
     command,
     *,
     on_line=None,

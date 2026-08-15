@@ -592,7 +592,7 @@ def cancel_job(job_id):
     return public_job(job), None
 
 
-def _process_job(job):
+def _process_job(job):  # noqa: C901
     mark_job_started(job)
     job["logger"].info("Job started")
     emit_queue_status()

@@ -558,7 +558,7 @@ def _validation_error(updates):
     return ""
 
 
-def update_settings(updates, path=None):
+def update_settings(updates, path=None):  # noqa: C901
     if not isinstance(updates, dict):
         return None, "Settings are invalid"
     error = _validation_error(updates)

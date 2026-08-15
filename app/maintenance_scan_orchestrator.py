@@ -276,7 +276,7 @@ def _run_step(run, area, start_loader, status_loader, cancel_loader, completed_s
     return _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_steps, total_steps, sublabel)
 
 
-def _execute(run):
+def _execute(run):  # noqa: C901
     selected = run["selected_areas"]
     expanded = list(selected)
     total_steps = len(expanded)

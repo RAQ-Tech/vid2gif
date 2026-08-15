@@ -7,8 +7,9 @@ extend-exclude = ["app/static/vendor"]
 
 [lint]
 # E/W  pycodestyle, F pyflakes (unused and undefined names), B bugbear
-# (correctness traps such as closures over loop variables).
-select = ["E", "W", "F", "B"]
+# (correctness traps such as closures over loop variables), C901 mccabe
+# (functions that have grown past the point of being safely changeable).
+select = ["E", "W", "F", "B", "C901"]
 
 # E501 (line too long) is not enforced. 1267 lines exceed the default limit and
 # rewrapping them across maintenance.py, video_preview_maintenance.py, and
@@ -16,6 +17,14 @@ select = ["E", "W", "F", "B"]
 # no behavioural gain. Adopting a formatter is the way to fix this properly, and
 # that is a separate decision -- see BACKLOG.md.
 ignore = ["E501"]
+
+[lint.mccabe]
+# Cyclomatic complexity ceiling. Functions already above it carry an explicit
+# `# noqa: C901`, so `ruff check .` is clean today -- this is a ratchet against new
+# tangle, not a demand to refactor on the spot. Those noqa comments are the debt
+# list; the worst are build_duplicate_cleanup_plan and apply_duplicate_cleanup_plan
+# in app/maintenance.py, both on the path that deletes files.
+max-complexity = 15
 
 [lint.per-file-ignores]
 # Test modules append the repository root to sys.path before importing `app`,
