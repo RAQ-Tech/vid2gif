@@ -188,11 +188,71 @@ def test_report_states_what_it_could_not_recover(monkeypatch, tmp_path):
     report = impact_backfill.run()
     text = " ".join(report["not_recoverable"]).lower()
 
+    # These hold on every install: no log ever carried them.
     assert "issue discovery and resolution history" in text
-    assert "subtitle byte totals" in text
-    assert "actor image" in text
     assert "gif creation" in text
     assert "retention" in text
+
+    # These do not apply when there is nothing of that kind on disk, and a
+    # disclosure that lists irrelevant caveats is one people stop reading.
+    assert "subtitle byte totals" not in text
+    assert "actor image" not in text
+
+
+def test_conditional_gaps_appear_only_when_they_apply(monkeypatch, tmp_path):
+    logs = _reset(monkeypatch, tmp_path)
+    subtitles = logs / "subtitles"
+    subtitles.mkdir(parents=True)
+    # An old-format entry: size recorded only as a label.
+    (subtitles / "old.json").write_text(
+        json.dumps(
+            {
+                "id": "old",
+                "created_at": "2026-01-01T10:00:00+00:00",
+                "operation": "quarantine",
+                "applied_count": 2,
+                "size_label": "8.0 KB",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_jsonl(logs / "actor-images" / "apply-1.jsonl", {"type": "apply", "timestamp": "2026-01-02T10:00:00+00:00"})
+
+    report = impact_backfill.run()
+    text = " ".join(report["not_recoverable"]).lower()
+
+    assert "subtitle byte totals for 1 earlier run" in text
+    assert "actor image imports" in text
+
+
+def test_subtitle_logs_that_record_bytes_are_recovered_in_full(monkeypatch, tmp_path):
+    """The fix at the source: new logs carry applied_bytes, so nothing is lost."""
+    logs = _reset(monkeypatch, tmp_path)
+    subtitles = logs / "subtitles"
+    subtitles.mkdir(parents=True)
+    (subtitles / "new.json").write_text(
+        json.dumps(
+            {
+                "id": "new",
+                "created_at": "2026-03-01T10:00:00+00:00",
+                "operation": "quarantine",
+                "applied_count": 3,
+                "applied_bytes": 8192,
+                "size_label": "8.0 KB",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = impact_backfill.run()
+
+    assert report["bytes_recovered"] == 8192
+    assert report["runs_missing_byte_totals"] == 0
+    assert "subtitle byte totals" not in " ".join(report["not_recoverable"]).lower()
+
+    operations = impact_metrics.status_payload()["operations"]
+    assert operations["quarantined_files"] == 3
+    assert operations["quarantined_bytes"] == 8192
 
 
 def test_ensure_backfilled_runs_once_and_is_visible_on_the_dashboard(monkeypatch, tmp_path):

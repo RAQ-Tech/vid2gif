@@ -141,15 +141,22 @@ def _collect_video_previews():
 
 
 def _collect_subtitles():
-    """Subtitle runs recorded a size label, not a byte count.
+    """Subtitle runs written before the log carried `applied_bytes`.
 
-    The file counts are exact; the byte totals were formatted for display before
-    they were written and are not worth reversing, so they are reported as
-    unrecovered rather than parsed back out of a string.
+    Those older entries stored only a formatted size label, and reversing
+    "12.0 KB" into a byte count would be a guess presented as a measurement.
+    Their file counts are exact, so they are recovered with a zero byte total
+    and reported as missing it. Logs written since carry the raw count and are
+    recovered in full.
     """
     directory = os.path.join(MAINTENANCE_LOG_ROOT, "subtitles")
     for log_id, entry in _iter_json_entries(directory):
-        operations = _operations_for(entry.get("operation"), entry.get("applied_count"), 0)
+        has_bytes = "applied_bytes" in entry
+        operations = _operations_for(
+            entry.get("operation"),
+            entry.get("applied_count"),
+            entry.get("applied_bytes") if has_bytes else 0,
+        )
         if operations:
             yield {
                 "category": "subtitles",
@@ -157,7 +164,7 @@ def _collect_subtitles():
                 "timestamp": entry.get("created_at"),
                 "operations": operations,
                 "label": f"Subtitle cleanup ({entry.get('operation') or 'applied'})",
-                "bytes_unrecovered": True,
+                "bytes_unrecovered": not has_bytes,
             }
 
 
@@ -193,6 +200,7 @@ def run(now=None):
     complete.
     """
     now = now or utc_iso()
+    survey_counts = survey()
     events = collect_events()
     applied = 0
     already_recorded = 0
@@ -226,20 +234,38 @@ def run(now=None):
         "files_recovered": files,
         "bytes_recovered": bytes_recovered,
         "runs_missing_byte_totals": bytes_unrecovered_runs,
-        "survey": survey(),
+        "survey": survey_counts,
         # Stated plainly so the dashboard never implies the total is complete.
-        "not_recoverable": [
-            "Issue discovery and resolution history: the logs record what each run"
-            " did, not which finding it closed, so historical discovered and"
-            " resolved counts cannot be rebuilt.",
-            "Subtitle byte totals: those runs recorded a formatted size label rather than a byte count.",
-            "Actor image imports: they upload to Emby and move no library files,"
-            " so there is no file operation to recover.",
-            "GIF creation before tracking began: it was never written to an audit log.",
-            "Anything older than the log retention limits, which keep the most"
-            " recent runs per workstream and drop the rest.",
-        ],
+        # Only the gaps that actually apply here, so the list stays a real
+        # description of this install rather than boilerplate people learn to
+        # scroll past.
+        "not_recoverable": _gaps(bytes_unrecovered_runs, survey_counts),
     }
+
+
+def _gaps(runs_missing_bytes, survey_counts):
+    gaps = [
+        "Issue discovery and resolution history: the logs record what each run"
+        " did, not which finding it closed, so historical discovered and"
+        " resolved counts cannot be rebuilt.",
+        "GIF creation before tracking began: it was never written to an audit log.",
+        "Anything older than the log retention limits, which keep the most"
+        " recent runs per workstream and drop the rest.",
+    ]
+    if runs_missing_bytes:
+        gaps.insert(
+            1,
+            f"Subtitle byte totals for {runs_missing_bytes} earlier"
+            f" run{'' if runs_missing_bytes == 1 else 's'}: those logs recorded a"
+            " formatted size label rather than a byte count. Runs since then record"
+            " the count and are recovered in full.",
+        )
+    if survey_counts.get("actor_image_logs"):
+        gaps.append(
+            "Actor image imports: they upload to Emby and move no library files,"
+            " so there is no file operation to recover."
+        )
+    return gaps
 
 
 def ensure_backfilled(now=None):

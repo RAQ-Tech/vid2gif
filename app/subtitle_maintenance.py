@@ -1357,6 +1357,12 @@ def _save_action_log(plan, run, records):
         "refused_count": run.get("refused_count", 0),
         "deferred_count": run.get("deferred_count", 0),
         "deferred_bytes": run.get("deferred_bytes", 0),
+        # Store the raw count as well as the label. The label alone is a dead
+        # end: the dashboard backfill reads these logs to rebuild lifetime
+        # totals, and it will not reverse "12.0 KB" back into bytes, because a
+        # parsed approximation presented as a measurement is worse than an
+        # acknowledged gap.
+        "applied_bytes": int(run.get("applied_bytes") or 0),
         "size_label": format_size(run.get("applied_bytes", 0)),
         "records": records,
     }
