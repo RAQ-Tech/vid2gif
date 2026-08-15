@@ -1377,8 +1377,13 @@ def _save_action_log(plan, run, records):
         index = [entry_item for entry_item in index if entry_item.get("id") != entry["id"]]
         index.insert(0, {key: value for key, value in entry.items() if key != "records"})
         _write_json_atomic(LOG_INDEX, index[:25])
-    except OSError:
-        pass
+    except OSError as exc:
+        # The files have already moved by the time this runs. Swallowing the
+        # failure would report a clean quarantine while the record that makes it
+        # reversible does not exist -- the one thing the operator would want to
+        # know. Report it instead; the caller surfaces it on the run.
+        return str(exc) or "The audit log could not be written."
+    return ""
 
 
 @coordinated_library_operation(
@@ -1464,7 +1469,14 @@ def _run_action(plan, run):
             },
         }
     )
-    _save_action_log(plan, run, records)
+    log_error = _save_action_log(plan, run, records)
+    if log_error:
+        # Not a failed run: the cleanup did happen. But it cannot be undone from
+        # a log that was never written, so say so rather than implying it can.
+        run["log_error"] = log_error
+        run.setdefault("warnings", []).append(
+            "Files were moved, but the undo log could not be written, so this run cannot be restored."
+        )
     applied_ids = {record.get("file_id") for record in records if record.get("status") == "applied"}
     applied_files = [item for item in plan.get("files") or [] if item.get("file_id") in applied_ids]
     if applied_files:

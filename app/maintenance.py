@@ -3361,6 +3361,11 @@ def _public_apply_result(result):
         "emby_playback": emby_playback.public_result(result.get("emby_playback")),
         "emby_notification": emby_notifications.public_result(result.get("emby_notification")),
         "log": {key: value for key, value in log.items() if key != "path"},
+        # A cleanup whose undo log could not be written still applied, but it is
+        # no longer reversible. That has to reach the operator, not just the
+        # server-side result dict.
+        "log_error": result.get("log_error", ""),
+        "warnings": list(result.get("warnings") or []),
     }
 
 
@@ -3872,8 +3877,20 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
         "scan_reconciled": scan_reconciled,
         "scan": reconciled_scan,
     }
-    log_entry = _write_cleanup_log(plan, result, log_records)
-    result["log"] = {key: value for key, value in log_entry.items() if key != "path"}
+    try:
+        log_entry = _write_cleanup_log(plan, result, log_records)
+        result["log"] = {key: value for key, value in log_entry.items() if key != "path"}
+    except OSError as exc:
+        # The files have already been moved or deleted. Letting this propagate
+        # would mark the whole run failed, which misreports what happened and
+        # invites a re-run against files that are no longer where the plan says.
+        # The cleanup succeeded; what is missing is the record that makes it
+        # reversible, so report exactly that.
+        result["log"] = {}
+        result["log_error"] = str(exc) or "The cleanup log could not be written."
+        result.setdefault("warnings", []).append(
+            "Files were moved, but the undo log could not be written, so this run cannot be restored."
+        )
     applied_video_ids = {
         item.get("file_id")
         for item in applied

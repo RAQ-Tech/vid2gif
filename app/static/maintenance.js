@@ -2351,7 +2351,28 @@
       results.textContent = apply.status === 'success'
         ? `${result.applied_count || apply.applied_count || 0} applied, ${result.skipped_changed_group_count || apply.skipped_changed_group_count || 0} changed groups skipped, ${result.missing_count || apply.missing_count || 0} missing, ${result.refused_count || apply.refused_count || 0} refused, ${result.deferred_count || apply.deferred_count || 0} deferred`
         : (apply.status === 'failed' ? (apply.error || 'Cleanup failed') : 'Progress updates automatically while cleanup runs.');
+      renderApplyWarnings(results, result);
     }
+  }
+
+  // A run can succeed and still lose something the operator needs to know
+  // about -- an undo log that could not be written leaves files moved with no
+  // way back. That is not a failure badge, but it must not be silent either.
+  function renderApplyWarnings(container, result) {
+    const existing = container.parentNode?.querySelector('[data-apply-warnings]');
+    if (existing) existing.remove();
+    const warnings = (result && result.warnings) || [];
+    if (!warnings.length || !container.parentNode) return;
+    const box = document.createElement('div');
+    box.className = 'alert alert-warning mt-2 mb-0 py-2 small';
+    box.setAttribute('role', 'alert');
+    box.setAttribute('data-apply-warnings', '');
+    warnings.forEach(text => {
+      const line = document.createElement('div');
+      line.textContent = text;
+      box.appendChild(line);
+    });
+    container.parentNode.appendChild(box);
   }
 
   function reconcileDuplicateResults(result) {
