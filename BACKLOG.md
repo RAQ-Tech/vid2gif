@@ -104,25 +104,15 @@ users. Worth doing only if that number is meant to be authoritative.
 
 ## Open questions
 
-These need a decision from Chris; they are not engineering calls.
+One item is waiting on a decision from Chris. Everything else on this list is
+mine to do.
 
-### Delete the stray `C:\state` folder?
+### Is the dashboard's lifetime impact figure meant to be authoritative?
 
-Test runs on this machine before 2026-08-13 wrote 2.1 MB of app state to
-`C:\state` (created 2026-08-07, last written 2026-08-11) because `STATE_ROOT`
-was unset.
+Item 6 proposes backfilling it. That is only worth building if the number is
+supposed to be a true lifetime record. If it is really just "activity since the
+feature shipped", the honest fix is a line of wording on the dashboard saying
+so, and the backfill should not be written at all.
 
-Every path recorded in it points at `pytest` temp directories that no longer
-exist, so the 60 duplicate-cleanup audit logs it contains cannot restore
-anything; the stored settings hold no credentials, and the job queue is empty.
-The dashboard file claims 815 duplicates found and 681 resolved, but that is
-the test suite exercising the app, not real work -- which is the main argument
-for removing it, since it reads like genuine history.
-
-Deleting it also arms the guard added in `app/config.py`. That guard refuses to
-create the `/state` default when it does not already exist -- but this folder
-does exist, so on this machine the default still looks intentional and is still
-written to. Removing it is what makes the fix take effect here.
-
-It is outside the repository and deleting it is not reversible from git, so it
-is left in place. Say the word and it goes.
+Two very different pieces of work, and which one is right depends on what the
+number is for. Answer either way and I will do it.
