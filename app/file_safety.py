@@ -22,9 +22,12 @@ class FileSafetyError(RuntimeError):
 
 def path_has_symlink_component(path, *, root=None):
     """Return True if an existing path component at or below root is a symlink."""
-    current = os.path.abspath(str(path or ""))
-    if not current:
+    raw = str(path or "").strip()
+    # Guard before abspath(): it turns "" into the current working directory,
+    # so an empty path would otherwise be answered for somewhere else entirely.
+    if not raw:
         return True
+    current = os.path.abspath(raw)
     boundary = os.path.abspath(root) if root else None
     boundary_key = os.path.normcase(boundary) if boundary else None
     while True:

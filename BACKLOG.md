@@ -4,28 +4,16 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 538 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 529 of them, since nine need symlinks or media tools. 19
-frontend tests, 31 browser tests. `ruff check` is clean, coverage is 83.15%
+Current state: 563 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 554 of them, since nine need symlinks or media tools. 19
+frontend tests, 31 browser tests. `ruff check` is clean, coverage is 83.04%
 against an 80% floor, and CI is green on `main`.
+
+There are no open questions. Everything below is mine to do.
 
 ## Test coverage
 
-### 1. Cover the error paths in file_safety.py
-
-file_safety.py is the module that decides whether it is safe to touch a user's
-file -- symlink rejection, identity capture, atomic install, same-filesystem
-moves -- and the coverage run puts it at 75%, among the lowest in the codebase.
-`subtitle_quality.py` (73%), `ffmpeg_utils.py` (75%), and `test_lab.py` (77%)
-are the next lowest. `routes.py` sits at 71%, but that is mostly thin endpoint
-wrappers whose logic is tested through the modules underneath.
-
-Uncovered lines in `file_safety.py` are the error branches: unreadable files,
-cross-device moves, races where the destination appears mid-operation. Those are
-exactly the paths that matter when something goes wrong with someone's library.
-Worth writing tests for before chasing the overall percentage.
-
-### 2. Browser tests cover three of the seven maintenance tabs
+### 1. Browser tests cover three of the seven maintenance tabs
 
 `frontend/browser/` drives `/maintenance#duplicates` (three specs),
 `/maintenance#video-previews`, `/maintenance#posters`, and the `/gifs` page.
@@ -41,7 +29,7 @@ operations through the UI.
 
 ## Repository housekeeping
 
-### 3. Draft PR #43 now conflicts with everything merged today
+### 2. Draft PR #43 now conflicts with everything merged today
 
 [PR #43](https://github.com/RAQ-Tech/vid2gif/pull/43), "Add AGENTS.md, and give
 the project a complexity linter", was opened on 2026-08-13 before this session's
@@ -55,7 +43,7 @@ linter into the existing `ruff.toml` rather than alongside it.
 
 ## Lower priority
 
-### 4. No formatter, and 1,267 lines exceed 88 columns
+### 3. No formatter, and 1,267 lines exceed 88 columns
 
 `ruff check` now runs in CI, but `E501` (line too long) is switched off in
 `ruff.toml`. 1,267 lines exceed ruff's default 88 columns and 133 exceed 120,
@@ -67,7 +55,7 @@ Adopting `ruff format` would do it mechanically and consistently, but it would
 touch nearly every Python file in one commit. Worth doing deliberately, on a
 quiet branch, not folded into other work.
 
-### 5. Several modules have outgrown one file
+### 4. Several modules have outgrown one file
 
 `app/video_preview_maintenance.py` (4,211 lines), `app/maintenance.py` (4,127),
 `app/poster_maintenance.py` (1,950), `app/routes.py` (1,776), and
@@ -79,15 +67,18 @@ already visible in the module names (`duplicate_slots.py` and
 Split opportunistically when touching one of these for another reason, not as a
 standalone refactor.
 
-### 6. Dashboard impact metrics cannot be backfilled
+### 5. Dashboard impact metrics cannot be backfilled
 
 `README.md` states the dashboard tracks impact only from first launch after the
 feature was installed and does not backfill. Existing installations therefore
 show a lifetime total that understates real work. The bounded audit logs under
 `/state/maintenance-logs/` hold some of the missing history.
 
-A one-time backfill would make the lifetime number trustworthy for existing
-users. Worth doing only if that number is meant to be authoritative.
+Decided 2026-08-14: the figure is meant to be a true lifetime record, so
+backfill what the logs can support. Anything that was never tracked is simply
+gone -- do not invent it, and do not hold up the rest of the work over it.
+Whatever cannot be recovered should be stated on the dashboard rather than
+quietly folded into the total.
 
 ## Deliberately not on this list
 
@@ -101,18 +92,3 @@ users. Worth doing only if that number is meant to be authoritative.
 - **0% coverage on `app/main.py` and `app/wsgi.py`.** They are process entry
   points that start daemon threads; importing them under test would start
   workers.
-
-## Open questions
-
-One item is waiting on a decision from Chris. Everything else on this list is
-mine to do.
-
-### Is the dashboard's lifetime impact figure meant to be authoritative?
-
-Item 6 proposes backfilling it. That is only worth building if the number is
-supposed to be a true lifetime record. If it is really just "activity since the
-feature shipped", the honest fix is a line of wording on the dashboard saying
-so, and the backfill should not be written at all.
-
-Two very different pieces of work, and which one is right depends on what the
-number is for. Answer either way and I will do it.
