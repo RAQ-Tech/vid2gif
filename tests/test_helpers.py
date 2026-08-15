@@ -84,12 +84,12 @@ def test_build_segments_deduplicates_close_points():
 
 
 def test_resolve_case_insensitive(tmp_path):
-    base = tmp_path / 'Lib'
-    (base / 'Sub').mkdir(parents=True)
-    (base / 'Sub' / 'Video.MP4').write_text('x')
-    path = str(base / 'sub' / 'video.mp4')
+    base = tmp_path / "Lib"
+    (base / "Sub").mkdir(parents=True)
+    (base / "Sub" / "Video.MP4").write_text("x")
+    path = str(base / "sub" / "video.mp4")
     resolved = resolve_case_insensitive(path)
-    assert resolved == str(base / 'Sub' / 'Video.MP4')
+    assert resolved == str(base / "Sub" / "Video.MP4")
 
 
 def test_path_is_under_rejects_prefix_sibling(tmp_path):

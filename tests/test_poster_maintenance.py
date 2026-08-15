@@ -40,9 +40,8 @@ def _reset_poster_state(monkeypatch, tmp_path):
     monkeypatch.setattr(poster_maintenance, "_poster_cache_loaded", True)
     monkeypatch.setattr(poster_maintenance, "_current_run_id", "")
     poster_maintenance._scheduler_state.clear()
-    poster_maintenance._scheduler_state.update(
-        {"last_checked_at": None, "next_run_at": None, "last_error": ""}
-    )
+    poster_maintenance._scheduler_state.update({"last_checked_at": None, "next_run_at": None, "last_error": ""})
+
     def fake_dimensions(path, timeout=10):
         try:
             with open(path, "rb") as handle:
@@ -55,6 +54,7 @@ def _reset_poster_state(monkeypatch, tmp_path):
             "height": 1080 if landscape else 1500,
             "landscape": landscape,
         }
+
     monkeypatch.setattr(poster_maintenance, "_probe_image_dimensions", fake_dimensions)
     return state_root
 
@@ -99,8 +99,9 @@ def test_landscape_poster_run_replaces_existing_poster_and_preserves_backup(monk
     monkeypatch.setattr(
         poster_maintenance.emby_notifications,
         "notify_maintenance",
-        lambda *args, **kwargs: notification_calls.append((args, kwargs))
-        or {"id": "notice", "status": "success", "message": "accepted"},
+        lambda *args, **kwargs: (
+            notification_calls.append((args, kwargs)) or {"id": "notice", "status": "success", "message": "accepted"}
+        ),
     )
     run = _run(lib, monkeypatch, tmp_path)
 
@@ -155,9 +156,7 @@ def test_poster_analysis_lists_each_video_stem_in_shared_folder(monkeypatch, tmp
         _write(folder / f"{stem}-poster.jpg", f"portrait {index}".encode())
     _reset_poster_state(monkeypatch, tmp_path)
 
-    scan, err = poster_maintenance.start_poster_scan(
-        str(lib), synchronous=True, lib_root=str(lib)
-    )
+    scan, err = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
     page, page_err = poster_maintenance.poster_items_payload(scan["id"], limit=10)
 
     assert err is None
@@ -214,12 +213,8 @@ def test_poster_items_can_filter_status_and_search_details(monkeypatch, tmp_path
     }
     poster_maintenance.poster_scans[scan["id"]] = scan
 
-    ready, ready_err = poster_maintenance.poster_items_payload(
-        scan["id"], status="eligible"
-    )
-    searched, search_err = poster_maintenance.poster_items_payload(
-        scan["id"], search="missing-poster"
-    )
+    ready, ready_err = poster_maintenance.poster_items_payload(scan["id"], status="eligible")
+    searched, search_err = poster_maintenance.poster_items_payload(scan["id"], search="missing-poster")
 
     assert ready_err is None
     assert ready["total"] == 1
@@ -243,9 +238,7 @@ def test_poster_analysis_excludes_trailer_and_extra_video_artwork(monkeypatch, t
     _write(folder / "extras" / "Feature-poster.jpg", b"portrait")
     _reset_poster_state(monkeypatch, tmp_path)
 
-    scan, err = poster_maintenance.start_poster_scan(
-        str(lib), synchronous=True, lib_root=str(lib)
-    )
+    scan, err = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
 
     assert err is None
     assert scan["counts"]["candidate_count"] == 1
@@ -266,8 +259,9 @@ def test_disabled_automatic_poster_sync_does_not_load_emby_catalog(monkeypatch, 
     monkeypatch.setattr(
         poster_maintenance.emby_sync,
         "sync_changes",
-        lambda changes, **kwargs: sync_calls.append((changes, kwargs))
-        or {"id": "sync-disabled", "status": "disabled", "retryable": False},
+        lambda changes, **kwargs: (
+            sync_calls.append((changes, kwargs)) or {"id": "sync-disabled", "status": "disabled", "retryable": False}
+        ),
     )
 
     run = _run(
@@ -470,9 +464,7 @@ def test_poster_scan_force_full_bypasses_reuse_cache(monkeypatch, tmp_path):
     _reset_poster_state(monkeypatch, tmp_path)
 
     first, err1 = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib))
-    second, err2 = poster_maintenance.start_poster_scan(
-        str(lib), synchronous=True, lib_root=str(lib), force_full=True
-    )
+    second, err2 = poster_maintenance.start_poster_scan(str(lib), synchronous=True, lib_root=str(lib), force_full=True)
 
     assert err1 is None and err2 is None
     assert second["force_full"] is True
@@ -556,9 +548,7 @@ def test_poster_scan_notifies_when_eligible_and_auto_apply_disabled(monkeypatch,
     assert "poster updates ready" in sent[0][0][0].lower()
 
     sent.clear()
-    result = poster_maintenance._notify_scan_ready(
-        scan, {"eligible_count": 0}, poster_maintenance.load_settings()
-    )
+    result = poster_maintenance._notify_scan_ready(scan, {"eligible_count": 0}, poster_maintenance.load_settings())
     assert result is None
     assert sent == []
 
@@ -816,9 +806,7 @@ def test_landscape_poster_partial_patch_preserves_api_key(monkeypatch, tmp_path)
 
 def test_landscape_poster_emby_test_route_uses_saved_key_fallback(monkeypatch, tmp_path):
     _reset_poster_state(monkeypatch, tmp_path)
-    poster_maintenance.save_settings(
-        _settings(emby_url="http://saved:8096", emby_api_key="saved-secret")
-    )
+    poster_maintenance.save_settings(_settings(emby_url="http://saved:8096", emby_api_key="saved-secret"))
     captured = {}
 
     class FakeResponse:
@@ -986,9 +974,7 @@ def test_poster_analysis_resolves_same_stem_video_and_propagates_item_id(monkeyp
         return {"id": "sync-poster", "status": "success", "retryable": False}
 
     monkeypatch.setattr(poster_maintenance.emby_sync, "sync_changes", fake_sync)
-    applied, apply_err = poster_maintenance.start_poster_apply(
-        plan["id"], synchronous=True, lib_root=str(lib)
-    )
+    applied, apply_err = poster_maintenance.start_poster_apply(plan["id"], synchronous=True, lib_root=str(lib))
 
     assert apply_err is None
     assert applied["status"] == "success"

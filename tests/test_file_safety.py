@@ -1,4 +1,3 @@
-
 import pytest
 
 from app import file_safety
@@ -121,9 +120,10 @@ def test_regular_file_identity_rejects_symlinked_path_component(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks are unavailable")
 
-    assert file_safety.regular_file_identity(
-        str(linked / "movie.mp4"), root=str(root), allowed_extensions={".mp4"}
-    ) is None
+    assert (
+        file_safety.regular_file_identity(str(linked / "movie.mp4"), root=str(root), allowed_extensions={".mp4"})
+        is None
+    )
 
 
 def test_target_state_rejects_symlink_destination(tmp_path):
@@ -176,9 +176,7 @@ def test_atomic_quarantine_refuses_existing_destination(tmp_path):
     destination.write_bytes(b"existing-video")
 
     with pytest.raises(FileExistsError, match="already exists"):
-        file_safety.atomic_quarantine_file(
-            str(source), str(destination), root=str(root)
-        )
+        file_safety.atomic_quarantine_file(str(source), str(destination), root=str(root))
 
     assert source.read_bytes() == b"source-video"
     assert destination.read_bytes() == b"existing-video"
@@ -198,6 +196,7 @@ def test_atomic_quarantine_refuses_existing_destination(tmp_path):
 def _raise_oserror(message):
     def fail(*args, **kwargs):
         raise OSError(message)
+
     return fail
 
 
@@ -353,9 +352,7 @@ def test_install_reports_a_destination_that_vanishes_before_the_copy(tmp_path, m
     monkeypatch.setattr(file_safety.os, "stat", stat_fails_for_target)
 
     with pytest.raises(file_safety.FileSafetyError, match="Destination changed before installation"):
-        file_safety.atomic_install_file(
-            str(source), str(target), expected_target=expected_target
-        )
+        file_safety.atomic_install_file(str(source), str(target), expected_target=expected_target)
 
 
 def test_install_uses_chmod_when_the_platform_has_no_fchmod(tmp_path, monkeypatch):
@@ -398,9 +395,7 @@ def test_install_aborts_when_the_source_changes_mid_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(file_safety, "identity_matches", changed_on_the_second_look)
 
     with pytest.raises(file_safety.FileSafetyError, match="Staged output changed during installation"):
-        file_safety.atomic_install_file(
-            str(source), str(target), expected_source=expected_source
-        )
+        file_safety.atomic_install_file(str(source), str(target), expected_source=expected_source)
 
     assert not target.exists()
     leftovers = [p.name for p in tmp_path.iterdir() if ".vid2gif-" in p.name]
@@ -423,9 +418,7 @@ def test_install_aborts_when_the_destination_appears_mid_copy(tmp_path, monkeypa
     monkeypatch.setattr(file_safety, "target_state_matches", appears_after_the_first_check)
 
     with pytest.raises(file_safety.FileSafetyError, match="Destination changed during installation"):
-        file_safety.atomic_install_file(
-            str(source), str(target), expected_target=expected_target
-        )
+        file_safety.atomic_install_file(str(source), str(target), expected_target=expected_target)
 
     assert not target.exists()
 
@@ -510,9 +503,7 @@ def test_quarantine_refuses_an_unsafe_destination(tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     with pytest.raises(file_safety.FileSafetyError, match="destination is unsafe"):
-        file_safety.atomic_quarantine_file(
-            str(source), str(elsewhere / "video.mkv"), root=str(root)
-        )
+        file_safety.atomic_quarantine_file(str(source), str(elsewhere / "video.mkv"), root=str(root))
 
     assert source.exists()
 

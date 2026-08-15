@@ -198,9 +198,7 @@ def _coerce_settings(data, base=None):
         "enabled": bool(data.get("enabled", base["enabled"])),
         "scan_interval_seconds": scan_interval,
         "full_scan_interval_seconds": full_interval,
-        "auto_apply_eligible": bool(
-            data.get("auto_apply_eligible", base.get("auto_apply_eligible", False))
-        ),
+        "auto_apply_eligible": bool(data.get("auto_apply_eligible", base.get("auto_apply_eligible", False))),
     }
 
 
@@ -244,7 +242,13 @@ def update_settings(updates, path=None):
         updates["emby_sync_after_maintenance"] = updates.get("emby_refresh_enabled")
     global_updates = {
         key: updates[key]
-        for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings", "emby_sync_after_maintenance")
+        for key in (
+            "emby_url",
+            "emby_api_key",
+            "emby_api_key_clear",
+            "emby_path_mappings",
+            "emby_sync_after_maintenance",
+        )
         if key in updates
     }
     if global_updates:
@@ -280,9 +284,7 @@ def public_settings(settings=None):
         "scan_interval_seconds": settings.get("scan_interval_seconds"),
         "scan_interval_label": format_duration(settings.get("scan_interval_seconds")),
         "full_scan_interval_seconds": settings.get("full_scan_interval_seconds"),
-        "full_scan_interval_label": format_duration(
-            settings.get("full_scan_interval_seconds")
-        ),
+        "full_scan_interval_label": format_duration(settings.get("full_scan_interval_seconds")),
         "auto_apply_eligible": bool(settings.get("auto_apply_eligible")),
         "emby_refresh_enabled": bool(settings.get("emby_sync_after_maintenance", True)),
         "emby_api_key_configured": bool(settings.get("emby_api_key")),
@@ -396,8 +398,7 @@ def _background_candidate_groups(directory, files):
             continue
         matching_videos = video_names_by_stem.get(candidate["base"].casefold(), [])
         if matching_videos and not any(
-            media_scope.is_main_video_filename(video_name)
-            for video_name in matching_videos
+            media_scope.is_main_video_filename(video_name) for video_name in matching_videos
         ):
             continue
         groups.setdefault(candidate["base"].casefold(), []).append(candidate)
@@ -409,11 +410,7 @@ def _relevant_file(name):
     if ext.lower() not in BACKGROUND_IMAGE_EXTS:
         return False
     lower = stem.lower()
-    return (
-        lower.endswith(BACKGROUND_SUFFIX)
-        or lower.endswith(POSTER_SUFFIX)
-        or lower.endswith(BACKUP_SUFFIX)
-    )
+    return lower.endswith(BACKGROUND_SUFFIX) or lower.endswith(POSTER_SUFFIX) or lower.endswith(BACKUP_SUFFIX)
 
 
 def _folder_signature(base, files):
@@ -427,9 +424,7 @@ def _folder_signature(base, files):
         identity = _file_identity(path)
         if not identity:
             continue
-        parts.append(
-            f"{name.lower()}:{identity['size']}:{identity['mtime_ns']}"
-        )
+        parts.append(f"{name.lower()}:{identity['size']}:{identity['mtime_ns']}")
     encoded = "|".join(parts)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest() if encoded else ""
 
@@ -465,11 +460,7 @@ def _copy_file_atomic(source, target, *, root, expected_target=None):
         target,
         root=root,
         expected_source=regular_file_identity(source),
-        expected_target=(
-            expected_target
-            if expected_target is not None
-            else target_state(target, root=root)
-        ),
+        expected_target=(expected_target if expected_target is not None else target_state(target, root=root)),
     )
 
 
@@ -477,8 +468,16 @@ def _probe_image_dimensions(path, timeout=IMAGE_PROBE_TIMEOUT_SECONDS):
     try:
         process = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=width,height", "-of", "json", path,
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "json",
+                path,
             ],
             capture_output=True,
             text=True,
@@ -511,16 +510,8 @@ def _matching_artwork(directory, base, suffix):
 
 def _record_for(candidate, root, status, message=""):
     background_identity = _file_identity(candidate["background_path"])
-    poster_identity = (
-        _file_identity(candidate["poster_path"])
-        if os.path.isfile(candidate["poster_path"])
-        else None
-    )
-    backup_identity = (
-        _file_identity(candidate["backup_path"])
-        if os.path.isfile(candidate["backup_path"])
-        else None
-    )
+    poster_identity = _file_identity(candidate["poster_path"]) if os.path.isfile(candidate["poster_path"]) else None
+    backup_identity = _file_identity(candidate["backup_path"]) if os.path.isfile(candidate["backup_path"]) else None
     return {
         "source": _relative_path(candidate["background_path"], root),
         "poster": _relative_path(candidate["poster_path"], root),
@@ -613,23 +604,23 @@ def _process_candidate(candidate, root):  # noqa: C901
             if _file_identity(backup) != backup_identity:
                 raise RuntimeError("Backup changed during preflight")
         expected_poster = None if backup_created else poster_identity
-        if (
-            _file_identity(background) != background_identity
-            or _file_identity(poster) != expected_poster
-        ):
+        if _file_identity(background) != background_identity or _file_identity(poster) != expected_poster:
             raise RuntimeError("Artwork changed before replacement")
         _copy_file_atomic(
             background,
             poster,
             root=root,
             expected_target=(
-                {"exists": False, "identity": None}
-                if backup_created
-                else target_state(poster, root=root)
+                {"exists": False, "identity": None} if backup_created else target_state(poster, root=root)
             ),
         )
         installed = _probe_image_dimensions(poster)
-        if not installed or not installed["landscape"] or installed["width"] != background_dimensions["width"] or installed["height"] != background_dimensions["height"]:
+        if (
+            not installed
+            or not installed["landscape"]
+            or installed["width"] != background_dimensions["width"]
+            or installed["height"] != background_dimensions["height"]
+        ):
             raise RuntimeError("Poster verification failed; original was restored")
     except Exception as exc:
         if backup_created and os.path.isfile(backup):
@@ -680,8 +671,17 @@ def _public_analysis_item(item):
     return {
         key: item.get(key)
         for key in (
-            "id", "source", "poster", "backup", "status", "message", "eligible",
-            "emby_item_id", "emby_item_type", "emby_item_name", "emby_match_status",
+            "id",
+            "source",
+            "poster",
+            "backup",
+            "status",
+            "message",
+            "eligible",
+            "emby_item_id",
+            "emby_item_type",
+            "emby_item_name",
+            "emby_match_status",
         )
     }
 
@@ -831,9 +831,7 @@ def public_poster_scan(scan):
         "force_full": bool(scan.get("force_full")),
         "auto_apply_pending": bool(scan.get("auto_apply_pending")),
         "auto_apply_run_id": scan.get("auto_apply_run_id") or "",
-        "emby_mapping": emby_catalog.public_summary(
-            scan.get("emby_mapping"), app_settings.load_settings()
-        ),
+        "emby_mapping": emby_catalog.public_summary(scan.get("emby_mapping"), app_settings.load_settings()),
         **(scan.get("counts") or {}),
     }
     public.update(maintenance_scan_store.public_cache_metadata("posters", scan))
@@ -856,7 +854,11 @@ def _ensure_poster_cache_loaded():
 
 def _prune_poster_analysis_locked():
     terminal = sorted(
-        ((scan_id, scan) for scan_id, scan in poster_scans.items() if scan.get("status") in {"success", "failed", "cancelled"}),
+        (
+            (scan_id, scan)
+            for scan_id, scan in poster_scans.items()
+            if scan.get("status") in {"success", "failed", "cancelled"}
+        ),
         key=lambda item: item[1].get("finished_at") or item[1].get("created_at") or "",
         reverse=True,
     )
@@ -868,7 +870,11 @@ def _prune_poster_analysis_locked():
         if plan.get("scan_id") not in valid_scan_ids:
             poster_plans.pop(plan_id, None)
     completed_apply = sorted(
-        ((apply_id, run) for apply_id, run in poster_apply_runs.items() if run.get("status") not in {"queued", "running"}),
+        (
+            (apply_id, run)
+            for apply_id, run in poster_apply_runs.items()
+            if run.get("status") not in {"queued", "running"}
+        ),
         key=lambda item: item[1].get("finished_at") or item[1].get("created_at") or "",
         reverse=True,
     )
@@ -920,9 +926,7 @@ def _notify_scan_ready(scan, counts, settings):
     )
 
 
-@coordinated_library_operation(
-    "Scan landscape posters", kind="scan", href="/maintenance#posters"
-)
+@coordinated_library_operation("Scan landscape posters", kind="scan", href="/maintenance#posters")
 def _run_poster_scan(scan, lib_root):
     try:
         started = time.time()
@@ -941,11 +945,7 @@ def _run_poster_scan(scan, lib_root):
         )
         root = os.path.realpath(lib_root)
         previous = None if scan.get("force_full") else _latest_reusable_poster_scan(scan)
-        previous_by_id = {
-            item.get("id"): item
-            for item in ((previous or {}).get("items") or [])
-            if item.get("id")
-        }
+        previous_by_id = {item.get("id"): item for item in ((previous or {}).get("items") or []) if item.get("id")}
         reused_count = 0
         analyzed_count = 0
         items = []
@@ -962,15 +962,22 @@ def _run_poster_scan(scan, lib_root):
                 )
                 return
             dirs[:] = [
-                name for name in dirs
-                if not os.path.islink(os.path.join(base, name))
-                and not media_scope.is_non_main_video_dir(name)
+                name
+                for name in dirs
+                if not os.path.islink(os.path.join(base, name)) and not media_scope.is_non_main_video_dir(name)
             ]
             folders += 1
             for candidates in _background_candidate_groups(base, files):
                 if len(candidates) > 1:
                     for candidate in candidates:
-                        items.append(_analysis_item(candidate, root, "ambiguous", "Multiple landscape backgrounds for this video stem are ambiguous"))
+                        items.append(
+                            _analysis_item(
+                                candidate,
+                                root,
+                                "ambiguous",
+                                "Multiple landscape backgrounds for this video stem are ambiguous",
+                            )
+                        )
                 else:
                     for candidate in candidates:
                         item_id = _poster_item_id(candidate, root)
@@ -1028,9 +1035,7 @@ def _run_poster_scan(scan, lib_root):
             return
         settings = load_settings()
         auto_apply_pending = bool(
-            scan.get("allow_auto_apply", True)
-            and settings.get("auto_apply_eligible")
-            and counts.get("eligible_count")
+            scan.get("allow_auto_apply", True) and settings.get("auto_apply_eligible") and counts.get("eligible_count")
         )
         task_progress.update_scan(
             scan,
@@ -1062,14 +1067,30 @@ def _run_poster_scan(scan, lib_root):
         ):
             _notify_scan_ready(scan, counts, settings)
         impact_metrics.record_scan(
-            scan["id"], "posters", "posters", scan["path"],
-            [{"issue_id": f"poster:{item['id']}", "finding_ids": [item["id"]], "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in items if item.get("eligible")],
+            scan["id"],
+            "posters",
+            "posters",
+            scan["path"],
+            [
+                {
+                    "issue_id": f"poster:{item['id']}",
+                    "finding_ids": [item["id"]],
+                    "label": os.path.basename(item["poster"]),
+                    "path": item["poster"],
+                }
+                for item in items
+                if item.get("eligible")
+            ],
             timestamp=scan["finished_at"],
         )
     except PosterScanCancelled:
-        task_progress.update_scan(scan, "poster_scan", 100, "Poster analysis cancelled", status="cancelled", error="", finished_at=utc_iso())
+        task_progress.update_scan(
+            scan, "poster_scan", 100, "Poster analysis cancelled", status="cancelled", error="", finished_at=utc_iso()
+        )
     except Exception as exc:
-        task_progress.update_scan(scan, "poster_scan", 100, "Poster analysis failed", status="failed", error=str(exc), finished_at=utc_iso())
+        task_progress.update_scan(
+            scan, "poster_scan", 100, "Poster analysis failed", status="failed", error=str(exc), finished_at=utc_iso()
+        )
 
 
 def _run_poster_scan_and_maybe_auto_apply(scan, lib_root):
@@ -1106,15 +1127,26 @@ def start_poster_scan(
         return None, err
     with _poster_scan_lock:
         _prune_poster_analysis_locked()
-        active = next((item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+        active = next(
+            (item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None
+        )
         if active:
             return active, None
         scan_id = _now_id()
         scan = {
-            "id": scan_id, "path": real_path, "lib_root": os.path.realpath(lib_root),
-            "status": "queued", "created_at": utc_iso(), "started_at": None,
-            "finished_at": None, "progress_percent": 0, "progress_label": "Queued",
-            "error": "", "cancel_requested": False, "items": [], "counts": {},
+            "id": scan_id,
+            "path": real_path,
+            "lib_root": os.path.realpath(lib_root),
+            "status": "queued",
+            "created_at": utc_iso(),
+            "started_at": None,
+            "finished_at": None,
+            "progress_percent": 0,
+            "progress_label": "Queued",
+            "error": "",
+            "cancel_requested": False,
+            "items": [],
+            "counts": {},
             "force_full": bool(force_full),
             "allow_auto_apply": bool(allow_auto_apply),
             "auto_apply_pending": False,
@@ -1124,14 +1156,26 @@ def start_poster_scan(
     if synchronous:
         _run_poster_scan_and_maybe_auto_apply(scan, lib_root)
     else:
-        threading.Thread(target=_run_poster_scan_and_maybe_auto_apply, args=(scan, lib_root), daemon=True, name=f"vid2gif-poster-analysis-{scan_id}").start()
+        threading.Thread(
+            target=_run_poster_scan_and_maybe_auto_apply,
+            args=(scan, lib_root),
+            daemon=True,
+            name=f"vid2gif-poster-analysis-{scan_id}",
+        ).start()
     return scan, None
 
 
 def cancel_poster_scan(scan_id=None):
     _ensure_poster_cache_loaded()
     with _poster_scan_lock:
-        scan = poster_scans.get(str(scan_id or "")) if scan_id else next((item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+        scan = (
+            poster_scans.get(str(scan_id or ""))
+            if scan_id
+            else next(
+                (item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}),
+                None,
+            )
+        )
         if not scan:
             return None, "Scan not found"
         if scan.get("status") not in {"success", "failed", "cancelled"}:
@@ -1150,9 +1194,18 @@ def poster_scan_status(scan_id=None):
             if not scan:
                 return None, "Scan not found"
         else:
-            active = next((item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}), None)
+            active = next(
+                (item for item in poster_scans.values() if item.get("status") in {"queued", "running", "cancelling"}),
+                None,
+            )
             successful = [item for item in poster_scans.values() if item.get("status") == "success"]
-            scan = active or (max(successful, key=lambda item: item.get("finished_at") or "") if successful else (max(poster_scans.values(), key=lambda item: item.get("created_at") or "") if poster_scans else None))
+            scan = active or (
+                max(successful, key=lambda item: item.get("finished_at") or "")
+                if successful
+                else (
+                    max(poster_scans.values(), key=lambda item: item.get("created_at") or "") if poster_scans else None
+                )
+            )
     return {"scan": public_poster_scan(scan)}, None
 
 
@@ -1186,13 +1239,12 @@ def poster_items_payload(
             item
             for item in items
             if search
-            in " ".join(
-                str(item.get(key) or "")
-                for key in ("source", "poster", "backup", "message")
-            ).casefold()
+            in " ".join(str(item.get(key) or "") for key in ("source", "poster", "backup", "message")).casefold()
         ]
     items, sort, direction = sort_records(
-        items, sort, direction,
+        items,
+        sort,
+        direction,
         {
             "status": lambda item: item.get("status"),
             "background": lambda item: item.get("source"),
@@ -1202,12 +1254,18 @@ def poster_items_payload(
         "background",
     )
     total = len(items)
-    page = items[offset:offset + limit]
+    page = items[offset : offset + limit]
     return {
-        "scan": public_poster_scan(scan), "offset": offset, "limit": limit,
-        "sort": sort, "direction": direction,
-        "total": total, "count": len(page), "has_previous": offset > 0,
-        "has_next": offset + limit < total, "items": [_public_analysis_item(item) for item in page],
+        "scan": public_poster_scan(scan),
+        "offset": offset,
+        "limit": limit,
+        "sort": sort,
+        "direction": direction,
+        "total": total,
+        "count": len(page),
+        "has_previous": offset > 0,
+        "has_next": offset + limit < total,
+        "items": [_public_analysis_item(item) for item in page],
     }, None
 
 
@@ -1225,23 +1283,12 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
         by_id = {item.get("id"): item for item in scan.get("items") or []}
         selection = payload.get("selection")
         if isinstance(selection, dict):
-            eligible = {
-                item_id for item_id, item in by_id.items()
-                if item_id and item.get("eligible")
-            }
+            eligible = {item_id for item_id, item in by_id.items() if item_id and item.get("eligible")}
             if selection.get("mode") == "all_eligible":
-                excluded = {
-                    str(value or "")
-                    for value in selection.get("excluded_item_ids") or []
-                    if str(value or "")
-                }
+                excluded = {str(value or "") for value in selection.get("excluded_item_ids") or [] if str(value or "")}
                 selected = eligible - excluded
             elif selection.get("mode") == "explicit":
-                selected = {
-                    str(value or "")
-                    for value in selection.get("item_ids") or []
-                    if str(value or "")
-                }
+                selected = {str(value or "") for value in selection.get("item_ids") or [] if str(value or "")}
             else:
                 return None, "Poster selection mode is invalid"
         else:
@@ -1255,7 +1302,11 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
         for item in items:
             candidate = item.get("candidate") or {}
             identities = item.get("identities") or {}
-            for key, path_key in (("background", "background_path"), ("poster", "poster_path"), ("backup", "backup_path")):
+            for key, path_key in (
+                ("background", "background_path"),
+                ("poster", "poster_path"),
+                ("backup", "backup_path"),
+            ):
                 path = candidate.get(path_key)
                 if _file_identity(path) != identities.get(key):
                     return None, "Artwork changed after analysis. Rescan before applying updates."
@@ -1275,13 +1326,43 @@ def build_poster_plan(payload, lib_root=LIB_ROOT):
     }
     with _poster_scan_lock:
         poster_plans[plan_id] = plan
-    return {key: plan.get(key) for key in ("id", "scan_id", "path", "created_at", "file_count", "selected_item_count", "total_actionable_item_count", "emby_item_ids")}, None
+    return {
+        key: plan.get(key)
+        for key in (
+            "id",
+            "scan_id",
+            "path",
+            "created_at",
+            "file_count",
+            "selected_item_count",
+            "total_actionable_item_count",
+            "emby_item_ids",
+        )
+    }, None
 
 
 def public_poster_apply(run):
     if not run:
         return None
-    return {key: run.get(key) for key in ("id", "plan_id", "status", "created_at", "started_at", "finished_at", "progress_percent", "progress_label", "error", "updated_count", "failed_count", "results", "emby_sync", "emby_notification")}
+    return {
+        key: run.get(key)
+        for key in (
+            "id",
+            "plan_id",
+            "status",
+            "created_at",
+            "started_at",
+            "finished_at",
+            "progress_percent",
+            "progress_label",
+            "error",
+            "updated_count",
+            "failed_count",
+            "results",
+            "emby_sync",
+            "emby_notification",
+        )
+    }
 
 
 @coordinated_library_operation(
@@ -1291,7 +1372,13 @@ def public_poster_apply(run):
 )
 def _run_poster_apply(run, plan, lib_root):
     if not _poster_apply_execution_lock.acquire(blocking=False):
-        run.update(status="failed", error="Another poster apply is already active", finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed")
+        run.update(
+            status="failed",
+            error="Another poster apply is already active",
+            finished_at=utc_iso(),
+            progress_percent=100,
+            progress_label="Poster apply failed",
+        )
         return
     results = []
     try:
@@ -1301,14 +1388,29 @@ def _run_poster_apply(run, plan, lib_root):
             identities = item.get("identities") or {}
             stale = any(
                 _file_identity(candidate.get(path_key)) != identities.get(key)
-                for key, path_key in (("background", "background_path"), ("poster", "poster_path"), ("backup", "backup_path"))
+                for key, path_key in (
+                    ("background", "background_path"),
+                    ("poster", "poster_path"),
+                    ("backup", "backup_path"),
+                )
             )
             if stale:
                 status, message = "error", "Artwork changed after review; update skipped"
             else:
                 status, message = _process_candidate(candidate, os.path.realpath(lib_root))
-            results.append({"id": item["id"], "status": status, "message": message, "poster": item["poster"], "emby_item_id": item.get("emby_item_id", "")})
-            run.update(progress_percent=int(100 * index / len(plan["items"])), progress_label=f"Applied {index} of {len(plan['items'])} poster updates")
+            results.append(
+                {
+                    "id": item["id"],
+                    "status": status,
+                    "message": message,
+                    "poster": item["poster"],
+                    "emby_item_id": item.get("emby_item_id", ""),
+                }
+            )
+            run.update(
+                progress_percent=int(100 * index / len(plan["items"])),
+                progress_label=f"Applied {index} of {len(plan['items'])} poster updates",
+            )
         updated = sum(1 for item in results if item["status"] == "updated")
         failed = len(results) - updated
         sync_result = None
@@ -1329,7 +1431,25 @@ def _run_poster_apply(run, plan, lib_root):
                 workflow="posters",
                 run_id=run["id"],
             )
-            impact_metrics.record_maintenance_action(run["id"], "posters", resolutions=[{"issue_id": f"poster:{item['id']}", "stream": "posters", "resolve_all": True, "ensure_issue": True, "label": os.path.basename(item["poster"]), "path": item["poster"]} for item in plan["items"] if any(result["id"] == item["id"] and result["status"] == "updated" for result in results)], operations={"other_files": updated}, timestamp=utc_iso(), label="Landscape poster updates")
+            impact_metrics.record_maintenance_action(
+                run["id"],
+                "posters",
+                resolutions=[
+                    {
+                        "issue_id": f"poster:{item['id']}",
+                        "stream": "posters",
+                        "resolve_all": True,
+                        "ensure_issue": True,
+                        "label": os.path.basename(item["poster"]),
+                        "path": item["poster"],
+                    }
+                    for item in plan["items"]
+                    if any(result["id"] == item["id"] and result["status"] == "updated" for result in results)
+                ],
+                operations={"other_files": updated},
+                timestamp=utc_iso(),
+                label="Landscape poster updates",
+            )
         terminal_status = "success" if not failed else "complete_with_issues"
         notification = emby_notifications.notify_maintenance(
             "Poster updates",
@@ -1340,7 +1460,17 @@ def _run_poster_apply(run, plan, lib_root):
             failed_count=failed,
             emby_sync=sync_result,
         )
-        run.update(status=terminal_status, finished_at=utc_iso(), progress_percent=100, progress_label=f"{updated} posters updated", updated_count=updated, failed_count=failed, results=results, emby_sync=sync_result, emby_notification=notification)
+        run.update(
+            status=terminal_status,
+            finished_at=utc_iso(),
+            progress_percent=100,
+            progress_label=f"{updated} posters updated",
+            updated_count=updated,
+            failed_count=failed,
+            results=results,
+            emby_sync=sync_result,
+            emby_notification=notification,
+        )
     except Exception as exc:
         notification = emby_notifications.notify_maintenance(
             "Poster updates",
@@ -1350,7 +1480,15 @@ def _run_poster_apply(run, plan, lib_root):
             succeeded_count=sum(1 for item in results if item.get("status") == "updated"),
             failed_count=1,
         )
-        run.update(status="failed", error=str(exc), finished_at=utc_iso(), progress_percent=100, progress_label="Poster apply failed", results=results, emby_notification=notification)
+        run.update(
+            status="failed",
+            error=str(exc),
+            finished_at=utc_iso(),
+            progress_percent=100,
+            progress_label="Poster apply failed",
+            results=results,
+            emby_notification=notification,
+        )
     finally:
         _poster_apply_execution_lock.release()
 
@@ -1363,8 +1501,22 @@ def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
         if not plan:
             return None, "Plan not found"
         run_id = _now_id()
-        run = {"id": run_id, "plan_id": plan["id"], "status": "queued", "created_at": utc_iso(), "started_at": None, "finished_at": None, "progress_percent": 0, "progress_label": "Queued", "error": "", "updated_count": 0, "failed_count": 0, "results": []}
+        run = {
+            "id": run_id,
+            "plan_id": plan["id"],
+            "status": "queued",
+            "created_at": utc_iso(),
+            "started_at": None,
+            "finished_at": None,
+            "progress_percent": 0,
+            "progress_label": "Queued",
+            "error": "",
+            "updated_count": 0,
+            "failed_count": 0,
+            "results": [],
+        }
         poster_apply_runs[run_id] = run
+
     def apply_and_refresh():
         _run_poster_apply(run, plan, lib_root)
         try:
@@ -1372,9 +1524,7 @@ def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
             # shared library-operation lease, avoiding a nested-gate deadlock.
             # allow_auto_apply=False stops this verification rescan from
             # triggering another apply cycle.
-            start_poster_scan(
-                plan["path"], synchronous=True, lib_root=lib_root, allow_auto_apply=False
-            )
+            start_poster_scan(plan["path"], synchronous=True, lib_root=lib_root, allow_auto_apply=False)
         except Exception:
             pass
 
@@ -1387,7 +1537,15 @@ def start_poster_apply(plan_id, *, synchronous=False, lib_root=LIB_ROOT):
 
 def poster_apply_status(apply_id=None):
     with _poster_scan_lock:
-        run = poster_apply_runs.get(str(apply_id or "")) if apply_id else (max(poster_apply_runs.values(), key=lambda item: item.get("created_at") or "") if poster_apply_runs else None)
+        run = (
+            poster_apply_runs.get(str(apply_id or ""))
+            if apply_id
+            else (
+                max(poster_apply_runs.values(), key=lambda item: item.get("created_at") or "")
+                if poster_apply_runs
+                else None
+            )
+        )
     if apply_id and not run:
         return None, "Apply run not found"
     return {"apply": public_poster_apply(run)}, None
@@ -1441,12 +1599,7 @@ def _set_run_state(run, **values):
 def _normalize_scan_path(path, lib_root):
     target = str(path or lib_root or "").strip()
     real = resolve_case_insensitive(target)
-    if (
-        not real
-        or not path_is_under(real, lib_root)
-        or not os.path.isdir(real)
-        or os.path.islink(real)
-    ):
+    if not real or not path_is_under(real, lib_root) or not os.path.isdir(real) or os.path.islink(real):
         return None, "Path not found"
     return os.path.realpath(real), None
 
@@ -1480,17 +1633,11 @@ def _scan_and_apply(run, lib_root, settings):  # noqa: C901
 
     for base, dirs, files in os.walk(scan_path, followlinks=False):
         dirs[:] = [
-            d for d in dirs
-            if not os.path.islink(os.path.join(base, d))
-            and not media_scope.is_non_main_video_dir(d)
+            d for d in dirs if not os.path.islink(os.path.join(base, d)) and not media_scope.is_non_main_video_dir(d)
         ]
         rel_folder = os.path.normcase(_relative_path(base, root)).replace(os.sep, "/")
         signature = _folder_signature(base, files)
-        if (
-            mode != "full"
-            and signature
-            and folders.get(rel_folder, {}).get("signature") == signature
-        ):
+        if mode != "full" and signature and folders.get(rel_folder, {}).get("signature") == signature:
             counters["folders_skipped_unchanged"] += 1
             continue
         if not signature:
@@ -1613,11 +1760,7 @@ def test_emby_connection(updates=None, opener=None, persist=True):
         if isinstance(data, dict):
             server_name = data.get("ServerName") or data.get("Name") or ""
             version = data.get("Version") or ""
-            message = (
-                f"Connected to {server_name}"
-                if server_name
-                else "Connected to Emby"
-            )
+            message = f"Connected to {server_name}" if server_name else "Connected to Emby"
             result = emby_client.result(
                 "success",
                 message,
@@ -1721,7 +1864,9 @@ def _execute_run(run, lib_root, settings):
                 for change, candidate in zip(changes, candidates, strict=True):
                     match = emby_catalog.match_paths(catalog, _poster_video_paths({"candidate": candidate}), mappings)
                     if match.get("emby_match_status") == "unmatched":
-                        match = emby_catalog.match_path(catalog, os.path.dirname(candidate.get("poster_path") or ""), mappings)
+                        match = emby_catalog.match_path(
+                            catalog, os.path.dirname(candidate.get("poster_path") or ""), mappings
+                        )
                     change["emby_item_id"] = match.get("emby_item_id", "")
             sync_result = emby_sync.sync_changes(
                 changes,
@@ -1744,8 +1889,7 @@ def _execute_run(run, lib_root, settings):
             status="success",
             finished_at=utc_iso(),
             progress_label=(
-                f"{counters.get('updated', 0)} updated, "
-                f"{counters.get('already_matching', 0)} already matching"
+                f"{counters.get('updated', 0)} updated, {counters.get('already_matching', 0)} already matching"
             ),
             emby_sync=sync_result,
             emby_refresh=sync_result or {},
@@ -1842,11 +1986,7 @@ def _latest_run():
     last_run = manifest.get("last_run")
     with _run_start_lock:
         current = poster_runs.get(_current_run_id) if _current_run_id else None
-        memory_latest = (
-            max(poster_runs.values(), key=lambda run: run.get("created_at") or "")
-            if poster_runs
-            else None
-        )
+        memory_latest = max(poster_runs.values(), key=lambda run: run.get("created_at") or "") if poster_runs else None
     return current, memory_latest or last_run, manifest
 
 

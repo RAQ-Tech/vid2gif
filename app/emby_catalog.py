@@ -46,18 +46,19 @@ def configuration_fingerprint(settings):
     payload = {
         "url": str(settings.get("emby_url") or "").strip().rstrip("/").casefold(),
         "key": hashlib.sha256(str(settings.get("emby_api_key") or "").encode("utf-8")).hexdigest(),
-        "mappings": sorted([
-            {
-                "emby_prefix": normalize_path(item.get("emby_prefix")),
-                "local_prefix": normalize_path(item.get("local_prefix")),
-            }
-            for item in (settings.get("emby_path_mappings") or [])
-            if isinstance(item, dict)
-        ], key=lambda item: (item["emby_prefix"], item["local_prefix"])),
+        "mappings": sorted(
+            [
+                {
+                    "emby_prefix": normalize_path(item.get("emby_prefix")),
+                    "local_prefix": normalize_path(item.get("local_prefix")),
+                }
+                for item in (settings.get("emby_path_mappings") or [])
+                if isinstance(item, dict)
+            ],
+            key=lambda item: (item["emby_prefix"], item["local_prefix"]),
+        ),
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _base_summary(status, message, *, fingerprint="", checked_at=None, server_id="", catalog_count=0):
@@ -214,7 +215,8 @@ def subtitle_streams_for_path(catalog, item_id, local_path, mappings=None):
         top_level = [source for source in matches if not source.get("media_source_id")]
         matches = (
             identified
-            if any(source.get("streams_present") for source in identified) or not any(source.get("streams_present") for source in top_level)
+            if any(source.get("streams_present") for source in identified)
+            or not any(source.get("streams_present") for source in top_level)
             else top_level
         )
     source_ids = {source.get("media_source_id") or source.get("normalized_path") for source in matches}
@@ -251,9 +253,7 @@ def load_catalog(settings, *, force=False, opener=None, before_page=None, now=No
             if cached and cached[0] > now:
                 return cached[1], dict(cached[2])
 
-    info, info_result = emby_client.request_json(
-        settings, "/System/Info", opener=opener, timeout=15
-    )
+    info, info_result = emby_client.request_json(settings, "/System/Info", opener=opener, timeout=15)
     if info_result.get("status") != "success" or not isinstance(info, dict):
         message = info_result.get("message") or "Emby system information is unavailable."
         if info_result.get("status") == "success" and not isinstance(info, dict):
@@ -320,7 +320,7 @@ def mapped_emby_paths(local_path, mappings):
         emby_prefix = normalize_path(mapping.get("emby_prefix"))
         if not local_prefix or not emby_prefix or not _path_has_prefix(local, local_prefix):
             continue
-        remainder = local[len(local_prefix):].lstrip("/")
+        remainder = local[len(local_prefix) :].lstrip("/")
         mapped = emby_prefix + (("/" + remainder) if remainder else "")
         candidates.append((len(emby_prefix), len(local_prefix), mapped))
     if not candidates:
@@ -339,7 +339,7 @@ def mapped_local_paths(emby_path, mappings):
         local_prefix = str(mapping.get("local_prefix") or "").rstrip("/\\")
         if not emby_prefix or not local_prefix or not _path_has_prefix(emby, emby_prefix):
             continue
-        remainder = emby[len(emby_prefix):].lstrip("/")
+        remainder = emby[len(emby_prefix) :].lstrip("/")
         mapped = local_prefix + (("/" + remainder) if remainder else "")
         candidates.append((len(emby_prefix), mapped))
     if not candidates:

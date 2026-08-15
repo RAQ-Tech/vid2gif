@@ -98,9 +98,7 @@ def test_state_backup_redacts_stored_credentials(tmp_path):
         encoding="utf-8",
     )
     # The atomic settings writer keeps a .bak alongside the live file.
-    (state / "app_settings.json.bak").write_text(
-        json.dumps({"emby_api_key": "older-secret-key"}), encoding="utf-8"
-    )
+    (state / "app_settings.json.bak").write_text(json.dumps({"emby_api_key": "older-secret-key"}), encoding="utf-8")
     # Legacy location that still held the key before the settings migration.
     (legacy / "settings.json").write_text(
         json.dumps({"enabled": True, "emby_api_key": "legacy-secret-key"}),
@@ -111,9 +109,7 @@ def test_state_backup_redacts_stored_credentials(tmp_path):
     archive_path, backup = system_status.create_state_backup(str(state))
     try:
         with zipfile.ZipFile(archive_path) as archive:
-            blob = b"\n".join(
-                archive.read(name) for name in archive.namelist() if name.endswith(".json")
-            )
+            blob = b"\n".join(archive.read(name) for name in archive.namelist() if name.endswith(".json"))
             assert b"super-secret-key" not in blob
             assert b"older-secret-key" not in blob
             assert b"legacy-secret-key" not in blob
@@ -125,9 +121,7 @@ def test_state_backup_redacts_stored_credentials(tmp_path):
             assert settings["duplicate_keeper_rule"] == "quality"
 
             assert json.loads(archive.read("state/app_settings.json.bak"))["emby_api_key"] == ""
-            assert json.loads(
-                archive.read("state/landscape-posters/settings.json")
-            )["emby_api_key"] == ""
+            assert json.loads(archive.read("state/landscape-posters/settings.json"))["emby_api_key"] == ""
 
             manifest = json.loads(archive.read("vid2gif-backup.json"))
             assert set(manifest["redacted"]) == {

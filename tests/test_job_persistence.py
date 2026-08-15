@@ -69,9 +69,7 @@ def test_restore_requeues_queued_jobs_and_marks_running_job_interrupted(monkeypa
     assert jobs.job_queue.unfinished_tasks == 1
     assert jobs.jobs["queued"]["restored"] is True
     assert jobs.jobs["queued"]["log_path"] == str(log_dir / "queued.txt")
-    assert os.path.commonpath(
-        [jobs.jobs["queued"]["tmp_dir"], str(process_root)]
-    ) == str(process_root)
+    assert os.path.commonpath([jobs.jobs["queued"]["tmp_dir"], str(process_root)]) == str(process_root)
     assert jobs.jobs["running"]["status"] == "interrupted"
     assert "restart" in jobs.jobs["running"]["progress_label"].lower()
     assert not os.path.exists(running["tmp_dir"])

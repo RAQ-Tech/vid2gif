@@ -62,28 +62,17 @@ def regular_file_identity(path, *, root=None, allowed_extensions=None):
     return {
         "real_path": os.path.normcase(os.path.realpath(path)),
         "size": value.st_size,
-        "mtime_ns": getattr(
-            value, "st_mtime_ns", int(value.st_mtime * 1_000_000_000)
-        ),
-        "ctime_ns": getattr(
-            value, "st_ctime_ns", int(value.st_ctime * 1_000_000_000)
-        ),
+        "mtime_ns": getattr(value, "st_mtime_ns", int(value.st_mtime * 1_000_000_000)),
+        "ctime_ns": getattr(value, "st_ctime_ns", int(value.st_ctime * 1_000_000_000)),
         "inode": getattr(value, "st_ino", 0),
         "device": getattr(value, "st_dev", 0),
     }
 
 
 def identity_matches(path, expected, *, root=None, allowed_extensions=None):
-    current = regular_file_identity(
-        path, root=root, allowed_extensions=allowed_extensions
-    )
+    current = regular_file_identity(path, root=root, allowed_extensions=allowed_extensions)
     keys = [key for key in IDENTITY_KEYS if isinstance(expected, dict) and key in expected]
-    return bool(
-        current
-        and expected
-        and len(keys) >= 2
-        and all(current.get(key) == expected.get(key) for key in keys)
-    )
+    return bool(current and expected and len(keys) >= 2 and all(current.get(key) == expected.get(key) for key in keys))
 
 
 def target_state(path, *, root=None):
@@ -92,11 +81,7 @@ def target_state(path, *, root=None):
     if not path:
         raise FileSafetyError("Destination path is missing")
     parent = os.path.dirname(path)
-    if (
-        not parent
-        or not os.path.isdir(parent)
-        or path_has_symlink_component(parent, root=root)
-    ):
+    if not parent or not os.path.isdir(parent) or path_has_symlink_component(parent, root=root):
         raise FileSafetyError("Destination directory is unsafe")
     if root and (not path_is_under(parent, root) or not path_is_under(path, root)):
         raise FileSafetyError("Destination is outside the allowed root")
@@ -159,9 +144,7 @@ def atomic_install_file(  # noqa: C901
 
     parent = os.path.dirname(target)
     basename = os.path.basename(target)
-    tmp_path = os.path.join(
-        parent, f".{basename}.vid2gif-{os.getpid()}-{uuid.uuid4().hex}.tmp"
-    )
+    tmp_path = os.path.join(parent, f".{basename}.vid2gif-{os.getpid()}-{uuid.uuid4().hex}.tmp")
     mode = default_mode
     if expected_target.get("exists"):
         try:
@@ -251,9 +234,7 @@ def atomic_quarantine_file(
             same_file = False
         current = regular_file_identity(source, root=root)
         stable_keys = ("real_path", "size", "mtime_ns", "inode", "device")
-        if not same_file or not current or any(
-            current.get(key) != source_identity.get(key) for key in stable_keys
-        ):
+        if not same_file or not current or any(current.get(key) != source_identity.get(key) for key in stable_keys):
             raise FileSafetyError("Source changed during quarantine")
 
         os.unlink(source)

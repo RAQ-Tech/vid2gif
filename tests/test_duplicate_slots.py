@@ -44,20 +44,26 @@ def _quality(coverage, status="complete", last=None):
 
 
 def test_best_subtitle_is_borrowed_from_a_losing_copy(monkeypatch):
-    keeper = _video("v1", "Movie [WEBDL-2160p]", accessories=[
-        _accessory("s1", "Movie [WEBDL-2160p]", ".eng.srt", "subtitle", size=100),
-    ])
-    other = _video("v2", "Movie [BluRay-1080p]", accessories=[
-        _accessory("s2", "Movie [BluRay-1080p]", ".eng.srt", "subtitle", size=200),
-    ])
+    keeper = _video(
+        "v1",
+        "Movie [WEBDL-2160p]",
+        accessories=[
+            _accessory("s1", "Movie [WEBDL-2160p]", ".eng.srt", "subtitle", size=100),
+        ],
+    )
+    other = _video(
+        "v2",
+        "Movie [BluRay-1080p]",
+        accessories=[
+            _accessory("s2", "Movie [BluRay-1080p]", ".eng.srt", "subtitle", size=200),
+        ],
+    )
     coverage = {"s1": _quality(61.0, last=2200.0), "s2": _quality(98.0, last=3550.0)}
 
     def analyze(path, duration):
         return coverage["s1" if "2160p" in path else "s2"]
 
-    slots = duplicate_slots.resolve_group_slots(
-        [keeper, other], keeper, analyze_subtitle=analyze
-    )
+    slots = duplicate_slots.resolve_group_slots([keeper, other], keeper, analyze_subtitle=analyze)
     slot = _slot(slots, "subtitle:.eng.srt")
 
     assert slot["winner_file_id"] == "s2"
@@ -71,12 +77,22 @@ def test_best_subtitle_is_borrowed_from_a_losing_copy(monkeypatch):
 
 def test_subtitle_running_past_the_keeper_is_passed_over_and_flagged(monkeypatch):
     """A subtitle from a longer cut must not win just because it covers more."""
-    keeper = _video("v1", "Movie short", duration=3000.0, accessories=[
-        _accessory("s1", "Movie short", ".eng.srt", "subtitle", size=100),
-    ])
-    longer = _video("v2", "Movie long", duration=3600.0, accessories=[
-        _accessory("s2", "Movie long", ".eng.srt", "subtitle", size=200),
-    ])
+    keeper = _video(
+        "v1",
+        "Movie short",
+        duration=3000.0,
+        accessories=[
+            _accessory("s1", "Movie short", ".eng.srt", "subtitle", size=100),
+        ],
+    )
+    longer = _video(
+        "v2",
+        "Movie long",
+        duration=3600.0,
+        accessories=[
+            _accessory("s2", "Movie long", ".eng.srt", "subtitle", size=200),
+        ],
+    )
     # s2's timestamps run 500s past the keeper's runtime.
     coverage = {
         "s1": _quality(97.0, status="complete", last=2950.0),
@@ -87,9 +103,7 @@ def test_subtitle_running_past_the_keeper_is_passed_over_and_flagged(monkeypatch
         assert duration == 3000.0, "candidates must be judged against the keeper"
         return coverage["s1" if "short" in path else "s2"]
 
-    slots = duplicate_slots.resolve_group_slots(
-        [keeper, longer], keeper, analyze_subtitle=analyze
-    )
+    slots = duplicate_slots.resolve_group_slots([keeper, longer], keeper, analyze_subtitle=analyze)
     slot = _slot(slots, "subtitle:.eng.srt")
 
     assert slot["winner_file_id"] == "s1"
@@ -100,16 +114,19 @@ def test_subtitle_running_past_the_keeper_is_passed_over_and_flagged(monkeypatch
 
 def test_only_subtitle_available_flags_when_it_overruns_the_keeper():
     keeper = _video("v1", "Movie short", duration=3000.0)
-    longer = _video("v2", "Movie long", duration=3600.0, accessories=[
-        _accessory("s2", "Movie long", ".eng.srt", "subtitle"),
-    ])
+    longer = _video(
+        "v2",
+        "Movie long",
+        duration=3600.0,
+        accessories=[
+            _accessory("s2", "Movie long", ".eng.srt", "subtitle"),
+        ],
+    )
 
     slots = duplicate_slots.resolve_group_slots(
         [keeper, longer],
         keeper,
-        analyze_subtitle=lambda path, duration: _quality(
-            116.0, status="timing_review", last=3500.0
-        ),
+        analyze_subtitle=lambda path, duration: _quality(116.0, status="timing_review", last=3500.0),
     )
     slot = _slot(slots, "subtitle:.eng.srt")
 
@@ -121,9 +138,14 @@ def test_only_subtitle_available_flags_when_it_overruns_the_keeper():
 def test_single_subtitle_matching_the_keeper_is_adopted_without_a_flag():
     """The runtime check must not flag a lone subtitle that actually fits."""
     keeper = _video("v1", "movie", duration=3000.0)
-    copy_one = _video("v2", "movie(1)", duration=3000.0, accessories=[
-        _accessory("s2", "movie(1)", ".eng.srt", "subtitle"),
-    ])
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        duration=3000.0,
+        accessories=[
+            _accessory("s2", "movie(1)", ".eng.srt", "subtitle"),
+        ],
+    )
 
     slots = duplicate_slots.resolve_group_slots(
         [keeper, copy_one],
@@ -142,9 +164,13 @@ def test_single_subtitle_matching_the_keeper_is_adopted_without_a_flag():
 def test_orphan_sidecar_is_kept_and_renamed_onto_the_keeper_stem():
     """movie.mkv has no background; a copy's background is adopted and renamed."""
     keeper = _video("v1", "movie")
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("b1", "movie(1)", "-background.png", "background", size=500),
-    ])
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("b1", "movie(1)", "-background.png", "background", size=500),
+        ],
+    )
 
     slots = duplicate_slots.resolve_group_slots(
         [keeper, copy_one], keeper, probe_image=lambda path: {"width": 1920, "height": 1080}
@@ -159,12 +185,20 @@ def test_orphan_sidecar_is_kept_and_renamed_onto_the_keeper_stem():
 
 
 def test_identical_sidecars_prefer_the_keeper_without_flagging():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("n1", "movie", ".nfo", "nfo", size=400),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("n2", "movie(1)", ".nfo", "nfo", size=400),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("n1", "movie", ".nfo", "nfo", size=400),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("n2", "movie(1)", ".nfo", "nfo", size=400),
+        ],
+    )
 
     slots = duplicate_slots.resolve_group_slots([keeper, copy_one], keeper)
     slot = _slot(slots, "nfo:.nfo")
@@ -177,12 +211,20 @@ def test_identical_sidecars_prefer_the_keeper_without_flagging():
 
 
 def test_highest_resolution_image_wins_across_copies():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("p1", "movie", "-poster.jpg", "poster", size=100),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=90),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("p1", "movie", "-poster.jpg", "poster", size=100),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=90),
+        ],
+    )
     sizes = {"p1": (1000, 1500), "p2": (3000, 2000)}
 
     def probe(path):
@@ -198,19 +240,23 @@ def test_highest_resolution_image_wins_across_copies():
 
 
 def test_images_within_the_close_margin_are_flagged_for_review():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("p1", "movie", "-poster.jpg", "poster", size=100),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=90),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("p1", "movie", "-poster.jpg", "poster", size=100),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=90),
+        ],
+    )
 
     def probe(path):
-        return (
-            {"width": 1000, "height": 1000}
-            if path.endswith("movie-poster.jpg")
-            else {"width": 1010, "height": 1000}
-        )
+        return {"width": 1000, "height": 1000} if path.endswith("movie-poster.jpg") else {"width": 1010, "height": 1000}
 
     slots = duplicate_slots.resolve_group_slots([keeper, copy_one], keeper, probe_image=probe)
     slot = _slot(slots, "poster:-poster.jpg")
@@ -220,12 +266,22 @@ def test_images_within_the_close_margin_are_flagged_for_review():
 
 
 def test_bif_matching_the_keeper_runtime_beats_a_wider_mismatched_one():
-    keeper = _video("v1", "movie", duration=3600.0, accessories=[
-        _accessory("f1", "movie", ".bif", "bif", size=100),
-    ])
-    copy_one = _video("v2", "movie(1)", duration=1800.0, accessories=[
-        _accessory("f2", "movie(1)", ".bif", "bif", size=200),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        duration=3600.0,
+        accessories=[
+            _accessory("f1", "movie", ".bif", "bif", size=100),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        duration=1800.0,
+        accessories=[
+            _accessory("f2", "movie(1)", ".bif", "bif", size=200),
+        ],
+    )
     # f2 has wider frames but only covers half the keeper's runtime.
     info = {
         "f1": {"frame_count": 360, "width": 180, "interval_seconds": 10},
@@ -244,12 +300,20 @@ def test_bif_matching_the_keeper_runtime_beats_a_wider_mismatched_one():
 
 
 def test_unknown_sidecars_are_left_alone_and_flagged():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("u1", "movie", ".weird", "unknown", size=10),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("u2", "movie(1)", ".weird", "unknown", size=20),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("u1", "movie", ".weird", "unknown", size=10),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("u2", "movie(1)", ".weird", "unknown", size=20),
+        ],
+    )
 
     slots = duplicate_slots.resolve_group_slots([keeper, copy_one], keeper)
     slot = _slot(slots, "unknown:.weird")
@@ -261,20 +325,24 @@ def test_unknown_sidecars_are_left_alone_and_flagged():
 
 
 def test_summary_reports_the_mix_of_source_copies():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("p1", "movie", "-poster.jpg", "poster", size=100),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=90),
-        _accessory("b2", "movie(1)", "-background.png", "background", size=90),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("p1", "movie", "-poster.jpg", "poster", size=100),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=90),
+            _accessory("b2", "movie(1)", "-background.png", "background", size=90),
+        ],
+    )
 
     def probe(path):
-        return (
-            {"width": 100, "height": 100}
-            if path.endswith("movie-poster.jpg")
-            else {"width": 4000, "height": 4000}
-        )
+        return {"width": 100, "height": 100} if path.endswith("movie-poster.jpg") else {"width": 4000, "height": 4000}
 
     slots = duplicate_slots.resolve_group_slots([keeper, copy_one], keeper, probe_image=probe)
     summary = duplicate_slots.slot_summary(slots)
@@ -286,20 +354,26 @@ def test_summary_reports_the_mix_of_source_copies():
 
 
 def test_settings_can_widen_the_subtitle_tie_margin():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("s1", "movie", ".eng.srt", "subtitle", size=100),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=200),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("s1", "movie", ".eng.srt", "subtitle", size=100),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=200),
+        ],
+    )
     coverage = {"s1": _quality(80.0, last=100.0), "s2": _quality(90.0, last=100.0)}
 
     def analyze(path, duration):
         return coverage["s1" if path.endswith("movie.eng.srt") else "s2"]
 
-    tight = duplicate_slots.resolve_group_slots(
-        [keeper, copy_one], keeper, analyze_subtitle=analyze
-    )
+    tight = duplicate_slots.resolve_group_slots([keeper, copy_one], keeper, analyze_subtitle=analyze)
     # 10 points apart: not close by default (8), close once the margin is 20.
     assert _slot(tight, "subtitle:.eng.srt")["needs_review"] is False
 
@@ -314,12 +388,20 @@ def test_settings_can_widen_the_subtitle_tie_margin():
 
 def test_unreadable_subtitles_are_not_borrowed_on_file_size_alone():
     """Borrowing needs evidence; a bigger unparseable file is not evidence."""
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("s1", "movie", ".eng.srt", "subtitle", size=6),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=900),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("s1", "movie", ".eng.srt", "subtitle", size=6),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=900),
+        ],
+    )
 
     slots = duplicate_slots.resolve_group_slots(
         [keeper, copy_one],
@@ -336,16 +418,22 @@ def test_unreadable_subtitles_are_not_borrowed_on_file_size_alone():
 
 
 def test_unmeasurable_images_are_not_borrowed_on_file_size_alone():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("p1", "movie", "-poster.jpg", "poster", size=10),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=5000),
-    ])
-
-    slots = duplicate_slots.resolve_group_slots(
-        [keeper, copy_one], keeper, probe_image=lambda path: None
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("p1", "movie", "-poster.jpg", "poster", size=10),
+        ],
     )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("p2", "movie(1)", "-poster.jpg", "poster", size=5000),
+        ],
+    )
+
+    slots = duplicate_slots.resolve_group_slots([keeper, copy_one], keeper, probe_image=lambda path: None)
     slot = _slot(slots, "poster:-poster.jpg")
 
     assert slot["winner_file_id"] == "p1"
@@ -354,12 +442,20 @@ def test_unmeasurable_images_are_not_borrowed_on_file_size_alone():
 
 
 def test_a_measurable_candidate_still_wins_over_an_unreadable_one():
-    keeper = _video("v1", "movie", accessories=[
-        _accessory("s1", "movie", ".eng.srt", "subtitle", size=100),
-    ])
-    copy_one = _video("v2", "movie(1)", accessories=[
-        _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=200),
-    ])
+    keeper = _video(
+        "v1",
+        "movie",
+        accessories=[
+            _accessory("s1", "movie", ".eng.srt", "subtitle", size=100),
+        ],
+    )
+    copy_one = _video(
+        "v2",
+        "movie(1)",
+        accessories=[
+            _accessory("s2", "movie(1)", ".eng.srt", "subtitle", size=200),
+        ],
+    )
     results = {
         "s1": _quality(None, status="invalid"),
         "s2": _quality(96.0, status="complete", last=3400.0),
@@ -368,9 +464,7 @@ def test_a_measurable_candidate_still_wins_over_an_unreadable_one():
     slots = duplicate_slots.resolve_group_slots(
         [keeper, copy_one],
         keeper,
-        analyze_subtitle=lambda path, duration: results[
-            "s1" if path.endswith("movie.eng.srt") else "s2"
-        ],
+        analyze_subtitle=lambda path, duration: results["s1" if path.endswith("movie.eng.srt") else "s2"],
     )
     slot = _slot(slots, "subtitle:.eng.srt")
 

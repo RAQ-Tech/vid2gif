@@ -63,16 +63,13 @@ def test_duplicate_name_normalization_removes_quality_tags():
     assert maintenance.normalize_duplicate_name("Movie 2024 [WEBDL-2160p]") == "movie 2024"
     assert maintenance.normalize_duplicate_name("Movie (2024) [WEBDL-2160p]") == "movie 2024"
     assert maintenance.normalize_duplicate_name("Movie 2 [WEBDL-2160p]") == "movie 2"
-    assert (
-        maintenance.normalize_duplicate_name("Show.S01E01.1080p")
-        != maintenance.normalize_duplicate_name("Show.S01E02.1080p")
+    assert maintenance.normalize_duplicate_name("Show.S01E01.1080p") != maintenance.normalize_duplicate_name(
+        "Show.S01E02.1080p"
     )
 
 
 @pytest.mark.parametrize("grouping_mode", ["balanced", "strict", "folder"])
-def test_duplicate_scan_protects_same_title_distinct_releases(
-    monkeypatch, tmp_path, grouping_mode
-):
+def test_duplicate_scan_protects_same_title_distinct_releases(monkeypatch, tmp_path, grouping_mode):
     lib = tmp_path / "library"
     folder = lib / "Studio" / "Shared Title"
     metadata = {}
@@ -85,7 +82,7 @@ def test_duplicate_scan_protects_same_title_distinct_releases(
             video.with_suffix(".nfo"),
             (
                 "<movie><title>Shared Title</title><studio>Studio</studio>"
-                f"<premiered>{date}</premiered><uniqueid type=\"provider\">release-{index}</uniqueid></movie>"
+                f'<premiered>{date}</premiered><uniqueid type="provider">release-{index}</uniqueid></movie>'
             ).encode("utf-8"),
         )
         metadata[video.name] = {"width": 3840, "height": 2160, "duration_seconds": duration}
@@ -170,8 +167,7 @@ def test_duplicate_scan_groups_four_copy_suffixes_together(monkeypatch, tmp_path
     assert len(scan["groups"]) == 1
     assert len(scan["groups"][0]["videos"]) == 4
     keeper = next(
-        video for video in scan["groups"][0]["videos"]
-        if video["id"] == scan["groups"][0]["recommended_keep_id"]
+        video for video in scan["groups"][0]["videos"] if video["id"] == scan["groups"][0]["recommended_keep_id"]
     )
     assert keeper["name"] == "Movie [WEBDL-2160p].mp4"
 
@@ -211,11 +207,7 @@ def test_duplicate_group_shows_all_folder_files_as_locked_context(monkeypatch, t
     assert all(item["default_operation"] == "keep" for item in public_group["folder_files"])
     assert all(item["default_selected"] is False for item in public_group["folder_files"])
     assert next(item for item in public_group["folder_files"] if item["name"] == ".posters_done")["role"] == "marker"
-    assert matching_sidecar.name in {
-        item["name"]
-        for video in public_group["videos"]
-        for item in video["accessories"]
-    }
+    assert matching_sidecar.name in {item["name"] for video in public_group["videos"] for item in video["accessories"]}
     assert all("created_at" in item and "created_at_source" in item for item in public_group["folder_files"])
 
     plan, plan_err = maintenance.build_duplicate_cleanup_plan(
@@ -270,9 +262,7 @@ def test_group_projection_reselects_copy_when_keeper_changes(monkeypatch, tmp_pa
     assert projected_srt["default_selected"] is True
 
 
-def test_duplicate_cleanup_preserves_best_srt_renames_it_and_removes_resolved_group(
-    monkeypatch, tmp_path
-):
+def test_duplicate_cleanup_preserves_best_srt_renames_it_and_removes_resolved_group(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
     keep = _write(movie / "Movie [WEBDL-2160p].mkv", b"4k video")
@@ -319,9 +309,7 @@ def test_duplicate_cleanup_preserves_best_srt_renames_it_and_removes_resolved_gr
     group = scan["groups"][0]
     public_group = maintenance.group_payload(scan["id"], group["id"])[0]["group"]
     by_path = {
-        accessory["path"]: accessory
-        for video in group["videos"]
-        for accessory in video.get("accessories") or []
+        accessory["path"]: accessory for video in group["videos"] for accessory in video.get("accessories") or []
     }
 
     assert by_path[str(incomplete)]["default_operation"] == "move"
@@ -437,11 +425,7 @@ def test_duplicate_scan_groups_same_folder_matches_and_ranks_quality(monkeypatch
     assert group["recommended_keep_id"] == maintenance._path_id(str(keep), str(lib))
     removed_video = next(video for video in group["videos"] if video["path"] == str(remove))
     assert [item["path"] for item in removed_video["accessories"]] == [str(sidecar)]
-    assert str(folder_poster) not in [
-        item["path"]
-        for video in group["videos"]
-        for item in video["accessories"]
-    ]
+    assert str(folder_poster) not in [item["path"] for video in group["videos"] for item in video["accessories"]]
 
 
 def test_quarantine_destination_preserves_library_relative_path(tmp_path):
@@ -516,9 +500,7 @@ def test_cleanup_plan_moves_duplicate_video_and_renames_unmatched_accessory(monk
     assert str(quarantine) not in {item["local_path"] for item in changes}
 
 
-def test_copy_marked_keeper_is_canonicalized_and_cleanup_restores_without_overwrite(
-    monkeypatch, tmp_path
-):
+def test_copy_marked_keeper_is_canonicalized_and_cleanup_restores_without_overwrite(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
     log_dir = tmp_path / "state" / "duplicate-logs"
@@ -566,9 +548,7 @@ def test_copy_marked_keeper_is_canonicalized_and_cleanup_restores_without_overwr
     # A user-created file now occupies the old copy name. Restore must retain it
     # and adjust the keeper's destination rather than overwrite anything.
     manual = _write(copy_keeper, b"manual file")
-    restore_plan, restore_err = maintenance.build_duplicate_restore_plan(
-        result["log"]["id"], lib_root=str(lib)
-    )
+    restore_plan, restore_err = maintenance.build_duplicate_restore_plan(result["log"]["id"], lib_root=str(lib))
     assert restore_err is None
     assert restore_plan["collision_adjusted_count"] == 1
 
@@ -585,9 +565,7 @@ def test_copy_marked_keeper_is_canonicalized_and_cleanup_restores_without_overwr
     assert logs[0]["restored_count"] == 3
 
 
-def test_copy_keeper_canonicalization_preserves_best_existing_canonical_subtitle(
-    monkeypatch, tmp_path
-):
+def test_copy_keeper_canonicalization_preserves_best_existing_canonical_subtitle(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     movie = lib / "Movie"
     original = _write(movie / "Movie [WEBDL-1080p].mkv", b"original")
@@ -849,8 +827,7 @@ def test_duplicate_cleanup_defers_active_group_and_applies_clear_group(monkeypat
 
     def playback(targets, **kwargs):
         statuses = {
-            target["id"]: ("active" if "First" in target.get("local_path", "") else "clear")
-            for target in targets
+            target["id"]: ("active" if "First" in target.get("local_path", "") else "clear") for target in targets
         }
         active_count = sum(value == "active" for value in statuses.values())
         return {
@@ -873,14 +850,15 @@ def test_duplicate_cleanup_defers_active_group_and_applies_clear_group(monkeypat
     monkeypatch.setattr(
         maintenance.emby_sync,
         "sync_changes",
-        lambda changes, **kwargs: sync_calls.append(changes)
-        or {"id": "sync", "status": "success", "retryable": False},
+        lambda changes, **kwargs: sync_calls.append(changes) or {"id": "sync", "status": "success", "retryable": False},
     )
     monkeypatch.setattr(
         maintenance.emby_notifications,
         "notify_maintenance",
-        lambda *args, **kwargs: notification_calls.append((args, kwargs))
-        or {"id": "notice", "status": "failed", "message": "notification unavailable"},
+        lambda *args, **kwargs: (
+            notification_calls.append((args, kwargs))
+            or {"id": "notice", "status": "failed", "message": "notification unavailable"}
+        ),
     )
     plan, err = maintenance.build_duplicate_cleanup_plan(
         {
@@ -1138,9 +1116,7 @@ def test_unrelated_folder_change_does_not_block_selected_group(monkeypatch, tmp_
     assert plan["file_count"] == 1
 
 
-def test_targeted_refresh_rebuilds_changed_folder_and_marks_saved_review_stale(
-    monkeypatch, tmp_path
-):
+def test_targeted_refresh_rebuilds_changed_folder_and_marks_saved_review_stale(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     state = tmp_path / "state"
     _write_duplicate_pair(lib, "Movie")
@@ -1151,9 +1127,7 @@ def test_targeted_refresh_rebuilds_changed_folder_and_marks_saved_review_stale(
     _write(lib / "Movie" / "clearlogo.png", b"logo")
     _write(lib / "Movie" / "Movie.720p.en.srt", b"new subtitle")
 
-    run, error = maintenance.start_duplicate_refresh(
-        scan["id"], [group["id"]], synchronous=True
-    )
+    run, error = maintenance.start_duplicate_refresh(scan["id"], [group["id"]], synchronous=True)
     refreshed_group = maintenance.duplicate_scans[scan["id"]]["groups"][0]
     draft = maintenance.review_draft_payload(scan["id"])[0]["review_draft"]
 
@@ -1173,9 +1147,7 @@ def test_targeted_refresh_rebuilds_changed_folder_and_marks_saved_review_stale(
     assert new_subtitle["id"] in draft["groups"][group["id"]]["include_file_ids"]
 
 
-def test_review_draft_survives_rescan_and_requires_acceptance_after_folder_change(
-    monkeypatch, tmp_path
-):
+def test_review_draft_survives_rescan_and_requires_acceptance_after_folder_change(monkeypatch, tmp_path):
     lib = tmp_path / "library"
     state = tmp_path / "state"
     keep, remove = _write_duplicate_pair(lib, "Movie")
@@ -1807,7 +1779,7 @@ def test_maintenance_page_and_static_assets_render():
 
     res = client.get("/maintenance")
     html = res.get_data(as_text=True)
-    base = (routes.app.root_path and (os.path.dirname(routes.app.root_path)))
+    base = routes.app.root_path and (os.path.dirname(routes.app.root_path))
     script_path = os.path.join(base, "app", "static", "maintenance.js")
     script = open(script_path, encoding="utf-8").read()
 
@@ -1841,7 +1813,7 @@ def test_maintenance_page_and_static_assets_render():
     assert 'id="duplicateReviewSummary"' in html
     assert 'id="duplicateSelectAllCheckbox"' in html
     assert 'id="duplicateTogglePageButton"' in html
-    assert 'data-maint-keep=' in script
+    assert "data-maint-keep=" in script
     assert 'id="maintenanceRestoreSummary"' in html
     assert 'id="duplicateReviewFilter"' in html
     assert 'id="duplicatePageLimit"' in html
@@ -1918,9 +1890,7 @@ def test_duplicate_scan_enriches_video_ids_and_carries_them_into_plan(monkeypatc
 
 def test_legacy_duplicate_scan_projects_emby_identity_as_not_checked(monkeypatch):
     _reset_maintenance(monkeypatch)
-    public = maintenance.public_scan(
-        {"id": "legacy", "status": "success", "groups": [], "settings": {}}
-    )
+    public = maintenance.public_scan({"id": "legacy", "status": "success", "groups": [], "settings": {}})
 
     assert public["emby_mapping"]["status"] == "not_checked"
     assert "rescan" in public["emby_mapping"]["message"].lower()
@@ -1941,9 +1911,7 @@ def test_scan_attaches_resolved_slots_to_each_group(monkeypatch, tmp_path):
     slot_keys = {slot["slot_key"] for slot in group["slots"]}
     assert "background:-background.png" in slot_keys
 
-    background = next(
-        slot for slot in group["slots"] if slot["slot_key"] == "background:-background.png"
-    )
+    background = next(slot for slot in group["slots"] if slot["slot_key"] == "background:-background.png")
     # The orphan sidecar is adopted and renamed onto the surviving stem.
     assert background["borrowed"] is True
     assert os.path.basename(background["destination_path"]) == "Movie.1080p-background.png"
@@ -2027,9 +1995,7 @@ def test_a_single_file_can_be_restored_without_unwinding_the_run(monkeypatch, tm
     payload, _err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
     target = next(item for item in payload["items"] if item["original_name"] == first.name)
 
-    plan, err = maintenance.build_duplicate_restore_plan(
-        log_id, lib_root=str(lib), file_ids=[target["file_id"]]
-    )
+    plan, err = maintenance.build_duplicate_restore_plan(log_id, lib_root=str(lib), file_ids=[target["file_id"]])
     assert err is None
     assert plan["file_count"] == 1
     assert plan["partial"] is True
@@ -2049,9 +2015,7 @@ def test_the_rest_of_a_run_stays_restorable_after_a_partial_restore(monkeypatch,
     payload, _err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
     first_item = next(item for item in payload["items"] if item["original_name"] == first.name)
 
-    plan, _err = maintenance.build_duplicate_restore_plan(
-        log_id, lib_root=str(lib), file_ids=[first_item["file_id"]]
-    )
+    plan, _err = maintenance.build_duplicate_restore_plan(log_id, lib_root=str(lib), file_ids=[first_item["file_id"]])
     maintenance.apply_duplicate_restore_plan(plan["id"])
 
     after = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))[0]
@@ -2082,14 +2046,10 @@ def test_an_already_restored_file_is_not_offered_again(monkeypatch, tmp_path):
     payload, _err = maintenance.duplicate_cleanup_log_items(log_id, lib_root=str(lib))
     target = next(item for item in payload["items"] if item["original_name"] == first.name)
 
-    plan, _err = maintenance.build_duplicate_restore_plan(
-        log_id, lib_root=str(lib), file_ids=[target["file_id"]]
-    )
+    plan, _err = maintenance.build_duplicate_restore_plan(log_id, lib_root=str(lib), file_ids=[target["file_id"]])
     maintenance.apply_duplicate_restore_plan(plan["id"])
 
-    again, err = maintenance.build_duplicate_restore_plan(
-        log_id, lib_root=str(lib), file_ids=[target["file_id"]]
-    )
+    again, err = maintenance.build_duplicate_restore_plan(log_id, lib_root=str(lib), file_ids=[target["file_id"]])
     assert again is None
     assert err == "None of the selected files are still restorable"
 
@@ -2104,16 +2064,26 @@ def test_restore_records_survive_the_informational_log_size_cap(monkeypatch, tmp
 
     records = []
     for index in range(6):
-        records.append({
-            "type": "file", "result": "applied", "operation": "move",
-            "file_id": f"keep-{index}", "old_path": f"/library/Movie/old-{index}.mkv",
-            "new_path": f"/library/.vid2gif-duplicates/old-{index}.mkv", "size_bytes": 10,
-        })
+        records.append(
+            {
+                "type": "file",
+                "result": "applied",
+                "operation": "move",
+                "file_id": f"keep-{index}",
+                "old_path": f"/library/Movie/old-{index}.mkv",
+                "new_path": f"/library/.vid2gif-duplicates/old-{index}.mkv",
+                "size_bytes": 10,
+            }
+        )
     for index in range(200):
-        records.append({
-            "type": "file", "result": "refused", "file_id": f"noise-{index}",
-            "reason": "padding to overflow the informational budget",
-        })
+        records.append(
+            {
+                "type": "file",
+                "result": "refused",
+                "file_id": f"noise-{index}",
+                "reason": "padding to overflow the informational budget",
+            }
+        )
 
     entry = maintenance._write_cleanup_log(
         {"id": "plan-1", "scan_id": "scan-1", "action": "move"},
@@ -2216,13 +2186,11 @@ def test_stored_image_margin_reaches_the_slot_resolver(monkeypatch, tmp_path):
         group = scan["groups"][0]
         return next(slot for slot in group["slots"] if slot["role"] == "poster")
 
-    tight = _scan(lib, lib, monkeypatch, metadata,
-                  {"duplicate_image_close_ratio": 1})
+    tight = _scan(lib, lib, monkeypatch, metadata, {"duplicate_image_close_ratio": 1})
     # A 1% margin separates them cleanly, so the bigger image simply wins.
     assert poster_slot(tight)["needs_review"] is False
 
-    loose = _scan(lib, lib, monkeypatch, metadata,
-                  {"duplicate_image_close_ratio": 25})
+    loose = _scan(lib, lib, monkeypatch, metadata, {"duplicate_image_close_ratio": 25})
     # A 25% margin makes them a tie, which has to come back for review.
     slot = poster_slot(loose)
     assert slot["needs_review"] is True
@@ -2269,11 +2237,14 @@ def test_settings_form_saves_the_slot_review_margins(monkeypatch, tmp_path):
     assert page.status_code == 200
     assert "duplicate_subtitle_close_points" in page.get_data(as_text=True)
 
-    response = client.post("/settings", data=_settings_form(
-        duplicate_subtitle_close_points="3",
-        duplicate_image_close_ratio="25",
-        duplicate_runtime_tolerance_seconds="120",
-    ))
+    response = client.post(
+        "/settings",
+        data=_settings_form(
+            duplicate_subtitle_close_points="3",
+            duplicate_image_close_ratio="25",
+            duplicate_runtime_tolerance_seconds="120",
+        ),
+    )
     assert response.status_code in (200, 302)
 
     saved = app_settings.load_settings()
@@ -2295,11 +2266,14 @@ def test_out_of_range_margins_fall_back_to_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(settings_path))
 
     client = routes.app.test_client()
-    client.post("/settings", data=_settings_form(
-        duplicate_subtitle_close_points="-5",
-        duplicate_image_close_ratio="not a number",
-        duplicate_runtime_tolerance_seconds="999999",
-    ))
+    client.post(
+        "/settings",
+        data=_settings_form(
+            duplicate_subtitle_close_points="-5",
+            duplicate_image_close_ratio="not a number",
+            duplicate_runtime_tolerance_seconds="999999",
+        ),
+    )
 
     saved = app_settings.load_settings()
     assert saved["duplicate_subtitle_close_points"] == 8
@@ -2335,7 +2309,5 @@ def test_refresh_status_still_404s_for_a_run_id_that_does_not_exist():
     assert payload is None
     assert err == "Refresh run not found"
 
-    res = routes.app.test_client().get(
-        "/api/maintenance/duplicates/refresh/status?refresh_id=no-such-run"
-    )
+    res = routes.app.test_client().get("/api/maintenance/duplicates/refresh/status?refresh_id=no-such-run")
     assert res.status_code == 404

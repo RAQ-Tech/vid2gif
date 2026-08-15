@@ -57,19 +57,43 @@ def test_notification_uses_header_query_fields_and_json_body_without_secrets():
 
 def test_warning_policy_skips_success_and_sends_aggregate_warning_once():
     calls = []
+
     def opener(request, timeout):
         calls.append(request)
         return FakeResponse()
+
     skipped = emby_notifications.notify_maintenance(
-        "Duplicate cleanup", "success", status="success", attempted_count=2, succeeded_count=2, settings=settings(), opener=opener
+        "Duplicate cleanup",
+        "success",
+        status="success",
+        attempted_count=2,
+        succeeded_count=2,
+        settings=settings(),
+        opener=opener,
     )
     assert skipped["status"] == "skipped"
     assert not calls
     first = emby_notifications.notify_maintenance(
-        "Duplicate cleanup", "warning", status="success", attempted_count=2, succeeded_count=1, deferred_count=1, reclaimed_bytes=123, emby_sync={"status": "partial"}, settings=settings(), opener=opener
+        "Duplicate cleanup",
+        "warning",
+        status="success",
+        attempted_count=2,
+        succeeded_count=1,
+        deferred_count=1,
+        reclaimed_bytes=123,
+        emby_sync={"status": "partial"},
+        settings=settings(),
+        opener=opener,
     )
     second = emby_notifications.notify_maintenance(
-        "Duplicate cleanup", "warning", status="success", attempted_count=2, succeeded_count=1, deferred_count=1, settings=settings(), opener=opener
+        "Duplicate cleanup",
+        "warning",
+        status="success",
+        attempted_count=2,
+        succeeded_count=1,
+        deferred_count=1,
+        settings=settings(),
+        opener=opener,
     )
     assert first == second
     assert first["status"] == "success"
@@ -83,20 +107,44 @@ def test_warning_policy_skips_success_and_sends_aggregate_warning_once():
 
 def test_all_policy_sends_success_but_zero_cancel_and_off_do_not():
     calls = []
+
     def opener(request, timeout):
         calls.append(request)
         return FakeResponse()
+
     sent = emby_notifications.notify_maintenance(
-        "Poster updates", "all", status="success", attempted_count=1, succeeded_count=1, settings=settings(emby_admin_notifications="all"), opener=opener
+        "Poster updates",
+        "all",
+        status="success",
+        attempted_count=1,
+        succeeded_count=1,
+        settings=settings(emby_admin_notifications="all"),
+        opener=opener,
     )
     zero = emby_notifications.notify_maintenance(
-        "Poster updates", "zero", status="success", attempted_count=0, settings=settings(emby_admin_notifications="all"), opener=opener
+        "Poster updates",
+        "zero",
+        status="success",
+        attempted_count=0,
+        settings=settings(emby_admin_notifications="all"),
+        opener=opener,
     )
     cancelled = emby_notifications.notify_maintenance(
-        "Poster updates", "cancel", status="cancelled", attempted_count=1, settings=settings(emby_admin_notifications="all"), opener=opener
+        "Poster updates",
+        "cancel",
+        status="cancelled",
+        attempted_count=1,
+        settings=settings(emby_admin_notifications="all"),
+        opener=opener,
     )
     disabled = emby_notifications.notify_maintenance(
-        "Poster updates", "off", status="failed", attempted_count=1, failed_count=1, settings=settings(emby_admin_notifications="off"), opener=opener
+        "Poster updates",
+        "off",
+        status="failed",
+        attempted_count=1,
+        failed_count=1,
+        settings=settings(emby_admin_notifications="off"),
+        opener=opener,
     )
     assert sent["status"] == "success"
     assert zero["status"] == cancelled["status"] == "skipped"
@@ -109,14 +157,28 @@ def test_pending_is_persisted_before_send_and_failure_is_not_retried():
 
     def failing(request, timeout):
         files = os.listdir(emby_notifications.NOTIFICATION_ROOT)
-        seen_pending.append(json.load(open(os.path.join(emby_notifications.NOTIFICATION_ROOT, files[0]), encoding="utf-8"))["status"])
+        seen_pending.append(
+            json.load(open(os.path.join(emby_notifications.NOTIFICATION_ROOT, files[0]), encoding="utf-8"))["status"]
+        )
         raise urllib.error.HTTPError(request.full_url, 500, "failed", {}, io.BytesIO())
 
     first = emby_notifications.notify_maintenance(
-        "Subtitle cleanup", "failed", status="failed", attempted_count=1, failed_count=1, settings=settings(), opener=failing
+        "Subtitle cleanup",
+        "failed",
+        status="failed",
+        attempted_count=1,
+        failed_count=1,
+        settings=settings(),
+        opener=failing,
     )
     second = emby_notifications.notify_maintenance(
-        "Subtitle cleanup", "failed", status="failed", attempted_count=1, failed_count=1, settings=settings(), opener=lambda *_args, **_kwargs: pytest.fail("must not retry")
+        "Subtitle cleanup",
+        "failed",
+        status="failed",
+        attempted_count=1,
+        failed_count=1,
+        settings=settings(),
+        opener=lambda *_args, **_kwargs: pytest.fail("must not retry"),
     )
     assert seen_pending == ["pending"]
     assert first == second
@@ -125,7 +187,9 @@ def test_pending_is_persisted_before_send_and_failure_is_not_retried():
 
 
 def test_ledger_failure_returns_redacted_failure_instead_of_raising(monkeypatch):
-    monkeypatch.setattr(emby_notifications, "_write", lambda _value: (_ for _ in ()).throw(OSError("disk failed secret-token")))
+    monkeypatch.setattr(
+        emby_notifications, "_write", lambda _value: (_ for _ in ()).throw(OSError("disk failed secret-token"))
+    )
     result = emby_notifications.notify_maintenance(
         "BIF cleanup",
         "ledger-failure",

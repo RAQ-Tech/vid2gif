@@ -131,10 +131,13 @@ def test_bif_filename_matching_and_interval_parsing():
     assert video_preview_maintenance.bif_interval_seconds("Movie.bif", "Movie") is None
     assert video_preview_maintenance.bif_interval_seconds("Movie-320-180.bif", "Movie") == 180
     assert video_preview_maintenance.bif_interval_seconds("Movie-320-10.bif", "Movie") == 10
-    assert video_preview_maintenance._bif_owner_stem(
-        "Movie 2024-01-05-320-10.bif",
-        ["Movie 2024", "Movie 2024-01-05"],
-    ) == "Movie 2024-01-05"
+    assert (
+        video_preview_maintenance._bif_owner_stem(
+            "Movie 2024-01-05-320-10.bif",
+            ["Movie 2024", "Movie 2024-01-05"],
+        )
+        == "Movie 2024-01-05"
+    )
 
 
 def test_video_preview_scan_counts_any_stem_matched_bif_as_present(monkeypatch, tmp_path):
@@ -266,9 +269,7 @@ def test_missing_bif_selection_spans_pages_and_holds_previous_failures(monkeypat
         },
     )
 
-    second_page, page_err = video_preview_maintenance.items_payload(
-        scan["id"], status="missing", offset=25, limit=25
-    )
+    second_page, page_err = video_preview_maintenance.items_payload(scan["id"], status="missing", offset=25, limit=25)
     default_plan, default_err = video_preview_maintenance.build_generation_plan(
         {
             "scan_id": scan["id"],
@@ -323,11 +324,14 @@ def test_recommended_bif_profile_opens_newest_valid_candidate_first(monkeypatch,
     monkeypatch.setattr(
         video_preview_maintenance,
         "parse_bif",
-        lambda path, sample_limit=1: parsed.append(path) or {
-            "valid": True,
-            "samples": [{"bytes": _jpeg(b"frame")}],
-            "timestamp_multiplier_ms": 20_000,
-        },
+        lambda path, sample_limit=1: (
+            parsed.append(path)
+            or {
+                "valid": True,
+                "samples": [{"bytes": _jpeg(b"frame")}],
+                "timestamp_multiplier_ms": 20_000,
+            }
+        ),
     )
 
     profile = video_preview_maintenance._recommended_bif_profile(
@@ -477,9 +481,7 @@ def test_bif_batch_decoder_uses_one_ffmpeg_process(monkeypatch):
 
     monkeypatch.setattr(video_preview_maintenance.subprocess, "run", fake_run)
 
-    decoded = video_preview_maintenance._decode_jpeg_fingerprints(
-        [b"first-jpeg", b"second-jpeg"]
-    )
+    decoded = video_preview_maintenance._decode_jpeg_fingerprints([b"first-jpeg", b"second-jpeg"])
 
     assert len(calls) == 1
     assert calls[0][1]["input"] == b"first-jpegsecond-jpeg"
@@ -503,10 +505,13 @@ def test_bif_batch_decoder_falls_back_when_output_is_partial(monkeypatch):
     monkeypatch.setattr(
         video_preview_maintenance,
         "_decode_jpeg_fingerprint",
-        lambda frame, timeout=5: calls.append(frame) or {
-            "hash": frame.decode(),
-            "average_luma": 100,
-        },
+        lambda frame, timeout=5: (
+            calls.append(frame)
+            or {
+                "hash": frame.decode(),
+                "average_luma": 100,
+            }
+        ),
     )
 
     decoded = video_preview_maintenance._decode_jpeg_fingerprints([b"one", b"two"])
@@ -625,9 +630,7 @@ def test_bif_quality_flags_blank_decoded_frames(monkeypatch, tmp_path):
     monkeypatch.setattr(
         video_preview_maintenance,
         "_decode_jpeg_fingerprints",
-        lambda frames, timeout=5: [
-            {"hash": str(data), "average_luma": 0} for data in frames
-        ],
+        lambda frames, timeout=5: [{"hash": str(data), "average_luma": 0} for data in frames],
     )
 
     item = video_preview_maintenance.analyze_bif_quality(str(bif), str(video), str(lib))
@@ -684,12 +687,8 @@ def test_bif_quality_incremental_reuse_and_full_scan_process_counts(monkeypatch,
     monkeypatch.setattr(video_preview_maintenance, "_probe_video_duration", fake_probe)
     monkeypatch.setattr(video_preview_maintenance, "_decode_jpeg_fingerprints", fake_decode)
 
-    first, err = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
-    second, err2 = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    first, err = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
+    second, err2 = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
 
     assert err is None and err2 is None
     assert first["counts"]["analyzed_count"] == 2
@@ -698,12 +697,8 @@ def test_bif_quality_incremental_reuse_and_full_scan_process_counts(monkeypatch,
     assert second["counts"]["reused_count"] == 2
     assert calls == {"probe": 2, "decode": 2}
 
-    first_bif.write_bytes(
-        _bif_bytes([_jpeg(f"one-changed-{index}".encode()) for index in range(8)])
-    )
-    changed_bif, err3 = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    first_bif.write_bytes(_bif_bytes([_jpeg(f"one-changed-{index}".encode()) for index in range(8)]))
+    changed_bif, err3 = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
 
     assert err3 is None
     assert changed_bif["counts"]["analyzed_count"] == 1
@@ -712,9 +707,7 @@ def test_bif_quality_incremental_reuse_and_full_scan_process_counts(monkeypatch,
     assert calls == {"probe": 2, "decode": 3}
 
     first_video.write_bytes(b"video-one-was-replaced")
-    changed_video, err4 = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    changed_video, err4 = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
 
     assert err4 is None
     assert changed_video["counts"]["analyzed_count"] == 1
@@ -752,14 +745,10 @@ def test_bif_quality_analyzer_signature_invalidates_cached_result(monkeypatch, t
         "_decode_jpeg_fingerprints",
         lambda frames, timeout=5: [],
     )
-    first, _err = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    first, _err = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
     first["items"][0]["analysis_signature"] = "older-analyzer"
 
-    second, err = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    second, err = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
 
     assert err is None
     assert second["counts"]["analyzed_count"] == 1
@@ -793,9 +782,7 @@ def test_bif_quality_uses_emby_duration_without_ffprobe(monkeypatch, tmp_path):
         {"Id": "server"},
         emby_catalog.configuration_fingerprint(settings),
     )
-    summary = emby_catalog.known_matches_summary(
-        settings, 1, catalog_item_count=1, server_id="server"
-    )
+    summary = emby_catalog.known_matches_summary(settings, 1, catalog_item_count=1, server_id="server")
     monkeypatch.setattr(video_preview_maintenance.app_settings, "load_settings", lambda: settings)
     monkeypatch.setattr(
         video_preview_maintenance.emby_catalog,
@@ -847,8 +834,7 @@ def test_bif_quality_marks_scan_stale_when_library_changes_during_scan(monkeypat
 
     def mutate_then_capture(scan, lib_root):
         _write(
-            lib / "Movie" / "Movie-320-10.bif",
-            _bif_bytes([_jpeg(f"changed-{index}".encode()) for index in range(8)])
+            lib / "Movie" / "Movie-320-10.bif", _bif_bytes([_jpeg(f"changed-{index}".encode()) for index in range(8)])
         )
         return capture(scan, lib_root)
 
@@ -858,13 +844,9 @@ def test_bif_quality_marks_scan_stale_when_library_changes_during_scan(monkeypat
         mutate_then_capture,
     )
 
-    scan, err = video_preview_maintenance.start_quality_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    scan, err = video_preview_maintenance.start_quality_scan(str(lib), lib_root=str(lib), synchronous=True)
     public = video_preview_maintenance.public_quality_scan(scan)
-    allowed, action_error = maintenance_scan_store.action_allowed(
-        "video_previews_quality", scan["id"], str(lib)
-    )
+    allowed, action_error = maintenance_scan_store.action_allowed("video_previews_quality", scan["id"], str(lib))
 
     assert err is None
     assert scan["status"] == "success"
@@ -1135,8 +1117,9 @@ def test_bif_quality_cleanup_defers_when_playback_is_unverified(monkeypatch, tmp
     monkeypatch.setattr(
         video_preview_maintenance.emby_notifications,
         "notify_maintenance",
-        lambda *args, **kwargs: notification_calls.append((args, kwargs))
-        or {"id": "notice", "status": "success", "message": "accepted"},
+        lambda *args, **kwargs: (
+            notification_calls.append((args, kwargs)) or {"id": "notice", "status": "success", "message": "accepted"}
+        ),
     )
     plan, err = video_preview_maintenance.build_quality_repair_plan(
         {"scan_id": scan["id"], "move_root": str(lib / "_repair")},
@@ -1210,8 +1193,10 @@ def test_bif_generation_stages_validates_and_installs_missing_output(monkeypatch
     monkeypatch.setattr(
         video_preview_maintenance.emby_notifications,
         "notify_maintenance",
-        lambda *args, **kwargs: notification_calls.append((args, kwargs))
-        or {"id": "notice-generation", "status": "success", "message": "accepted"},
+        lambda *args, **kwargs: (
+            notification_calls.append((args, kwargs))
+            or {"id": "notice-generation", "status": "success", "message": "accepted"}
+        ),
     )
 
     run, run_err = video_preview_maintenance.start_generation(plan["id"], synchronous=True)
@@ -1473,12 +1458,12 @@ def test_video_preview_emby_discovers_and_runs_thumbnail_task(monkeypatch, tmp_p
             return FakeResponse(
                 [
                     {"Id": "other", "Name": "Refresh Guide"},
-                        {
-                            "Id": "task1",
-                            "Name": "Thumbnail Image Extraction",
-                            "Key": "ExtractChapterImages",
-                            "State": "Idle",
-                        },
+                    {
+                        "Id": "task1",
+                        "Name": "Thumbnail Image Extraction",
+                        "Key": "ExtractChapterImages",
+                        "State": "Idle",
+                    },
                 ]
             )
         return FakeResponse(None, status=204)
@@ -1669,11 +1654,17 @@ def test_both_preview_scans_publish_emby_identity(monkeypatch, tmp_path):
 def test_strict_extraction_aborts_on_the_first_error_but_tolerant_does_not():
     """-xerror is why one damaged packet costs the whole preview."""
     strict = video_preview_maintenance._extraction_command(
-        "/library/Movie.mkv", "/tmp/%08d.jpg", 320, 10,
+        "/library/Movie.mkv",
+        "/tmp/%08d.jpg",
+        320,
+        10,
         video_preview_maintenance.EXTRACTION_TACTICS[0],
     )
     tolerant = video_preview_maintenance._extraction_command(
-        "/library/Movie.mkv", "/tmp/%08d.jpg", 320, 10,
+        "/library/Movie.mkv",
+        "/tmp/%08d.jpg",
+        320,
+        10,
         video_preview_maintenance.EXTRACTION_TACTICS[1],
     )
 
@@ -1706,7 +1697,11 @@ def test_extraction_escalates_until_a_tactic_produces_frames(tmp_path, monkeypat
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
 
     frames, tactic, attempts = video_preview_maintenance._extract_frames_with_retries(
-        "/library/Movie.mkv", str(work), 320, 10, {},
+        "/library/Movie.mkv",
+        str(work),
+        320,
+        10,
+        {},
     )
 
     assert tried == ["strict", "tolerant"]
@@ -1731,7 +1726,11 @@ def test_a_tactic_producing_no_frames_escalates_rather_than_succeeding(tmp_path,
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
 
     frames, tactic, _attempts = video_preview_maintenance._extract_frames_with_retries(
-        "/library/Movie.mkv", str(work), 320, 10, {},
+        "/library/Movie.mkv",
+        str(work),
+        320,
+        10,
+        {},
     )
 
     assert tried == ["strict", "tolerant", "reduced"]
@@ -1754,7 +1753,11 @@ def test_frames_from_a_failed_tactic_are_not_reused_by_the_next(tmp_path, monkey
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
 
     frames, tactic, _attempts = video_preview_maintenance._extract_frames_with_retries(
-        "/library/Movie.mkv", str(work), 320, 10, {},
+        "/library/Movie.mkv",
+        str(work),
+        320,
+        10,
+        {},
     )
 
     assert tactic["key"] == "tolerant"
@@ -1773,7 +1776,11 @@ def test_every_tactic_failing_raises_the_last_error(tmp_path, monkeypatch):
 
     try:
         video_preview_maintenance._extract_frames_with_retries(
-            "/library/Movie.mkv", str(work), 320, 10, {},
+            "/library/Movie.mkv",
+            str(work),
+            320,
+            10,
+            {},
         )
     except RuntimeError as exc:
         # The error surfaced is the last tactic's, not the first.
@@ -1786,24 +1793,30 @@ def test_stalls_are_retryable_but_a_refusing_decoder_is_not():
     stalled = video_preview_maintenance.GenerationStalled("no frame progress for 120 seconds")
     assert video_preview_maintenance._failure_is_retryable(stalled) is True
     assert video_preview_maintenance._failure_is_retryable(OSError("disk busy")) is True
-    assert video_preview_maintenance._failure_is_retryable(
-        RuntimeError("Video changed after the missing-BIF scan")
-    ) is True
+    assert (
+        video_preview_maintenance._failure_is_retryable(RuntimeError("Video changed after the missing-BIF scan"))
+        is True
+    )
     # A decoder that refused every tactic describes the file, not the machine.
-    assert video_preview_maintenance._failure_is_retryable(
-        RuntimeError("Invalid data found when processing input")
-    ) is False
+    assert (
+        video_preview_maintenance._failure_is_retryable(RuntimeError("Invalid data found when processing input"))
+        is False
+    )
 
 
 def test_a_scan_clears_retryable_failures_but_keeps_permanent_ones(monkeypatch, tmp_path):
     issues_path = tmp_path / "issues.json"
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_ISSUES_PATH", str(issues_path))
-    video_preview_maintenance._write_json(str(issues_path), {
-        "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
-        "records": {
-        "stalled": {"item_id": "stalled", "retryable": True, "reason": "stalled"},
-        "corrupt": {"item_id": "corrupt", "retryable": False, "reason": "undecodable"},
-    }})
+    video_preview_maintenance._write_json(
+        str(issues_path),
+        {
+            "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+            "records": {
+                "stalled": {"item_id": "stalled", "retryable": True, "reason": "stalled"},
+                "corrupt": {"item_id": "corrupt", "retryable": False, "reason": "undecodable"},
+            },
+        },
+    )
 
     cleared = video_preview_maintenance._clear_retryable_generation_issues()
 
@@ -1816,12 +1829,16 @@ def test_a_scan_clears_retryable_failures_but_keeps_permanent_ones(monkeypatch, 
 def test_clearing_issues_lets_a_permanent_failure_be_tried_again(monkeypatch, tmp_path):
     issues_path = tmp_path / "issues.json"
     monkeypatch.setattr(video_preview_maintenance, "GENERATION_ISSUES_PATH", str(issues_path))
-    video_preview_maintenance._write_json(str(issues_path), {
-        "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
-        "records": {
-        "corrupt": {"item_id": "corrupt", "retryable": False},
-        "other": {"item_id": "other", "retryable": False},
-    }})
+    video_preview_maintenance._write_json(
+        str(issues_path),
+        {
+            "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
+            "records": {
+                "corrupt": {"item_id": "corrupt", "retryable": False},
+                "other": {"item_id": "other", "retryable": False},
+            },
+        },
+    )
 
     result = video_preview_maintenance.clear_generation_issues(["corrupt"])
 
@@ -1857,7 +1874,12 @@ def test_a_single_frame_result_escalates_instead_of_being_accepted(tmp_path, mon
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
 
     frames, tactic, attempts = video_preview_maintenance._extract_frames_with_retries(
-        "/library/Movie.mkv", str(work), 320, 10, {}, expected_frames=199,
+        "/library/Movie.mkv",
+        str(work),
+        320,
+        10,
+        {},
+        expected_frames=199,
     )
 
     assert tried == ["strict", "tolerant"]
@@ -1897,7 +1919,12 @@ def test_the_fullest_attempt_survives_when_no_tactic_reaches_the_target(tmp_path
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
 
     frames, tactic, _attempts = video_preview_maintenance._extract_frames_with_retries(
-        "/library/Movie.mkv", str(work), 320, 10, {}, expected_frames=199,
+        "/library/Movie.mkv",
+        str(work),
+        320,
+        10,
+        {},
+        expected_frames=199,
     )
 
     # 50 frames beats 1, and beats the tactic that produced none at all.
@@ -1921,15 +1948,17 @@ def test_a_failure_from_older_extraction_logic_no_longer_holds_a_video(monkeypat
             video_preview_maintenance.GENERATION_ISSUES_PATH,
             {
                 "schema_version": video_preview_maintenance.GENERATION_ISSUES_SCHEMA_VERSION,
-                "records": {item["id"]: {
-                    "item_id": item["id"],
-                    "status": "refused",
-                    "reason": "Generated BIF frame count is unexpected (1 / 199)",
-                    "video_identity": item.get("video_identity")
-                    or video_preview_maintenance._stat_identity(item["path"]),
-                    "retryable": False,
-                    **({"extraction_logic_version": version} if version is not None else {}),
-                }},
+                "records": {
+                    item["id"]: {
+                        "item_id": item["id"],
+                        "status": "refused",
+                        "reason": "Generated BIF frame count is unexpected (1 / 199)",
+                        "video_identity": item.get("video_identity")
+                        or video_preview_maintenance._stat_identity(item["path"]),
+                        "retryable": False,
+                        **({"extraction_logic_version": version} if version is not None else {}),
+                    }
+                },
             },
         )
 
@@ -1959,7 +1988,11 @@ def test_extraction_skips_embedded_cover_art_when_choosing_a_video_stream():
     """
     for tactic in video_preview_maintenance.EXTRACTION_TACTICS:
         command = video_preview_maintenance._extraction_command(
-            "/library/Movie.mp4", "/tmp/%08d.jpg", 320, 10, tactic,
+            "/library/Movie.mp4",
+            "/tmp/%08d.jpg",
+            320,
+            10,
+            tactic,
         )
         assert "0:V:0" in command, tactic["key"]
         assert "0:v:0" not in command, tactic["key"]
@@ -1968,12 +2001,24 @@ def test_extraction_skips_embedded_cover_art_when_choosing_a_video_stream():
 def test_stream_inventory_reports_attached_pictures(monkeypatch):
     payload = {
         "streams": [
-            {"index": 0, "codec_type": "video", "codec_name": "mjpeg",
-             "width": 600, "height": 900, "nb_frames": "1",
-             "disposition": {"attached_pic": 1}},
-            {"index": 1, "codec_type": "video", "codec_name": "hevc",
-             "width": 3840, "height": 2160, "nb_frames": "47000",
-             "disposition": {"attached_pic": 0}},
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "mjpeg",
+                "width": 600,
+                "height": 900,
+                "nb_frames": "1",
+                "disposition": {"attached_pic": 1},
+            },
+            {
+                "index": 1,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "width": 3840,
+                "height": 2160,
+                "nb_frames": "47000",
+                "disposition": {"attached_pic": 0},
+            },
         ]
     }
 
@@ -1981,9 +2026,7 @@ def test_stream_inventory_reports_attached_pictures(monkeypatch):
         returncode = 0
         stdout = json.dumps(payload)
 
-    monkeypatch.setattr(
-        video_preview_maintenance.subprocess, "run", lambda *a, **k: _Result()
-    )
+    monkeypatch.setattr(video_preview_maintenance.subprocess, "run", lambda *a, **k: _Result())
 
     inventory = video_preview_maintenance.probe_stream_inventory("/library/Movie.mp4")
 
@@ -2003,12 +2046,18 @@ def test_stream_inventory_is_recorded_when_no_tactic_reaches_the_target(tmp_path
 
     monkeypatch.setattr(video_preview_maintenance, "_run_frame_extraction", fake_extract)
     monkeypatch.setattr(
-        video_preview_maintenance, "probe_stream_inventory",
+        video_preview_maintenance,
+        "probe_stream_inventory",
         lambda path, timeout=10: [{"index": 0, "codec_type": "video", "attached_pic": 1}],
     )
 
     _frames, _tactic, attempts = video_preview_maintenance._extract_frames_with_retries(
-        "/library/Movie.mkv", str(work), 320, 10, {}, expected_frames=199,
+        "/library/Movie.mkv",
+        str(work),
+        320,
+        10,
+        {},
+        expected_frames=199,
     )
 
     inventory = next(a["stream_inventory"] for a in attempts if "stream_inventory" in a)
@@ -2031,7 +2080,8 @@ def test_a_damaged_source_keeps_its_partial_preview(monkeypatch, tmp_path):
     work = _write(tmp_path / "work.bif", b"bif")
     monkeypatch.setattr(video_preview_maintenance, "_matching_bifs_for_video", lambda _p: [])
     monkeypatch.setattr(
-        video_preview_maintenance, "parse_bif",
+        video_preview_maintenance,
+        "parse_bif",
         lambda _p: {"valid": True, "image_count": 59, "timestamp_multiplier_ms": 10000},
     )
     monkeypatch.setattr(video_preview_maintenance, "_expected_bif_frame_count", lambda *_a: 199)
@@ -2039,13 +2089,20 @@ def test_a_damaged_source_keeps_its_partial_preview(monkeypatch, tmp_path):
     monkeypatch.setattr(video_preview_maintenance, "regular_file_identity", lambda _p: {})
     recorded = {}
     monkeypatch.setattr(
-        video_preview_maintenance, "_record_generated_bif",
+        video_preview_maintenance,
+        "_record_generated_bif",
         lambda *a, **k: recorded.update(k),
     )
 
     parsed = video_preview_maintenance._install_generated_bif(
-        str(work), str(target), "/library/Movie.mp4", 320, 10,
-        lib_root=str(tmp_path), duration=1990, degraded=True,
+        str(work),
+        str(target),
+        "/library/Movie.mp4",
+        320,
+        10,
+        lib_root=str(tmp_path),
+        duration=1990,
+        degraded=True,
     )
 
     assert parsed["degraded"] is True
@@ -2060,15 +2117,22 @@ def test_a_healthy_source_still_requires_a_complete_preview(monkeypatch, tmp_pat
     work = _write(tmp_path / "work.bif", b"bif")
     monkeypatch.setattr(video_preview_maintenance, "_matching_bifs_for_video", lambda _p: [])
     monkeypatch.setattr(
-        video_preview_maintenance, "parse_bif",
+        video_preview_maintenance,
+        "parse_bif",
         lambda _p: {"valid": True, "image_count": 59, "timestamp_multiplier_ms": 10000},
     )
     monkeypatch.setattr(video_preview_maintenance, "_expected_bif_frame_count", lambda *_a: 199)
 
     try:
         video_preview_maintenance._install_generated_bif(
-            str(work), str(target), "/library/Movie.mp4", 320, 10,
-            lib_root=str(tmp_path), duration=1990, degraded=False,
+            str(work),
+            str(target),
+            "/library/Movie.mp4",
+            320,
+            10,
+            lib_root=str(tmp_path),
+            duration=1990,
+            degraded=False,
         )
     except ValueError as exc:
         assert "59 / 199" in str(exc)
@@ -2081,15 +2145,22 @@ def test_a_barely_populated_preview_is_refused_even_when_degraded(monkeypatch, t
     work = _write(tmp_path / "work.bif", b"bif")
     monkeypatch.setattr(video_preview_maintenance, "_matching_bifs_for_video", lambda _p: [])
     monkeypatch.setattr(
-        video_preview_maintenance, "parse_bif",
+        video_preview_maintenance,
+        "parse_bif",
         lambda _p: {"valid": True, "image_count": 3, "timestamp_multiplier_ms": 10000},
     )
     monkeypatch.setattr(video_preview_maintenance, "_expected_bif_frame_count", lambda *_a: 199)
 
     try:
         video_preview_maintenance._install_generated_bif(
-            str(work), str(target), "/library/Movie.mp4", 320, 10,
-            lib_root=str(tmp_path), duration=1990, degraded=True,
+            str(work),
+            str(target),
+            "/library/Movie.mp4",
+            320,
+            10,
+            lib_root=str(tmp_path),
+            duration=1990,
+            degraded=True,
         )
     except ValueError as exc:
         assert "3 / 199" in str(exc)
@@ -2100,9 +2171,7 @@ def test_a_barely_populated_preview_is_refused_even_when_degraded(monkeypatch, t
 def test_container_paths_translate_to_a_pasteable_local_path():
     settings = {"library_local_path_prefix": r"\\ARTEMIS\media\Emby_Media"}
 
-    result = video_preview_maintenance.local_library_path(
-        "/library/XXX/Blacked Raw/Some Title", settings
-    )
+    result = video_preview_maintenance.local_library_path("/library/XXX/Blacked Raw/Some Title", settings)
 
     assert result == r"\\ARTEMIS\media\Emby_Media\XXX\Blacked Raw\Some Title"
 
@@ -2126,9 +2195,12 @@ def test_a_forward_slash_prefix_keeps_forward_slashes():
 def test_local_path_is_empty_without_a_configured_prefix():
     assert video_preview_maintenance.local_library_path("/library/XXX", {}) == ""
     # A path outside the library has no meaningful local equivalent.
-    assert video_preview_maintenance.local_library_path(
-        "/somewhere/else", {"library_local_path_prefix": r"\\ARTEMIS\media"}
-    ) == ""
+    assert (
+        video_preview_maintenance.local_library_path(
+            "/somewhere/else", {"library_local_path_prefix": r"\\ARTEMIS\media"}
+        )
+        == ""
+    )
 
 
 def test_quarantining_a_damaged_video_takes_its_sidecars_along(monkeypatch, tmp_path):
@@ -2141,14 +2213,13 @@ def test_quarantining_a_damaged_video_takes_its_sidecars_along(monkeypatch, tmp_
 
     damaged_root = lib / ".vid2gif-quarantine" / "damaged"
     monkeypatch.setattr(
-        video_preview_maintenance.app_settings, "load_settings",
+        video_preview_maintenance.app_settings,
+        "load_settings",
         lambda: {"damaged_move_root": str(damaged_root)},
     )
     monkeypatch.setattr(video_preview_maintenance, "_write_log", lambda *a, **k: None)
 
-    result, err = video_preview_maintenance.quarantine_damaged_video(
-        str(video), lib_root=str(lib)
-    )
+    result, err = video_preview_maintenance.quarantine_damaged_video(str(video), lib_root=str(lib))
 
     assert err is None
     assert result["moved_count"] == 3
@@ -2164,13 +2235,12 @@ def test_damaged_quarantine_refuses_a_destination_outside_the_library(monkeypatc
     lib = tmp_path / "library"
     video = _write(lib / "Movie" / "Movie.mp4", b"video")
     monkeypatch.setattr(
-        video_preview_maintenance.app_settings, "load_settings",
+        video_preview_maintenance.app_settings,
+        "load_settings",
         lambda: {"damaged_move_root": str(tmp_path / "outside")},
     )
 
-    result, err = video_preview_maintenance.quarantine_damaged_video(
-        str(video), lib_root=str(lib)
-    )
+    result, err = video_preview_maintenance.quarantine_damaged_video(str(video), lib_root=str(lib))
 
     assert result is None
     assert "inside the library" in err
@@ -2194,7 +2264,8 @@ def test_a_quarantined_video_is_not_rediscovered_by_the_next_scan(monkeypatch, t
     # before, or the quarantine destinations are thrown away.
     _reset_preview_state(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        video_preview_maintenance.app_settings, "load_settings",
+        video_preview_maintenance.app_settings,
+        "load_settings",
         lambda: {
             "damaged_move_root": str(damaged_root),
             "video_preview_repair_root": str(repair_root),
@@ -2205,9 +2276,7 @@ def test_a_quarantined_video_is_not_rediscovered_by_the_next_scan(monkeypatch, t
         },
     )
 
-    scan, err = video_preview_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True
-    )
+    scan, err = video_preview_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True)
     assert err is None
     names = {item["name"] for item in scan["items"]}
 
@@ -2220,7 +2289,8 @@ def test_the_repair_destination_follows_the_configured_setting(monkeypatch, tmp_
     lib = tmp_path / "library"
     configured = lib / "vid2gif-quarantine" / ".vid2gif-video-preview-repairs"
     monkeypatch.setattr(
-        video_preview_maintenance.app_settings, "load_settings",
+        video_preview_maintenance.app_settings,
+        "load_settings",
         lambda: {"video_preview_repair_root": str(configured)},
     )
 

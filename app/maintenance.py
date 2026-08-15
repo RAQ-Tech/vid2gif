@@ -76,6 +76,7 @@ maintenance_lock = threading.Lock()
 class _ScanCancelled(Exception):
     pass
 
+
 _QUALITY_PATTERNS = [
     r"\b(?:4320p|2160p|1440p|1080p|720p|576p|540p|480p|360p|4k|8k|uhd|fhd|hd)\b",
     r"\b(?:hdr10plus|hdr10|hdr|dv|dolby\s+vision|sdr)\b",
@@ -91,9 +92,7 @@ _COPY_SUFFIX_RE = re.compile(
 _FULL_RELEASE_DATE_RE = re.compile(
     r"(?<!\d)((?:19|20)\d{2})[\s._-]+(0?[1-9]|1[0-2])[\s._-]+(0?[1-9]|[12]\d|3[01])(?!\d)"
 )
-_COMPACT_RELEASE_DATE_RE = re.compile(
-    r"(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)"
-)
+_COMPACT_RELEASE_DATE_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")
 _RELEASE_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 
 
@@ -167,15 +166,9 @@ def public_duplicate_settings(settings):
     return {
         "grouping_mode": str(settings.get("grouping_mode") or "balanced"),
         "keeper_rule": str(settings.get("keeper_rule") or "quality"),
-        "accessory_policy": str(
-            settings.get("accessory_policy") or "rename_unmatched"
-        ),
-        "move_root": str(
-            settings.get("move_root") or app_settings.DEFAULT_DUPLICATE_MOVE_ROOT
-        ),
-        "excluded_folders": sorted(
-            str(item) for item in (settings.get("excluded_folders") or [])
-        ),
+        "accessory_policy": str(settings.get("accessory_policy") or "rename_unmatched"),
+        "move_root": str(settings.get("move_root") or app_settings.DEFAULT_DUPLICATE_MOVE_ROOT),
+        "excluded_folders": sorted(str(item) for item in (settings.get("excluded_folders") or [])),
         "subtitle_close_points": settings.get("subtitle_close_points", 8),
         "image_close_ratio": settings.get("image_close_ratio", 0.10),
         "runtime_tolerance_seconds": settings.get("runtime_tolerance_seconds", 60),
@@ -185,10 +178,9 @@ def public_duplicate_settings(settings):
 def _effective_move_root(settings, lib_root):
     configured = settings.get("move_root") or app_settings.DEFAULT_DUPLICATE_MOVE_ROOT
     try:
-        if (
-            os.path.realpath(configured) == os.path.realpath(app_settings.DEFAULT_DUPLICATE_MOVE_ROOT)
-            and os.path.realpath(lib_root) != os.path.realpath(LIB_ROOT)
-        ):
+        if os.path.realpath(configured) == os.path.realpath(
+            app_settings.DEFAULT_DUPLICATE_MOVE_ROOT
+        ) and os.path.realpath(lib_root) != os.path.realpath(LIB_ROOT):
             return os.path.join(os.path.realpath(lib_root), QUARANTINE_DIRNAME)
     except (OSError, ValueError):
         pass
@@ -304,12 +296,7 @@ def _validate_scan_path(path, lib_root):
     if not target:
         return None, "Choose a folder under the library"
     real = resolve_case_insensitive(target)
-    if (
-        not real
-        or not path_is_under(real, lib_root)
-        or not os.path.isdir(real)
-        or os.path.islink(real)
-    ):
+    if not real or not path_is_under(real, lib_root) or not os.path.isdir(real) or os.path.islink(real):
         return None, "Path not found"
     return os.path.realpath(real), None
 
@@ -510,7 +497,7 @@ def _accessory_matches(entry_name, video_stem):
 def _accessory_suffix(entry_name, video_stem):
     if not _accessory_matches(entry_name, video_stem):
         return ""
-    return entry_name[len(video_stem):]
+    return entry_name[len(video_stem) :]
 
 
 def _classify_accessory(entry_name, video_stem):
@@ -636,9 +623,7 @@ def _collect_videos(root_path, settings=None, lib_root=LIB_ROOT, scan=None):
             and not media_scope.is_non_main_video_dir(d)
             and not os.path.islink(os.path.join(base, d))
             and not (
-                move_root
-                and path_is_under(os.path.join(base, d), move_root)
-                and path_is_under(move_root, lib_root)
+                move_root and path_is_under(os.path.join(base, d), move_root) and path_is_under(move_root, lib_root)
             )
         ]
         for filename in files:
@@ -711,9 +696,7 @@ def _group_review_key(path, settings, lib_root):
         "mode": str((settings or {}).get("grouping_mode") or "balanced"),
         "logical": logical,
     }
-    return "duplicate-review:" + _hash_text(
-        json.dumps(value, sort_keys=True, separators=(",", ":"))
-    )[:24]
+    return "duplicate-review:" + _hash_text(json.dumps(value, sort_keys=True, separators=(",", ":")))[:24]
 
 
 def _folder_snapshot(folder):
@@ -762,10 +745,7 @@ def _folder_change_detail(original, current):
         "added": sorted(current_names - original_names, key=str.lower),
         "removed": sorted(original_names - current_names, key=str.lower),
         "modified": sorted(
-            (
-                name for name in original_names & current_names
-                if original.get(name) != current.get(name)
-            ),
+            (name for name in original_names & current_names if original.get(name) != current.get(name)),
             key=str.lower,
         ),
     }
@@ -797,12 +777,11 @@ def _protected_set_summary(paths, reason, *, title="", release_dates=None):
     if not video_paths:
         return None
     names = [os.path.basename(path) for path in video_paths]
-    label = normalize_duplicate_name(title) if title else normalize_duplicate_name(
-        os.path.splitext(names[0])[0]
+    label = normalize_duplicate_name(title) if title else normalize_duplicate_name(os.path.splitext(names[0])[0])
+    set_id = (
+        "protected:"
+        + hashlib.sha256("|".join(os.path.normcase(path) for path in video_paths).encode("utf-8")).hexdigest()[:24]
     )
-    set_id = "protected:" + hashlib.sha256(
-        "|".join(os.path.normcase(path) for path in video_paths).encode("utf-8")
-    ).hexdigest()[:24]
     return {
         "id": set_id,
         "folder": os.path.dirname(video_paths[0]),
@@ -1119,16 +1098,14 @@ def _group_subtitle_signals(group):
             continue
         winner = subtitle_quality.clear_quality_winner(accessories)
         incomplete = [
-            item for item in accessories
-            if (item.get("subtitle_quality") or {}).get("status") == "likely_incomplete"
+            item for item in accessories if (item.get("subtitle_quality") or {}).get("status") == "likely_incomplete"
         ]
         if winner:
             quality = winner.get("subtitle_quality") or {}
             coverage = quality.get("coverage_percent")
             coverage_label = f" · {coverage:.1f}% coverage" if coverage is not None else ""
             replacement_label = (
-                f"; {len(incomplete)} likely incomplete replacement"
-                f"{'s' if len(incomplete) != 1 else ''}"
+                f"; {len(incomplete)} likely incomplete replacement{'s' if len(incomplete) != 1 else ''}"
                 if incomplete
                 else "; automatic coverage choice"
             )
@@ -1136,10 +1113,7 @@ def _group_subtitle_signals(group):
                 {
                     "kind": "subtitle_quality_choice",
                     "severity": "success",
-                    "label": (
-                        f"Best SRT: {winner.get('name', 'subtitle')}{coverage_label}"
-                        f"{replacement_label}"
-                    ),
+                    "label": (f"Best SRT: {winner.get('name', 'subtitle')}{coverage_label}{replacement_label}"),
                 }
             )
         elif incomplete:
@@ -1186,9 +1160,10 @@ def _group_payload_from_videos(videos, group_id, lib_root, settings):
     folder_files = find_folder_context_files(folder, videos, lib_root)
     folder_snapshot = _folder_snapshot(folder)
     normalized_name = normalize_duplicate_name(os.path.splitext(videos[0]["name"])[0])
-    impact_issue_id = "duplicate:" + hashlib.sha256(
-        "|".join(sorted(video["id"] for video in videos)).encode("utf-8")
-    ).hexdigest()[:24]
+    impact_issue_id = (
+        "duplicate:"
+        + hashlib.sha256("|".join(sorted(video["id"] for video in videos)).encode("utf-8")).hexdigest()[:24]
+    )
     return {
         "id": group_id,
         "impact_issue_id": impact_issue_id,
@@ -1298,12 +1273,15 @@ def _public_file(item):
 
 def _public_group(group, review_state=None):
     review_flags = _group_review_flags(group)
-    review_state = copy.deepcopy(review_state or {
-        "saved": False,
-        "requires_review": False,
-        "status": "default",
-        "reason": "",
-    })
+    review_state = copy.deepcopy(
+        review_state
+        or {
+            "saved": False,
+            "requires_review": False,
+            "status": "default",
+            "reason": "",
+        }
+    )
     return {
         "id": group.get("id", ""),
         "review_key": group.get("review_key", ""),
@@ -1333,12 +1311,15 @@ def _public_group_summary(group, review_state=None):
     recommended_id = group.get("recommended_keep_id", "")
     recommended = next((video for video in videos if video.get("id") == recommended_id), {})
     review_flags = _group_review_flags(group)
-    review_state = copy.deepcopy(review_state or {
-        "saved": False,
-        "requires_review": False,
-        "status": "default",
-        "reason": "",
-    })
+    review_state = copy.deepcopy(
+        review_state
+        or {
+            "saved": False,
+            "requires_review": False,
+            "status": "default",
+            "reason": "",
+        }
+    )
     has_noncopy = any(not _copy_name_penalty(video.get("name")) for video in videos)
     recommended_is_copy = bool(_copy_name_penalty(recommended.get("name")))
     if recommended_is_copy and has_noncopy:
@@ -1391,12 +1372,7 @@ def public_scan(scan, include_groups=False):
         for key, value in _group_default_action_counts(group).items():
             default_action_counts[key] += value
     protected_sets = list(scan.get("protected_distinct_sets") or [])
-    protected_video_paths = {
-        path
-        for item in protected_sets
-        for path in (item.get("video_paths") or [])
-        if path
-    }
+    protected_video_paths = {path for item in protected_sets for path in (item.get("video_paths") or []) if path}
     review_draft = duplicate_review_store.mapped_payload(scan) if scan.get("status") == "success" else {}
     public = {
         "id": scan.get("id", ""),
@@ -1428,9 +1404,7 @@ def public_scan(scan, include_groups=False):
             if _group_review_flags(group)
             or ((review_draft.get("groups") or {}).get(group.get("id")) or {}).get("requires_review")
         ),
-        "emby_mapping": emby_catalog.public_summary(
-            scan.get("emby_mapping"), app_settings.load_settings()
-        ),
+        "emby_mapping": emby_catalog.public_summary(scan.get("emby_mapping"), app_settings.load_settings()),
     }
     if include_groups:
         public["groups"] = [
@@ -1469,9 +1443,7 @@ def _ensure_duplicate_cache_loaded():
     global _duplicate_cache_loaded
     if _duplicate_cache_loaded:
         return
-    restored = _upgrade_duplicate_scan_groups(
-        maintenance_scan_store.restore_scan("duplicates")
-    )
+    restored = _upgrade_duplicate_scan_groups(maintenance_scan_store.restore_scan("duplicates"))
     with maintenance_lock:
         if restored and restored.get("id") not in duplicate_scans:
             duplicate_scans[restored["id"]] = restored
@@ -1495,9 +1467,7 @@ def _coerce_page(offset, limit):
 def _prune_duplicate_scans_locked(now=None):
     now = now or time.time()
     terminal_ids = [
-        scan_id
-        for scan_id, scan in duplicate_scans.items()
-        if scan.get("status") in SCAN_TERMINAL_STATUSES
+        scan_id for scan_id, scan in duplicate_scans.items() if scan.get("status") in SCAN_TERMINAL_STATUSES
     ]
     for scan_id in terminal_ids:
         scan = duplicate_scans.get(scan_id) or {}
@@ -1506,11 +1476,7 @@ def _prune_duplicate_scans_locked(now=None):
             duplicate_scans.pop(scan_id, None)
 
     terminal = sorted(
-        (
-            (scan_id, scan)
-            for scan_id, scan in duplicate_scans.items()
-            if scan.get("status") in SCAN_TERMINAL_STATUSES
-        ),
+        ((scan_id, scan) for scan_id, scan in duplicate_scans.items() if scan.get("status") in SCAN_TERMINAL_STATUSES),
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
@@ -1520,19 +1486,13 @@ def _prune_duplicate_scans_locked(now=None):
 
 
 def _active_duplicate_scan_locked():
-    active = [
-        scan
-        for scan in duplicate_scans.values()
-        if scan.get("status") in SCAN_ACTIVE_STATUSES
-    ]
+    active = [scan for scan in duplicate_scans.values() if scan.get("status") in SCAN_ACTIVE_STATUSES]
     if not active:
         return None
     return max(active, key=lambda item: item.get("_created_ts") or 0)
 
 
-@coordinated_library_operation(
-    "Scan duplicate videos", kind="scan", href="/maintenance#duplicates"
-)
+@coordinated_library_operation("Scan duplicate videos", kind="scan", href="/maintenance#duplicates")
 def _run_scan(scan, lib_root):
     try:
         settings = scan.get("settings") or duplicate_settings()
@@ -1575,11 +1535,7 @@ def _run_scan(scan, lib_root):
             scanned_video_count=len(videos),
         )
 
-        protected_sets = {
-            item["id"]: item
-            for item in _related_release_sets(videos)
-            if item.get("id")
-        }
+        protected_sets = {item["id"]: item for item in _related_release_sets(videos) if item.get("id")}
         protected_paths = {
             os.path.normcase(os.path.realpath(path))
             for item in protected_sets.values()
@@ -1602,13 +1558,9 @@ def _run_scan(scan, lib_root):
         for index, paths in enumerate(candidates, start=1):
             _check_scan_cancelled(scan)
             actionable_paths = [
-                path
-                for path in paths
-                if os.path.normcase(os.path.realpath(path)) not in protected_paths
+                path for path in paths if os.path.normcase(os.path.realpath(path)) not in protected_paths
             ]
-            built_groups, built_protected = _build_groups(
-                actionable_paths, group_index, lib_root, settings
-            )
+            built_groups, built_protected = _build_groups(actionable_paths, group_index, lib_root, settings)
             if built_groups:
                 groups.extend(built_groups)
                 group_index += len(built_groups)
@@ -1690,9 +1642,7 @@ def _run_scan(scan, lib_root):
             ],
             timestamp=utc_iso(finished),
         )
-        persisted = maintenance_scan_store.persist_success(
-            "duplicates", "duplicates", scan, lib_root
-        )
+        persisted = maintenance_scan_store.persist_success("duplicates", "duplicates", scan, lib_root)
         if persisted:
             with maintenance_lock:
                 for candidate in duplicate_scans.values():
@@ -1817,7 +1767,11 @@ def status_payload(scan_id=None):
         elif duplicate_scans:
             active = _active_duplicate_scan_locked()
             successful = [item for item in duplicate_scans.values() if item.get("status") == "success"]
-            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(duplicate_scans.values(), key=lambda item: item.get("_created_ts") or 0))
+            scan = active or (
+                max(successful, key=lambda item: item.get("_finished_ts") or 0)
+                if successful
+                else max(duplicate_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            )
         else:
             scan = None
     return {"scan": public_scan(scan)}, None
@@ -1840,15 +1794,15 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT, review
     review = str(review or "all").strip().lower()
     if review == "attention":
         groups = [
-            group for group in groups
-            if _group_review_flags(group)
-            or (review_states.get(group.get("id")) or {}).get("requires_review")
+            group
+            for group in groups
+            if _group_review_flags(group) or (review_states.get(group.get("id")) or {}).get("requires_review")
         ]
     elif review == "ready":
         groups = [
-            group for group in groups
-            if not _group_review_flags(group)
-            and not (review_states.get(group.get("id")) or {}).get("requires_review")
+            group
+            for group in groups
+            if not _group_review_flags(group) and not (review_states.get(group.get("id")) or {}).get("requires_review")
         ]
     else:
         review = "all"
@@ -1867,10 +1821,7 @@ def groups_payload(scan_id, offset=0, limit=DUPLICATE_GROUP_PAGE_DEFAULT, review
         "previous_offset": max(0, offset - limit) if offset > 0 else None,
         "large_result": total >= DUPLICATE_GROUP_LARGE_RESULT_COUNT,
         "review": review,
-        "groups": [
-            _public_group_summary(group, review_states.get(group.get("id")))
-            for group in page
-        ],
+        "groups": [_public_group_summary(group, review_states.get(group.get("id"))) for group in page],
     }, None
 
 
@@ -1908,9 +1859,7 @@ def group_payload(scan_id, group_id, keep_video_id=""):
         )
         projected["recommended_keep_id"] = keep_video_id
         projected["remove_ids"] = [
-            video.get("id")
-            for video in projected.get("videos") or []
-            if video.get("id") != keep_video_id
+            video.get("id") for video in projected.get("videos") or [] if video.get("id") != keep_video_id
         ]
     review_draft = duplicate_review_store.mapped_payload(scan)
     return {
@@ -1958,10 +1907,7 @@ def delete_review_draft(scan_id):
 def _prune_duplicate_refresh_runs_locked(now=None):
     now = now or time.time()
     terminal = sorted(
-        (
-            run for run in duplicate_refresh_runs.values()
-            if run.get("status") in SCAN_TERMINAL_STATUSES
-        ),
+        (run for run in duplicate_refresh_runs.values() if run.get("status") in SCAN_TERMINAL_STATUSES),
         key=lambda item: item.get("_finished_ts") or item.get("_created_ts") or 0,
         reverse=True,
     )
@@ -2019,9 +1965,7 @@ def _direct_main_videos(folder):
 def _rebuilt_folder_groups(scan, folder, lib_root):
     settings = scan.get("settings") or duplicate_settings()
     videos = _direct_main_videos(folder)
-    protected_sets = {
-        item["id"]: item for item in _related_release_sets(videos) if item.get("id")
-    }
+    protected_sets = {item["id"]: item for item in _related_release_sets(videos) if item.get("id")}
     protected_paths = {
         os.path.normcase(os.path.realpath(path))
         for item in protected_sets.values()
@@ -2030,13 +1974,8 @@ def _rebuilt_folder_groups(scan, folder, lib_root):
     groups = []
     group_index = 1
     for paths in _candidate_groups(videos, settings=settings):
-        actionable_paths = [
-            path for path in paths
-            if os.path.normcase(os.path.realpath(path)) not in protected_paths
-        ]
-        built, built_protected = _build_groups(
-            actionable_paths, group_index, lib_root, settings
-        )
+        actionable_paths = [path for path in paths if os.path.normcase(os.path.realpath(path)) not in protected_paths]
+        built, built_protected = _build_groups(actionable_paths, group_index, lib_root, settings)
         groups.extend(built)
         group_index += len(built)
         for item in built_protected:
@@ -2083,9 +2022,9 @@ def _run_duplicate_refresh(run):
         original_groups = list(scan.get("groups") or [])
         original_by_folder = {}
         for group in original_groups:
-            original_by_folder.setdefault(
-                os.path.normcase(os.path.realpath(group.get("folder") or "")), []
-            ).append(group)
+            original_by_folder.setdefault(os.path.normcase(os.path.realpath(group.get("folder") or "")), []).append(
+                group
+            )
 
         replacements = {}
         replacement_protected = {}
@@ -2121,12 +2060,10 @@ def _run_duplicate_refresh(run):
                     group["id"] = candidate
                     used_ids.add(candidate)
                 refreshed_ids.append(group.get("id"))
-            removed_ids.extend(
-                group.get("id") for group in old_groups
-                if group.get("id") not in matched_old_ids
-            )
+            removed_ids.extend(group.get("id") for group in old_groups if group.get("id") not in matched_old_ids)
             removed_review_keys.extend(
-                group.get("review_key") for group in old_groups
+                group.get("review_key")
+                for group in old_groups
                 if group.get("id") not in matched_old_ids and group.get("review_key")
             )
             replacements[folder_key] = rebuilt
@@ -2145,13 +2082,12 @@ def _run_duplicate_refresh(run):
             if not live_scan:
                 raise RuntimeError("Scan not found")
             updated_groups = [
-                group for group in live_scan.get("groups") or []
+                group
+                for group in live_scan.get("groups") or []
                 if os.path.normcase(os.path.realpath(group.get("folder") or "")) not in refreshed_folder_keys
             ]
             for folder in folders:
-                updated_groups.extend(
-                    replacements.get(os.path.normcase(os.path.realpath(folder)), [])
-                )
+                updated_groups.extend(replacements.get(os.path.normcase(os.path.realpath(folder)), []))
             updated_groups.sort(
                 key=lambda group: (
                     str(group.get("folder") or "").lower(),
@@ -2159,7 +2095,8 @@ def _run_duplicate_refresh(run):
                 )
             )
             protected_sets = [
-                item for item in live_scan.get("protected_distinct_sets") or []
+                item
+                for item in live_scan.get("protected_distinct_sets") or []
                 if os.path.normcase(os.path.realpath(item.get("folder") or "")) not in refreshed_folder_keys
             ]
             for items in replacement_protected.values():
@@ -2168,9 +2105,7 @@ def _run_duplicate_refresh(run):
             live_scan["protected_distinct_sets"] = protected_sets
             live_scan["settings"] = copy.deepcopy(refresh_scan["settings"])
             live_scan["settings_fingerprint"] = refresh_scan["settings_fingerprint"]
-            live_scan["reclaimable_bytes"] = sum(
-                int(group.get("reclaimable_bytes") or 0) for group in updated_groups
-            )
+            live_scan["reclaimable_bytes"] = sum(int(group.get("reclaimable_bytes") or 0) for group in updated_groups)
             scan_for_persistence = live_scan
         duplicate_review_store.ensure_groups(
             scan_for_persistence,
@@ -2178,9 +2113,7 @@ def _run_duplicate_refresh(run):
             require_review=True,
             review_reason="This duplicate group was rebuilt from changed folder contents",
         )
-        maintenance_scan_store.update_persisted_scan(
-            "duplicates", scan_for_persistence, lib_root
-        )
+        maintenance_scan_store.update_persisted_scan("duplicates", scan_for_persistence, lib_root)
         duplicate_review_store.remove_review_keys(scan_for_persistence, removed_review_keys)
         finished = time.time()
         result = {
@@ -2394,9 +2327,7 @@ def _planned_operation(item, keep_video, action, settings, lib_root, override_op
     annotated_operation = str(item.get("default_operation") or "")
     if annotated_operation == "rename":
         default_operation = "rename"
-        default_target = item.get("default_destination_path") or _accessory_destination(
-            item, keep_video
-        )
+        default_target = item.get("default_destination_path") or _accessory_destination(item, keep_video)
         reason = item.get("default_reason") or "Sidecar will be renamed to the keeper stem"
     elif annotated_operation == "keep":
         default_operation, default_target = "keep", ""
@@ -2427,9 +2358,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     if not isinstance(payload, dict):
         return None, "Invalid request"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, freshness_error = maintenance_scan_store.library_root_allowed(
-        "duplicates", scan_id, lib_root
-    )
+    allowed, freshness_error = maintenance_scan_store.library_root_allowed("duplicates", scan_id, lib_root)
     if not allowed:
         return None, freshness_error
     action = str(payload.get("action") or "move").strip().lower()
@@ -2463,9 +2392,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     if isinstance(selection, dict) and selection.get("mode") == "all_eligible":
         selection_mode = "all_eligible"
         excluded_group_ids = set(unique_group_ids(selection.get("excluded_group_ids")))
-        selected_group_ids = [
-            group_id for group_id in groups_by_id if group_id not in excluded_group_ids
-        ]
+        selected_group_ids = [group_id for group_id in groups_by_id if group_id not in excluded_group_ids]
     elif isinstance(selection, dict) and selection.get("mode") == "explicit":
         selection_mode = "explicit"
         selected_group_ids = unique_group_ids(selection.get("group_ids"))
@@ -2487,15 +2414,9 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
         if not saved_state.get("saved"):
             continue
         group = groups_by_id.get(group_id) or {}
-        keep_video_id = str(
-            saved_state.get("keep_video_id") or group.get("recommended_keep_id") or ""
-        )
-        known_file_ids = {
-            str(item) for item in saved_state.get("known_file_ids") or [] if str(item or "")
-        }
-        included_file_ids = {
-            str(item) for item in saved_state.get("include_file_ids") or [] if str(item or "")
-        }
+        keep_video_id = str(saved_state.get("keep_video_id") or group.get("recommended_keep_id") or "")
+        known_file_ids = {str(item) for item in saved_state.get("known_file_ids") or [] if str(item or "")}
+        included_file_ids = {str(item) for item in saved_state.get("include_file_ids") or [] if str(item or "")}
         for video in group.get("videos") or []:
             candidates = [*(video.get("accessories") or [])]
             if video.get("id") != keep_video_id:
@@ -2576,7 +2497,8 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     selected_group_set = set(requested_selected_group_ids)
     skipped_groups = [group_id for group_id in groups_by_id if group_id not in selected_group_set]
     skipped_groups.extend(
-        group_id for group_id in requested_selected_group_ids
+        group_id
+        for group_id in requested_selected_group_ids
         if group_id not in ready_group_ids and group_id not in skipped_groups
     )
     manual_review = []
@@ -2626,8 +2548,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
             selected_ids = [
                 file_id
                 for file_id, item in candidate_files.items()
-                if item.get("default_selected") is not False
-                and item.get("default_operation") != "keep"
+                if item.get("default_selected") is not False and item.get("default_operation") != "keep"
             ]
         operation_overrides = _file_operation_overrides(override)
 
@@ -2671,9 +2592,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
                     reason = "Preserved sidecar will follow the canonical keeper filename"
                     if os.path.normcase(os.path.realpath(item.get("path", ""))) == os.path.normcase(destination_path):
                         continue
-                canonicalized_items.append(
-                    (file_id, item, operation, destination_path, reason)
-                )
+                canonicalized_items.append((file_id, item, operation, destination_path, reason))
             planned_items = canonicalized_items
         already_planned = {file_id for file_id, *_rest in planned_items}
         cleanup_paths_before_renames = {
@@ -2689,9 +2608,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
                 and os.path.normcase(destination_path) not in cleanup_paths_before_renames
             ):
                 continue
-            planned_items.append(
-                (item.get("id", ""), item, "rename", destination_path, reason)
-            )
+            planned_items.append((item.get("id", ""), item, "rename", destination_path, reason))
 
         scheduled_cleanup_paths = {
             os.path.normcase(os.path.realpath(item.get("path", "")))
@@ -2756,11 +2673,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
         )
     )
 
-    total_size = sum(
-        item.get("size_bytes") or 0
-        for item in files
-        if item.get("operation") in {"move", "delete"}
-    )
+    total_size = sum(item.get("size_bytes") or 0 for item in files if item.get("operation") in {"move", "delete"})
     playback_group_ids = {item.get("group_id") for item in files}
     playback_targets = []
     for group_id in playback_group_ids:
@@ -2777,9 +2690,7 @@ def build_duplicate_cleanup_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
             )
     playback = emby_playback.check_targets(playback_targets, force=True)
     for item in files:
-        item["emby_playback_status"] = emby_playback.group_status(
-            playback, playback_targets, item.get("group_id")
-        )
+        item["emby_playback_status"] = emby_playback.group_status(playback, playback_targets, item.get("group_id"))
     plan = {
         "id": plan_id,
         "scan_id": scan_id,
@@ -3032,13 +2943,8 @@ def list_duplicate_cleanup_logs():
     for item in index.get("logs") or []:
         public = dict(item)
         public.pop("path", None)
-        public["reversible"] = bool(
-            public.get("action") == "move"
-            and int(public.get("applied_count") or 0) > 0
-        )
-        remaining = (
-            _remaining_restorable_count(public.get("id")) if public["reversible"] else 0
-        )
+        public["reversible"] = bool(public.get("action") == "move" and int(public.get("applied_count") or 0) > 0)
+        remaining = _remaining_restorable_count(public.get("id")) if public["reversible"] else 0
         public["remaining_restorable_count"] = remaining
         # Availability follows what is actually left, so a partial restore does
         # not lock the rest of the run away.
@@ -3131,11 +3037,7 @@ def _remaining_restorable_count(log_id):
     if err:
         return 0
     restored_keys = restored_keys or set()
-    return sum(
-        1
-        for record in records
-        if _is_restorable_record(record) and _restore_key(record) not in restored_keys
-    )
+    return sum(1 for record in records if _is_restorable_record(record) and _restore_key(record) not in restored_keys)
 
 
 def duplicate_cleanup_log_items(log_id, lib_root=LIB_ROOT):
@@ -3238,20 +3140,13 @@ def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT, file_ids=None):
         if restore_key and restore_key in restored_keys:
             already_restored += 1
             continue
-        if selected and not (
-            str(record.get("file_id") or "") in selected or restore_key in selected
-        ):
+        if selected and not (str(record.get("file_id") or "") in selected or restore_key in selected):
             continue
         raw_source = str(record.get("new_path") or "").strip()
         raw_requested = str(record.get("old_path") or "").strip()
         source = os.path.realpath(raw_source) if raw_source else ""
         requested = os.path.realpath(raw_requested) if raw_requested else ""
-        if (
-            not source
-            or not requested
-            or not path_is_under(source, root)
-            or not path_is_under(requested, root)
-        ):
+        if not source or not requested or not path_is_under(source, root) or not path_is_under(requested, root):
             unavailable.append({"source_path": source, "reason": "Restore path is outside the library"})
             continue
         if not os.path.isfile(source) or os.path.islink(source):
@@ -3260,9 +3155,7 @@ def build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT, file_ids=None):
         requested_key = os.path.normcase(requested)
         collision = os.path.lexists(requested) and requested_key not in vacated
         destination = (
-            _unique_restore_destination(requested, reserved)
-            if collision or requested_key in reserved
-            else requested
+            _unique_restore_destination(requested, reserved) if collision or requested_key in reserved else requested
         )
         files.append(
             {
@@ -3382,14 +3275,23 @@ def apply_duplicate_restore_plan(plan_id):
         {"local_path": item.get("source_path"), "update_type": "Deleted", "refresh_scope": "metadata"}
         for item in applied
     ] + [
-        {"local_path": item.get("destination_path"), "update_type": "Created", "refresh_scope": "metadata", "prefer_path": True}
+        {
+            "local_path": item.get("destination_path"),
+            "update_type": "Created",
+            "refresh_scope": "metadata",
+            "prefer_path": True,
+        }
         for item in applied
     ]
-    sync_result = emby_sync.sync_changes(
-        sync_changes,
-        workflow="duplicates_restore",
-        run_id=plan.get("id"),
-    ) if sync_changes else None
+    sync_result = (
+        emby_sync.sync_changes(
+            sync_changes,
+            workflow="duplicates_restore",
+            run_id=plan.get("id"),
+        )
+        if sync_changes
+        else None
+    )
     return {
         "plan_id": plan.get("id"),
         "log_id": plan.get("log_id"),
@@ -3407,9 +3309,7 @@ def apply_duplicate_restore_plan(plan_id):
 def _prune_duplicate_apply_runs_locked(now=None):
     now = now or time.time()
     terminal = [
-        (apply_id, run)
-        for apply_id, run in duplicate_apply_runs.items()
-        if run.get("status") in {"success", "failed"}
+        (apply_id, run) for apply_id, run in duplicate_apply_runs.items() if run.get("status") in {"success", "failed"}
     ]
     for apply_id, run in terminal:
         finished = run.get("_finished_ts") or run.get("_created_ts") or now
@@ -3492,7 +3392,11 @@ def public_apply_run(run):
         "large_operation": bool(run.get("large_operation")),
         "emby_sync": result.get("emby_sync") if result else None,
         "emby_playback": emby_playback.public_result(result.get("emby_playback")) if result else None,
-        "emby_notification": emby_notifications.public_result(run.get("emby_notification") or result.get("emby_notification")) if (run.get("emby_notification") or result) else None,
+        "emby_notification": emby_notifications.public_result(
+            run.get("emby_notification") or result.get("emby_notification")
+        )
+        if (run.get("emby_notification") or result)
+        else None,
         "result": _public_apply_result(result) if result else None,
         "log": (result.get("log") or None) if result else None,
     }
@@ -3647,10 +3551,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
         with maintenance_lock:
             scan = duplicate_scans.get(str(plan.get("scan_id") or ""))
             group = next(
-                (
-                    item for item in (scan or {}).get("groups") or []
-                    if item.get("id") == group_id
-                ),
+                (item for item in (scan or {}).get("groups") or [] if item.get("id") == group_id),
                 {},
             )
         if group:
@@ -3712,10 +3613,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
             )
     if skipped_group_ids:
         files = [item for item in files if item.get("group_id") not in skipped_group_ids]
-    log_records.extend(
-        {"type": "group", "result": "skipped_changed", **item}
-        for item in skipped_changed_groups
-    )
+    log_records.extend({"type": "group", "result": "skipped_changed", **item} for item in skipped_changed_groups)
     file_count = len(files)
     if apply_run:
         started = time.time()
@@ -3762,9 +3660,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
             if time.monotonic() - playback_checked >= emby_playback.RUN_REFRESH_SECONDS:
                 playback = emby_playback.check_targets(playback_targets, force=True)
                 playback_checked = time.monotonic()
-            group_decisions[group_id] = emby_playback.group_status(
-                playback, playback_targets, group_id
-            )
+            group_decisions[group_id] = emby_playback.group_status(playback, playback_targets, group_id)
         playback_status = group_decisions[group_id]
         if apply_run:
             _set_apply_progress(
@@ -3938,19 +3834,19 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
             )
     if apply_run and sync_changes:
         _set_apply_progress(apply_run, progress_label="Synchronizing cleanup changes with Emby")
-    emby_sync_result = emby_sync.sync_changes(
-        sync_changes,
-        workflow="duplicates",
-        run_id=(apply_run or {}).get("id") or plan.get("id"),
-    ) if sync_changes else None
-    reconciled_scan, resolved_group_ids, scan_reconciled = _reconcile_duplicate_scan_after_apply(
-        plan, applied
+    emby_sync_result = (
+        emby_sync.sync_changes(
+            sync_changes,
+            workflow="duplicates",
+            run_id=(apply_run or {}).get("id") or plan.get("id"),
+        )
+        if sync_changes
+        else None
     )
+    reconciled_scan, resolved_group_ids, scan_reconciled = _reconcile_duplicate_scan_after_apply(plan, applied)
     refresh_run = None
     if refresh_group_ids:
-        refresh_run, _refresh_error = start_duplicate_refresh(
-            plan.get("scan_id"), list(refresh_group_ids)
-        )
+        refresh_run, _refresh_error = start_duplicate_refresh(plan.get("scan_id"), list(refresh_group_ids))
     result = {
         "plan_id": plan.get("id", ""),
         "scan_id": plan.get("scan_id", ""),
@@ -4003,9 +3899,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
             int(item.get("size_bytes") or 0) for item in applied if item.get("operation") == "move"
         ),
         "deleted_files": sum(1 for item in applied if item.get("operation") == "delete"),
-        "deleted_bytes": sum(
-            int(item.get("size_bytes") or 0) for item in applied if item.get("operation") == "delete"
-        ),
+        "deleted_bytes": sum(int(item.get("size_bytes") or 0) for item in applied if item.get("operation") == "delete"),
         "other_files": sum(1 for item in applied if item.get("operation") == "rename"),
         "other_bytes": 0,
     }
@@ -4056,11 +3950,7 @@ def apply_duplicate_cleanup_plan(plan_id, apply_run=None):  # noqa: C901
 
 
 def _reconcile_duplicate_scan_after_apply(plan, applied):
-    affected_group_ids = {
-        item.get("group_id")
-        for item in applied or []
-        if item.get("group_id")
-    }
+    affected_group_ids = {item.get("group_id") for item in applied or [] if item.get("group_id")}
     scan_id = str((plan or {}).get("scan_id") or "")
     if not affected_group_ids or not scan_id:
         return None, [], False
@@ -4101,9 +3991,7 @@ def _reconcile_duplicate_scan_after_apply(plan, applied):
             continue
         replacement = rebuilt[0]
         replacement["id"] = group_id
-        replacement["impact_issue_id"] = group.get("impact_issue_id") or replacement.get(
-            "impact_issue_id", ""
-        )
+        replacement["impact_issue_id"] = group.get("impact_issue_id") or replacement.get("impact_issue_id", "")
         updated_groups.append(replacement)
 
     with maintenance_lock:
@@ -4111,9 +3999,7 @@ def _reconcile_duplicate_scan_after_apply(plan, applied):
         if not live_scan:
             return None, resolved_group_ids, False
         live_scan["groups"] = updated_groups
-        live_scan["reclaimable_bytes"] = sum(
-            int(group.get("reclaimable_bytes") or 0) for group in updated_groups
-        )
+        live_scan["reclaimable_bytes"] = sum(int(group.get("reclaimable_bytes") or 0) for group in updated_groups)
         scan_for_persistence = live_scan
     maintenance_scan_store.update_persisted_scan(
         "duplicates",
@@ -4121,7 +4007,8 @@ def _reconcile_duplicate_scan_after_apply(plan, applied):
         lib_root,
         removed_paths=[item.get("source_path") for item in applied if item.get("source_path")],
         accepted_paths=[
-            item.get("destination_path") for item in applied
+            item.get("destination_path")
+            for item in applied
             if item.get("operation") == "rename" and item.get("destination_path")
         ],
     )

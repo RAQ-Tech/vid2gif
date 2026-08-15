@@ -131,9 +131,18 @@ def _public(run):
         run = stored.get("last_run")
         if not run:
             return {
-                "id": "", "status": "idle", "active": False, "path": stored.get("last_scope") or config.LIB_ROOT,
-                "progress_percent": 0, "progress_label": "Ready", "current_area": "", "areas": {},
-                "created_at": None, "started_at": None, "finished_at": None, "cancel_requested": False,
+                "id": "",
+                "status": "idle",
+                "active": False,
+                "path": stored.get("last_scope") or config.LIB_ROOT,
+                "progress_percent": 0,
+                "progress_label": "Ready",
+                "current_area": "",
+                "areas": {},
+                "created_at": None,
+                "started_at": None,
+                "finished_at": None,
+                "cancel_requested": False,
             }
         if run.get("status") in {"queued", "running", "cancelling"}:
             run = copy.deepcopy(run)
@@ -201,17 +210,10 @@ def _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_s
         local_progress = int(scan.get("progress_percent") or 0)
         local_indeterminate = bool(scan.get("progress_indeterminate"))
         overall = int(
-            100
-            * (completed_steps + (0 if local_indeterminate else local_progress / 100.0))
-            / max(total_steps, 1)
+            100 * (completed_steps + (0 if local_indeterminate else local_progress / 100.0)) / max(total_steps, 1)
         )
-        label = (
-            scan.get("progress_label_base")
-            or scan.get("current_stage")
-            or sublabel
-            or AREA_LABELS[area]
-        )
-        pending_steps = (run.get("_expanded_steps") or [])[completed_steps + 1:]
+        label = scan.get("progress_label_base") or scan.get("current_stage") or sublabel or AREA_LABELS[area]
+        pending_steps = (run.get("_expanded_steps") or [])[completed_steps + 1 :]
         future = task_progress.plan_estimate(_step_plan(pending_steps))
         current_eta = scan.get("eta_seconds")
         eta = (
@@ -227,9 +229,7 @@ def _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_s
             else ("learning" if eta is not None else "calibrating")
         )
         eta_detail = (
-            f"about {format_duration(eta)} remaining"
-            if eta is not None
-            else "learning timing for remaining checks"
+            f"about {format_duration(eta)} remaining" if eta is not None else "learning timing for remaining checks"
         )
         _update(
             run,
@@ -239,19 +239,21 @@ def _wait_for_scan(run, area, scan_id, status_loader, cancel_loader, completed_s
             progress_total_steps=total_steps,
             eta_seconds=eta,
             eta_confidence=eta_confidence,
-            progress_label=(
-                f"{completed_steps} of {total_steps} checks complete · "
-                f"{label} · {eta_detail}"
-            ),
+            progress_label=(f"{completed_steps} of {total_steps} checks complete · {label} · {eta_detail}"),
         )
         _area_update(
-            run, area, status=status, scan_id=scan.get("id") or scan_id,
+            run,
+            area,
+            status=status,
+            scan_id=scan.get("id") or scan_id,
             progress_percent=local_progress,
             progress_indeterminate=bool(scan.get("progress_indeterminate")),
             eta_seconds=scan.get("eta_seconds"),
             eta_confidence=scan.get("eta_confidence", "none"),
-            progress_label=label, error=err or scan.get("error") or "",
-            result_count=_scan_result_count(scan, area), finished_at=scan.get("finished_at"),
+            progress_label=label,
+            error=err or scan.get("error") or "",
+            result_count=_scan_result_count(scan, area),
+            finished_at=scan.get("finished_at"),
         )
         if status not in {"queued", "running", "cancelling"}:
             return scan, err
@@ -267,7 +269,9 @@ def _poster_status(scan_id):
 
 
 def _run_step(run, area, start_loader, status_loader, cancel_loader, completed_steps, total_steps, sublabel=""):
-    _area_update(run, area, status="running", started_at=utc_iso(), progress_label=sublabel or f"Scanning {AREA_LABELS[area]}")
+    _area_update(
+        run, area, status="running", started_at=utc_iso(), progress_label=sublabel or f"Scanning {AREA_LABELS[area]}"
+    )
     started, err = start_loader(run["path"])
     if err:
         _area_update(run, area, status="failed", error=err, finished_at=utc_iso(), progress_percent=100)
@@ -307,7 +311,15 @@ def _execute(run):  # noqa: C901
             if step == "actor_images":
                 settings = actor_image_maintenance._settings()
                 if not settings.get("emby_url") or not settings.get("emby_api_key"):
-                    _area_update(run, area, status="skipped", error="Emby configuration is required", progress_percent=100, progress_label="Skipped: configure Emby", finished_at=utc_iso())
+                    _area_update(
+                        run,
+                        area,
+                        status="skipped",
+                        error="Emby configuration is required",
+                        progress_percent=100,
+                        progress_label="Skipped: configure Emby",
+                        finished_at=utc_iso(),
+                    )
                     completed += 1
                     _update(
                         run,
@@ -317,39 +329,103 @@ def _execute(run):  # noqa: C901
                     )
                     continue
             if step == "overview":
-                result, err = _run_step(run, area, lambda path: dashboard.start_library_scan(path), _library_status, lambda _id: dashboard.cancel_library_scan(), completed, total_steps)
+                result, err = _run_step(
+                    run,
+                    area,
+                    lambda path: dashboard.start_library_scan(path),
+                    _library_status,
+                    lambda _id: dashboard.cancel_library_scan(),
+                    completed,
+                    total_steps,
+                )
             elif step == "duplicates":
-                result, err = _run_step(run, area, lambda path: maintenance.start_duplicate_scan(path), maintenance.status_payload, maintenance.cancel_duplicate_scan, completed, total_steps)
+                result, err = _run_step(
+                    run,
+                    area,
+                    lambda path: maintenance.start_duplicate_scan(path),
+                    maintenance.status_payload,
+                    maintenance.cancel_duplicate_scan,
+                    completed,
+                    total_steps,
+                )
             elif step == "video_previews_missing":
-                result, err = _run_step(run, area, lambda path: video_preview_maintenance.start_scan(path), video_preview_maintenance.status_payload, video_preview_maintenance.cancel_scan, completed, total_steps, "Scanning missing video previews")
+                result, err = _run_step(
+                    run,
+                    area,
+                    lambda path: video_preview_maintenance.start_scan(path),
+                    video_preview_maintenance.status_payload,
+                    video_preview_maintenance.cancel_scan,
+                    completed,
+                    total_steps,
+                    "Scanning missing video previews",
+                )
                 if result:
-                    _area_update(run, area, missing_scan_id=result.get("id"), missing_count=result.get("missing_count", 0))
+                    _area_update(
+                        run, area, missing_scan_id=result.get("id"), missing_count=result.get("missing_count", 0)
+                    )
             elif step == "video_previews_quality":
-                result, err = _run_step(run, area, lambda path: video_preview_maintenance.start_quality_scan(path), video_preview_maintenance.quality_status_payload, video_preview_maintenance.cancel_quality_scan, completed, total_steps, "Checking video preview quality")
+                result, err = _run_step(
+                    run,
+                    area,
+                    lambda path: video_preview_maintenance.start_quality_scan(path),
+                    video_preview_maintenance.quality_status_payload,
+                    video_preview_maintenance.cancel_quality_scan,
+                    completed,
+                    total_steps,
+                    "Checking video preview quality",
+                )
                 if result:
-                    _area_update(run, area, quality_scan_id=result.get("id"), quality_problem_count=int(result.get("bad_count") or 0) + int(result.get("warning_count") or 0), result_count=int(run["areas"][area].get("missing_count") or 0) + int(result.get("bad_count") or 0) + int(result.get("warning_count") or 0))
+                    _area_update(
+                        run,
+                        area,
+                        quality_scan_id=result.get("id"),
+                        quality_problem_count=int(result.get("bad_count") or 0) + int(result.get("warning_count") or 0),
+                        result_count=int(run["areas"][area].get("missing_count") or 0)
+                        + int(result.get("bad_count") or 0)
+                        + int(result.get("warning_count") or 0),
+                    )
             elif step == "subtitles_missing":
                 result, err = _run_step(
-                    run, area,
+                    run,
+                    area,
                     lambda path: subtitle_maintenance.start_scan(path, mode="missing"),
                     subtitle_maintenance.status_payload,
                     subtitle_maintenance.cancel_scan,
-                    completed, total_steps,
+                    completed,
+                    total_steps,
                     "Scanning for missing subtitles",
                 )
             elif step == "subtitles_coverage":
                 result, err = _run_step(
-                    run, area,
+                    run,
+                    area,
                     lambda path: subtitle_maintenance.start_scan(path, mode="coverage"),
                     subtitle_maintenance.status_payload,
                     subtitle_maintenance.cancel_scan,
-                    completed, total_steps,
+                    completed,
+                    total_steps,
                     "Checking subtitle duration coverage",
                 )
             elif step == "posters":
-                result, err = _run_step(run, area, lambda path: poster_maintenance.start_poster_scan(path), _poster_status, poster_maintenance.cancel_poster_scan, completed, total_steps)
+                result, err = _run_step(
+                    run,
+                    area,
+                    lambda path: poster_maintenance.start_poster_scan(path),
+                    _poster_status,
+                    poster_maintenance.cancel_poster_scan,
+                    completed,
+                    total_steps,
+                )
             else:
-                result, err = _run_step(run, area, lambda path: actor_image_maintenance.start_scan(path), actor_image_maintenance.status_payload, actor_image_maintenance.cancel_scan, completed, total_steps)
+                result, err = _run_step(
+                    run,
+                    area,
+                    lambda path: actor_image_maintenance.start_scan(path),
+                    actor_image_maintenance.status_payload,
+                    actor_image_maintenance.cancel_scan,
+                    completed,
+                    total_steps,
+                )
             completed += 1
             if err or not result or result.get("status") not in {"success", "skipped"}:
                 issues = True
@@ -365,9 +441,31 @@ def _execute(run):  # noqa: C901
         else:
             status = "complete_with_issues" if issues else "complete"
             label = "Maintenance scans complete with issues" if issues else "Maintenance scans complete"
-        _update(run, status=status, progress_percent=100, progress_indeterminate=False, progress_completed_steps=total_steps, eta_seconds=0, progress_label=label, current_area="", finished_at=utc_iso(), _active_cancel=None)
+        _update(
+            run,
+            status=status,
+            progress_percent=100,
+            progress_indeterminate=False,
+            progress_completed_steps=total_steps,
+            eta_seconds=0,
+            progress_label=label,
+            current_area="",
+            finished_at=utc_iso(),
+            _active_cancel=None,
+        )
     except Exception as exc:
-        _update(run, status="complete_with_issues", error=str(exc), progress_percent=100, progress_indeterminate=False, eta_seconds=0, progress_label="Maintenance scans stopped unexpectedly", current_area="", finished_at=utc_iso(), _active_cancel=None)
+        _update(
+            run,
+            status="complete_with_issues",
+            error=str(exc),
+            progress_percent=100,
+            progress_indeterminate=False,
+            eta_seconds=0,
+            progress_label="Maintenance scans stopped unexpectedly",
+            current_area="",
+            finished_at=utc_iso(),
+            _active_cancel=None,
+        )
     finally:
         try:
             _write_state({"last_scope": run["path"], "last_run": _public(run)})
@@ -398,12 +496,39 @@ def start(path=None, areas=None, synchronous=False):
             return _public(_current), None
         run_id = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time_ns() % 1000000):06d}"
         run = {
-            "id": run_id, "status": "queued", "path": os.path.realpath(real), "selected_areas": selected,
-            "created_at": utc_iso(), "started_at": None, "finished_at": None, "progress_percent": 0,
-            "progress_indeterminate": False, "eta_seconds": None, "eta_confidence": "none",
-            "progress_completed_steps": 0, "progress_total_steps": 0,
-            "progress_label": "Queued", "current_area": "", "error": "", "cancel_requested": False,
-            "areas": {area: {"key": area, "label": AREA_LABELS[area], "href": AREA_HREFS[area], "status": "queued", "scan_id": "", "progress_percent": 0, "progress_label": "Queued", "error": "", "result_count": 0, "started_at": None, "finished_at": None} for area in selected},
+            "id": run_id,
+            "status": "queued",
+            "path": os.path.realpath(real),
+            "selected_areas": selected,
+            "created_at": utc_iso(),
+            "started_at": None,
+            "finished_at": None,
+            "progress_percent": 0,
+            "progress_indeterminate": False,
+            "eta_seconds": None,
+            "eta_confidence": "none",
+            "progress_completed_steps": 0,
+            "progress_total_steps": 0,
+            "progress_label": "Queued",
+            "current_area": "",
+            "error": "",
+            "cancel_requested": False,
+            "areas": {
+                area: {
+                    "key": area,
+                    "label": AREA_LABELS[area],
+                    "href": AREA_HREFS[area],
+                    "status": "queued",
+                    "scan_id": "",
+                    "progress_percent": 0,
+                    "progress_label": "Queued",
+                    "error": "",
+                    "result_count": 0,
+                    "started_at": None,
+                    "finished_at": None,
+                }
+                for area in selected
+            },
         }
         _current = run
     try:
@@ -414,7 +539,9 @@ def start(path=None, areas=None, synchronous=False):
     if synchronous:
         _execute(run)
     else:
-        threading.Thread(target=_execute, args=(run,), daemon=True, name=f"vid2gif-maintenance-orchestrator-{run_id}").start()
+        threading.Thread(
+            target=_execute, args=(run,), daemon=True, name=f"vid2gif-maintenance-orchestrator-{run_id}"
+        ).start()
     return _public(run), None
 
 

@@ -169,8 +169,9 @@ def test_actor_plan_and_apply_uploads_image_without_overwrite(monkeypatch, tmp_p
     monkeypatch.setattr(
         actor_image_maintenance.emby_notifications,
         "notify_maintenance",
-        lambda *args, **kwargs: notification_calls.append((args, kwargs))
-        or {"id": "notice", "status": "success", "message": "accepted"},
+        lambda *args, **kwargs: (
+            notification_calls.append((args, kwargs)) or {"id": "notice", "status": "success", "message": "accepted"}
+        ),
     )
 
     def opener(request, timeout=30):
@@ -283,9 +284,7 @@ def test_actor_routes_and_ui_assets(monkeypatch, tmp_path):
 
     def fake_emby(settings, api_path, params=None, **_kwargs):
         if api_path == "/Persons":
-            return [
-                {"Id": "p1", "Name": "Jane Doe", "ImageTags": {}}
-            ], emby_client.result("success", "ok")
+            return [{"Id": "p1", "Name": "Jane Doe", "ImageTags": {}}], emby_client.result("success", "ok")
         if api_path == "/Items":
             return [
                 {
@@ -374,10 +373,17 @@ def test_name_keyed_exceptions_survive_the_normalization_change(monkeypatch, tmp
     monkeypatch.setattr(actor_image_maintenance, "EXCEPTIONS_PATH", str(exceptions_path))
 
     # "amlie poulain" is what the old normalization produced for an accented name.
-    exceptions_path.write_text(json.dumps({"exceptions": {
-        "name:amlie poulain": {"name": "Amélie Poulain", "status": "ignored", "note": "no photo"},
-        "id:12345": {"person_id": "12345", "name": "Someone", "status": "blocked"},
-    }}), encoding="utf-8")
+    exceptions_path.write_text(
+        json.dumps(
+            {
+                "exceptions": {
+                    "name:amlie poulain": {"name": "Amélie Poulain", "status": "ignored", "note": "no photo"},
+                    "id:12345": {"person_id": "12345", "name": "Someone", "status": "blocked"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     loaded = actor_image_maintenance.load_exceptions()
 
@@ -400,10 +406,17 @@ def test_migration_does_not_clobber_an_entry_already_on_the_new_key(monkeypatch,
     exceptions_path = tmp_path / "exceptions.json"
     monkeypatch.setattr(actor_image_maintenance, "EXCEPTIONS_PATH", str(exceptions_path))
 
-    exceptions_path.write_text(json.dumps({"exceptions": {
-        "name:amlie poulain": {"name": "Amélie Poulain", "status": "ignored", "note": "stale"},
-        "name:amelie poulain": {"name": "Amelie Poulain", "status": "blocked", "note": "current"},
-    }}), encoding="utf-8")
+    exceptions_path.write_text(
+        json.dumps(
+            {
+                "exceptions": {
+                    "name:amlie poulain": {"name": "Amélie Poulain", "status": "ignored", "note": "stale"},
+                    "name:amelie poulain": {"name": "Amelie Poulain", "status": "blocked", "note": "current"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     loaded = actor_image_maintenance.load_exceptions()
 

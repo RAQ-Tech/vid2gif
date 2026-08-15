@@ -38,6 +38,7 @@ npm ci --ignore-scripts
 python -m pip_audit -r requirements.txt
 python -m pip_audit -r requirements-dev.txt
 python -m ruff check .
+python -m ruff format --check .
 npm audit --audit-level=low
 npm run test:frontend
 npm run build:frontend
@@ -323,7 +324,9 @@ increase processing time.
 ## Contributing
 
 - Follow [`DESIGN.md`](DESIGN.md) for user-facing interface and interaction work.
-- Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines; `python -m ruff check .` enforces them and runs in CI.
+- Follow [PEP 8](https://peps.python.org/pep-0008/) style guidelines; `python -m ruff check .`
+  enforces them and runs in CI. Run `python -m ruff format .` before committing —
+  CI fails on unformatted code.
 - Add tests under [`tests/`](tests/) and ensure they pass with `python -m pytest`.
 - Run `npm run test:frontend` and rebuild the checked-in frontend bundle after changing Test Lab source files.
 - Run `npm run test:browser` for Chromium interaction, responsive-layout, and accessibility checks.

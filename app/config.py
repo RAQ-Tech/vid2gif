@@ -16,13 +16,9 @@ STATE_ROOT_IS_DEFAULT = os.getenv("STATE_ROOT") is None
 STATE_ROOT = os.getenv("STATE_ROOT", "/state")
 LOG_DIR = os.getenv("LOG_DIR", os.path.join(STATE_ROOT, "logs"))
 TMP_ROOT = os.getenv("TMP_ROOT", os.path.join(STATE_ROOT, "tmp"))
-PROCESS_TMP_ROOT = os.getenv(
-    "PROCESS_TMP_ROOT", os.path.join(STATE_ROOT, "processing", "tmp")
-)
+PROCESS_TMP_ROOT = os.getenv("PROCESS_TMP_ROOT", os.path.join(STATE_ROOT, "processing", "tmp"))
 TEST_LAB_ROOT = os.getenv("TEST_LAB_ROOT", os.path.join(STATE_ROOT, "test-lab"))
-LANDSCAPE_POSTER_ROOT = os.getenv(
-    "LANDSCAPE_POSTER_ROOT", os.path.join(STATE_ROOT, "landscape-posters")
-)
+LANDSCAPE_POSTER_ROOT = os.getenv("LANDSCAPE_POSTER_ROOT", os.path.join(STATE_ROOT, "landscape-posters"))
 GIF_OPTIMIZE = os.getenv("GIF_OPTIMIZE", "1").strip().lower() in {
     "1",
     "true",
@@ -32,13 +28,10 @@ GIF_OPTIMIZE = os.getenv("GIF_OPTIMIZE", "1").strip().lower() in {
 GIF_OPTIMIZE_LEVEL = os.getenv("GIF_OPTIMIZE_LEVEL", "2")
 GIFSICLE_BIN = os.getenv("GIFSICLE_BIN", "gifsicle")
 GIF_OPTIMIZE_TIMEOUT = _env_int("GIF_OPTIMIZE_TIMEOUT", 600)
-GIF_GENERATION_STALL_TIMEOUT = max(
-    30, _env_int("GIF_GENERATION_STALL_TIMEOUT", 180)
-)
+GIF_GENERATION_STALL_TIMEOUT = max(30, _env_int("GIF_GENERATION_STALL_TIMEOUT", 180))
 LANDSCAPE_POSTER_INTERVAL_SECONDS = _env_int("LANDSCAPE_POSTER_INTERVAL_SECONDS", 900)
-LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS = _env_int(
-    "LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS", 86400
-)
+LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS = _env_int("LANDSCAPE_POSTER_FULL_INTERVAL_SECONDS", 86400)
+
 
 class StateRootError(RuntimeError):
     """STATE_ROOT is unusable, and guessing would write somewhere unwanted."""
@@ -59,10 +52,13 @@ def _ensure_state_directories():
     """
     if STATE_ROOT_IS_DEFAULT and not os.path.isdir(STATE_ROOT):
         raise StateRootError(
-            f"""STATE_ROOT is not set and the default {STATE_ROOT!r} does not exist, so there is nowhere safe to put application state.
-  - Running locally: export STATE_ROOT to a scratch directory first, for example STATE_ROOT=/tmp/vid2gif-state.
-  - Running tests: use pytest, which sets it for you via tests/conftest.py.
-  - In Docker: /state is created by the image, so this should not happen -- check the volume mount."""
+            f"STATE_ROOT is not set and the default {STATE_ROOT!r} does not exist,"
+            " so there is nowhere safe to put application state."
+            "\n  - Running locally: export STATE_ROOT to a scratch directory first,"
+            " for example STATE_ROOT=/tmp/vid2gif-state."
+            "\n  - Running tests: use pytest, which sets it for you via tests/conftest.py."
+            "\n  - In Docker: /state is created by the image, so this should not happen"
+            " -- check the volume mount."
         )
     for path in (LOG_DIR, TMP_ROOT, PROCESS_TMP_ROOT, TEST_LAB_ROOT, LANDSCAPE_POSTER_ROOT):
         os.makedirs(path, exist_ok=True)
@@ -70,10 +66,10 @@ def _ensure_state_directories():
 
 _ensure_state_directories()
 
-VIDEO_EXTS = {".mkv",".mp4",".m4v",".mov",".avi",".wmv",".mpg",".mpeg",".webm"}
+VIDEO_EXTS = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".wmv", ".mpg", ".mpeg", ".webm"}
 
 DEFAULTS = {
-    "height": 480,   # using HEIGHT (scale keeps aspect via -1:HEIGHT)
+    "height": 480,  # using HEIGHT (scale keeps aspect via -1:HEIGHT)
     "fps": 15,
     "clip_len": 2.0,
     "percent_points": "10,20,30,40,50,60,70,80,90",

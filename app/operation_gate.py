@@ -11,9 +11,7 @@ ACTIVE_STATUSES = {"queued", "running", "cancelling", "waiting"}
 
 def _utc_iso(timestamp=None):
     timestamp = time.time() if timestamp is None else float(timestamp)
-    return datetime.datetime.fromtimestamp(
-        timestamp, tz=datetime.timezone.utc
-    ).isoformat()
+    return datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc).isoformat()
 
 
 def _state_value(state, *keys, default=None):
@@ -96,12 +94,8 @@ class LibraryOperationGate:
         }
         if finished:
             result["status"] = record.get("outcome") or status or "completed"
-            result["progress_percent"] = record.get(
-                "final_progress_percent", result["progress_percent"]
-            )
-            result["progress_label"] = record.get(
-                "final_progress_label", result["progress_label"]
-            )
+            result["progress_percent"] = record.get("final_progress_percent", result["progress_percent"])
+            result["progress_label"] = record.get("final_progress_label", result["progress_label"])
         return result
 
     @contextlib.contextmanager
@@ -142,9 +136,7 @@ class LibraryOperationGate:
                     record["finished_at"] = _utc_iso()
                     record["outcome"] = "cancelled"
                     record["final_progress_label"] = "Cancelled while waiting"
-                    record["final_progress_percent"] = _state_value(
-                        state, "progress_percent", default=0
-                    )
+                    record["final_progress_percent"] = _state_value(state, "progress_percent", default=0)
                     self._recent.appendleft(self._public(record, finished=True))
                     self._condition.notify_all()
                     raise OperationCancelled("Operation cancelled while waiting")
@@ -181,9 +173,7 @@ class LibraryOperationGate:
                     )
                     or ""
                 )
-                record["final_progress_percent"] = _state_value(
-                    state, "progress_percent", default=None
-                )
+                record["final_progress_percent"] = _state_value(state, "progress_percent", default=None)
                 self._recent.appendleft(self._public(record, finished=True))
                 self._condition.notify_all()
 

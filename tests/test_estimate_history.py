@@ -63,9 +63,7 @@ def test_estimate_uses_median_history_ratios(monkeypatch):
 
     assert payload["estimated_seconds"] == 40
     assert payload["estimated_size_bytes"] == 400
-    assert payload["message"] == (
-        "2 compatible files, estimated time 40 seconds, estimated total size 400 B"
-    )
+    assert payload["message"] == ("2 compatible files, estimated time 40 seconds, estimated total size 400 B")
 
 
 def test_estimate_filters_history_by_optimization_mode(monkeypatch):
@@ -101,9 +99,7 @@ def test_no_history_returns_calibration_message(monkeypatch):
     assert payload["estimated_seconds"] is None
     assert payload["estimated_size_bytes"] is None
     assert payload["confidence"] == "calibration"
-    assert payload["message"] == (
-        "54 compatible files. Run one GIF to calibrate time and size estimates."
-    )
+    assert payload["message"] == ("54 compatible files. Run one GIF to calibrate time and size estimates.")
 
 
 def test_corrupt_history_file_falls_back_to_no_samples(tmp_path):

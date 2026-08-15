@@ -127,12 +127,7 @@ def _validate_scan_path(path, lib_root):
     if not target:
         return None, "Choose a folder under the library"
     real = resolve_case_insensitive(target)
-    if (
-        not real
-        or not path_is_under(real, lib_root)
-        or not os.path.isdir(real)
-        or os.path.islink(real)
-    ):
+    if not real or not path_is_under(real, lib_root) or not os.path.isdir(real) or os.path.islink(real):
         return None, "Path not found"
     return os.path.realpath(real), None
 
@@ -195,11 +190,7 @@ def _person_matches(person_ref, missing_by_id, missing_by_name):
 def _local_item_path(item, scan_path, lib_root, settings=None):
     settings = settings or _settings()
     paths = [item.get("Path") or item.get("path")]
-    paths.extend(
-        source.get("Path")
-        for source in (item.get("MediaSources") or [])
-        if isinstance(source, dict)
-    )
+    paths.extend(source.get("Path") for source in (item.get("MediaSources") or []) if isinstance(source, dict))
     candidates = []
     for raw in paths:
         raw = str(raw or "").strip()
@@ -242,7 +233,7 @@ def _candidate_actor_name(entry, video_stem=""):
     working = stem
     lower_stem = video_stem.lower()
     if video_stem and working.lower().startswith(lower_stem):
-        working = working[len(video_stem):].lstrip(" -_.")
+        working = working[len(video_stem) :].lstrip(" -_.")
     lower = working.lower()
     for token in ("performer", "actor"):
         marker = f"{token}-"
@@ -592,10 +583,9 @@ def _build_items(settings, scan, lib_root, opener=None):
             relative_parts = os.path.relpath(local_path, scan_path).split(os.sep)[:-1]
         except ValueError:
             relative_parts = []
-        if (
-            any(media_scope.is_non_main_video_dir(part) for part in relative_parts)
-            or not media_scope.is_main_video_filename(local_path)
-        ):
+        if any(
+            media_scope.is_non_main_video_dir(part) for part in relative_parts
+        ) or not media_scope.is_main_video_filename(local_path):
             continue
         for person_ref in media.get("People") or []:
             if str(person_ref.get("Type") or "").lower() not in {"", "actor", "person"}:
@@ -678,9 +668,7 @@ def _build_items(settings, scan, lib_root, opener=None):
     return items, len(people), len(media_items)
 
 
-@coordinated_library_operation(
-    "Scan actor images", kind="scan", href="/maintenance#actor-images"
-)
+@coordinated_library_operation("Scan actor images", kind="scan", href="/maintenance#actor-images")
 def _run_scan(scan, lib_root, opener=None):
     try:
         started = time.time()
@@ -762,9 +750,7 @@ def _run_scan(scan, lib_root, opener=None):
                 "checked_item_count": checked_media,
             },
         )
-        persisted = maintenance_scan_store.persist_success(
-            "actor_images", "actor_images", scan, lib_root
-        )
+        persisted = maintenance_scan_store.persist_success("actor_images", "actor_images", scan, lib_root)
         if persisted:
             with actor_lock:
                 for candidate in actor_scans.values():
@@ -806,11 +792,7 @@ def _prune_scans_locked(now=None):
         if not scan.get("_persisted_latest") and now - finished > SCAN_MAX_AGE_SECONDS:
             actor_scans.pop(scan_id, None)
     terminal = sorted(
-        (
-            (scan_id, scan)
-            for scan_id, scan in actor_scans.items()
-            if scan.get("status") in SCAN_TERMINAL_STATUSES
-        ),
+        ((scan_id, scan) for scan_id, scan in actor_scans.items() if scan.get("status") in SCAN_TERMINAL_STATUSES),
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
@@ -908,7 +890,11 @@ def status_payload(scan_id=None):
         elif actor_scans:
             active = _active_scan_locked()
             successful = [item for item in actor_scans.values() if item.get("status") == "success"]
-            scan = active or (max(successful, key=lambda item: item.get("_finished_ts") or 0) if successful else max(actor_scans.values(), key=lambda item: item.get("_created_ts") or 0))
+            scan = active or (
+                max(successful, key=lambda item: item.get("_finished_ts") or 0)
+                if successful
+                else max(actor_scans.values(), key=lambda item: item.get("_created_ts") or 0)
+            )
         else:
             scan = None
     return {
@@ -921,7 +907,18 @@ def items_payload(scan_id, status="all", offset=0, limit=ITEM_PAGE_DEFAULT, sort
     _ensure_cache_loaded()
     offset, limit = _coerce_page(offset, limit)
     status = str(status or "all").lower()
-    allowed = {"all", "ready", "ambiguous", "no_candidate", "ignored", "manual", "blocked", "imported", "failed", "unresolved"}
+    allowed = {
+        "all",
+        "ready",
+        "ambiguous",
+        "no_candidate",
+        "ignored",
+        "manual",
+        "blocked",
+        "imported",
+        "failed",
+        "unresolved",
+    }
     if status not in allowed:
         status = "all"
     with actor_lock:
@@ -933,11 +930,15 @@ def items_payload(scan_id, status="all", offset=0, limit=ITEM_PAGE_DEFAULT, sort
             return None, "Scan is not complete"
         items = list(scan.get("items") or [])
     if status == "unresolved":
-        items = [item for item in items if item.get("status") in {"ambiguous", "no_candidate", "manual", "blocked", "failed"}]
+        items = [
+            item for item in items if item.get("status") in {"ambiguous", "no_candidate", "manual", "blocked", "failed"}
+        ]
     elif status != "all":
         items = [item for item in items if item.get("status") == status]
     items, sort, direction = sort_records(
-        items, sort, direction,
+        items,
+        sort,
+        direction,
         {
             "status": lambda item: item.get("status"),
             "actor": lambda item: item.get("name"),
@@ -986,9 +987,7 @@ def build_import_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     if not isinstance(payload, dict):
         return None, "Plan payload is invalid"
     scan_id = str(payload.get("scan_id") or "")
-    allowed, freshness_error = maintenance_scan_store.action_allowed(
-        "actor_images", scan_id, lib_root
-    )
+    allowed, freshness_error = maintenance_scan_store.action_allowed("actor_images", scan_id, lib_root)
     if not allowed:
         return None, freshness_error
     with actor_lock:
@@ -1007,18 +1006,10 @@ def build_import_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
             if item.get("status") == "ready" and item.get("id")
         }
         if selection.get("mode") == "all_eligible":
-            excluded = {
-                str(value or "")
-                for value in selection.get("excluded_item_ids") or []
-                if str(value or "")
-            }
+            excluded = {str(value or "") for value in selection.get("excluded_item_ids") or [] if str(value or "")}
             selected = {item_id: "" for item_id in ready_ids if item_id not in excluded}
         elif selection.get("mode") == "explicit":
-            item_ids = {
-                str(value or "")
-                for value in selection.get("item_ids") or []
-                if str(value or "")
-            }
+            item_ids = {str(value or "") for value in selection.get("item_ids") or [] if str(value or "")}
             selected = {item_id: "" for item_id in item_ids}
         else:
             return None, "Actor selection mode is invalid"
@@ -1058,7 +1049,13 @@ def build_import_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
                 "candidate_path": candidate.get("path", ""),
                 "candidate_name": candidate.get("name", ""),
                 "candidate_relative_path": candidate.get("relative_path", ""),
-                "emby_item_ids": sorted({video.get("emby_item_id") for video in item.get("related_videos") or [] if video.get("emby_item_id")}),
+                "emby_item_ids": sorted(
+                    {
+                        video.get("emby_item_id")
+                        for video in item.get("related_videos") or []
+                        if video.get("emby_item_id")
+                    }
+                ),
                 "size_bytes": candidate.get("size_bytes", 0),
                 "size_label": candidate.get("size_label", ""),
                 "identity": candidate.get("identity") or {},
@@ -1115,20 +1112,14 @@ def public_plan(plan):
 def _prune_apply_runs_locked(now=None):
     now = now or time.time()
     terminal = [
-        (apply_id, run)
-        for apply_id, run in actor_apply_runs.items()
-        if run.get("status") in {"success", "failed"}
+        (apply_id, run) for apply_id, run in actor_apply_runs.items() if run.get("status") in {"success", "failed"}
     ]
     for apply_id, run in terminal:
         finished = run.get("_finished_ts") or run.get("_created_ts") or now
         if now - finished > APPLY_MAX_AGE_SECONDS:
             actor_apply_runs.pop(apply_id, None)
     terminal = sorted(
-        (
-            (apply_id, run)
-            for apply_id, run in actor_apply_runs.items()
-            if run.get("status") in {"success", "failed"}
-        ),
+        ((apply_id, run) for apply_id, run in actor_apply_runs.items() if run.get("status") in {"success", "failed"}),
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
@@ -1431,7 +1422,9 @@ def _execute_import_apply_inner(apply_id, opener=None):
         status=status,
         result=result,
         progress_percent=100,
-        progress_label="Actor image import complete" if status == "success" else "Actor image import finished with errors",
+        progress_label="Actor image import complete"
+        if status == "success"
+        else "Actor image import finished with errors",
         _finished_ts=finished,
         finished_at=utc_iso(finished),
         current_name="",
@@ -1467,7 +1460,9 @@ def public_apply_run(run):
         "result": {
             **{key: value for key, value in result.items() if key != "log"},
             "log": {key: value for key, value in (result.get("log") or {}).items() if key != "path"},
-        } if result else None,
+        }
+        if result
+        else None,
     }
 
 

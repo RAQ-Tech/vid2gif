@@ -11,12 +11,10 @@ extend-exclude = ["app/static/vendor"]
 # (functions that have grown past the point of being safely changeable).
 select = ["E", "W", "F", "B", "C901"]
 
-# E501 (line too long) is not enforced. 1267 lines exceed the default limit and
-# rewrapping them across maintenance.py, video_preview_maintenance.py, and
-# poster_maintenance.py would be a large diff through safety-critical code for
-# no behavioural gain. Adopting a formatter is the way to fix this properly, and
-# that is a separate decision -- see BACKLOG.md.
-ignore = ["E501"]
+# E501 (line too long) is enforced at the 120 columns above. `ruff format` keeps
+# it that way; the three lines it could not wrap -- long f-strings -- were split
+# by hand. Nothing is ignored here.
+ignore = []
 
 [lint.mccabe]
 # Cyclomatic complexity ceiling. Functions already above it carry an explicit
@@ -30,3 +28,10 @@ max-complexity = 15
 # Test modules append the repository root to sys.path before importing `app`,
 # so their imports legitimately follow executable statements.
 "tests/*" = ["E402"]
+
+[format]
+# Formatting is checked in CI with `ruff format --check .`. Adopting it was a
+# 5,000-line mechanical diff across 59 files; every file's parsed syntax tree was
+# compared before and after and came back identical, so nothing about behaviour
+# changed. Run `ruff format .` before committing rather than hand-aligning code.
+quote-style = "preserve"

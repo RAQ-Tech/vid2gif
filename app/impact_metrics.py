@@ -44,9 +44,7 @@ def default_store(now=None):
         "updated_at": now,
         "processed_events": {},
         "open_issues": {},
-        "categories": {
-            key: _default_category() for key, _title, _href in CATEGORY_DEFINITIONS
-        },
+        "categories": {key: _default_category() for key, _title, _href in CATEGORY_DEFINITIONS},
         "operations": {
             "quarantined_files": 0,
             "quarantined_bytes": 0,
@@ -262,7 +260,7 @@ def record_scan(event_id, category, stream, scope, issues, timestamp=None):
             for issue_id, current in list(data.get("open_issues", {}).items()):
                 if current.get("category") != category or issue_id in found:
                     continue
-                source = (_issue_sources(current).get(stream) or {})
+                source = _issue_sources(current).get(stream) or {}
                 issue_path = current.get("path") or source.get("scope") or ""
                 if source and _path_is_within(issue_path, scope):
                     current["sources"].pop(stream, None)
@@ -338,16 +336,12 @@ def record_maintenance_action(
                 if resolution.get("resolve_all"):
                     current["sources"] = {}
                 elif stream in current.get("sources", {}):
-                    finding_ids = {
-                        str(value) for value in resolution.get("finding_ids") or [] if str(value)
-                    }
+                    finding_ids = {str(value) for value in resolution.get("finding_ids") or [] if str(value)}
                     if not finding_ids:
                         current["sources"].pop(stream, None)
                     else:
                         source = current["sources"][stream]
-                        remaining = [
-                            value for value in source.get("finding_ids") or [] if value not in finding_ids
-                        ]
+                        remaining = [value for value in source.get("finding_ids") or [] if value not in finding_ids]
                         if remaining:
                             source["finding_ids"] = remaining
                         else:
@@ -404,7 +398,9 @@ def record_creative_output(event_id, kind, output_bytes=0, saved_bytes=0, timest
             key = "standard_gifs" if kind == "standard" else "test_lab_variants"
             creative[key] = int(creative.get(key) or 0) + 1
             creative["output_bytes"] = int(creative.get("output_bytes") or 0) + max(0, int(output_bytes or 0))
-            creative["optimization_saved_bytes"] = int(creative.get("optimization_saved_bytes") or 0) + max(0, int(saved_bytes or 0))
+            creative["optimization_saved_bytes"] = int(creative.get("optimization_saved_bytes") or 0) + max(
+                0, int(saved_bytes or 0)
+            )
             creative["last_created_at"] = timestamp
             _day_bucket(data, timestamp)["gifs_created"] += 1
             _mark_event(data, event_id, timestamp)

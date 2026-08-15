@@ -183,9 +183,7 @@ def test_test_lab_worker_reuses_existing_fingerprint_without_ffmpeg(monkeypatch,
     monkeypatch.setattr(
         test_lab,
         "make_gif_multi_inputs",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("ffmpeg should not run for a reusable test GIF")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ffmpeg should not run for a reusable test GIF")),
     )
     monkeypatch.setattr(
         test_lab,

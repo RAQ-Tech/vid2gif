@@ -136,12 +136,7 @@ def _safe_file_path(run_id, filename):
 def _safe_preview_path(run_id, filename):
     run_id = _safe_name(run_id)
     filename = _safe_name(filename)
-    if (
-        not run_id
-        or not filename
-        or not filename.lower().endswith(".gif")
-        or PREVIEW_DIR_NAME in {run_id, filename}
-    ):
+    if not run_id or not filename or not filename.lower().endswith(".gif") or PREVIEW_DIR_NAME in {run_id, filename}:
         return None
     path = os.path.realpath(os.path.join(_preview_dir(run_id), filename))
     if not path_is_under(path, TEST_LAB_ROOT):
@@ -257,9 +252,7 @@ def request_fingerprint(video_path, cfg, lib_root=LIB_ROOT, background_image=Non
         "settings": normalized_cfg(cfg),
         "optimization": {
             "enabled": optimize_enabled,
-            "level": normalize_optimize_level(GIF_OPTIMIZE_LEVEL)
-            if optimize_enabled
-            else None,
+            "level": normalize_optimize_level(GIF_OPTIMIZE_LEVEL) if optimize_enabled else None,
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -275,10 +268,7 @@ def settings_label(cfg):
         clip_label = f"{clip_len}s clips"
     smooth = "smooth" if cfg.get("smooth") else "standard"
     optimize = "optimized" if _cfg_optimize_enabled(cfg) else "unoptimized"
-    return (
-        f"{cfg.get('height')}px high, {fps}, {clip_label}, "
-        f"{sample_count(cfg)} samples, {smooth}, {optimize}"
-    )
+    return f"{cfg.get('height')}px high, {fps}, {clip_label}, {sample_count(cfg)} samples, {smooth}, {optimize}"
 
 
 def _manifest_variant(variant):
@@ -298,9 +288,7 @@ def _manifest_variant(variant):
         "gif_size_before_opt_bytes": variant.get("gif_size_before_opt_bytes"),
         "gif_size_after_opt_bytes": variant.get("gif_size_after_opt_bytes"),
         "gif_optimization_saved_bytes": variant.get("gif_optimization_saved_bytes"),
-        "gif_optimization_savings_percent": variant.get(
-            "gif_optimization_savings_percent"
-        ),
+        "gif_optimization_savings_percent": variant.get("gif_optimization_savings_percent"),
         "gif_optimization_status": variant.get("gif_optimization_status"),
         "gif_optimization_seconds": variant.get("gif_optimization_seconds"),
         "gif_optimization_label": variant.get("gif_optimization_label", ""),
@@ -433,9 +421,7 @@ def _public_variant(variant):
         "gif_size_before_opt_bytes": variant.get("gif_size_before_opt_bytes"),
         "gif_size_after_opt_bytes": variant.get("gif_size_after_opt_bytes"),
         "gif_optimization_saved_bytes": variant.get("gif_optimization_saved_bytes"),
-        "gif_optimization_savings_percent": variant.get(
-            "gif_optimization_savings_percent"
-        ),
+        "gif_optimization_savings_percent": variant.get("gif_optimization_savings_percent"),
         "gif_optimization_status": variant.get("gif_optimization_status"),
         "gif_optimization_seconds": variant.get("gif_optimization_seconds"),
         "gif_optimization_label": variant.get("gif_optimization_label", ""),
@@ -502,10 +488,7 @@ def _display_metadata(run_id, filename, path):
             "preview_status": "needed",
             "preview_url": _preview_url(run_id, preview_filename),
             "preview_key": preview_key,
-            "preview_label": (
-                "Preview needed · "
-                f"{app_settings.preview_height_label(configured_height)}"
-            ),
+            "preview_label": (f"Preview needed · {app_settings.preview_height_label(configured_height)}"),
         }
     )
 
@@ -516,8 +499,7 @@ def _display_metadata(run_id, filename, path):
                 "display_url": _preview_url(run_id, preview_filename),
                 "preview_status": "ready",
                 "preview_label": (
-                    "Scaled preview · "
-                    f"{app_settings.preview_height_label(preview_height or configured_height)}"
+                    f"Scaled preview · {app_settings.preview_height_label(preview_height or configured_height)}"
                 ),
                 "preview_width": preview_width,
                 "preview_height": preview_height or configured_height,
@@ -530,10 +512,7 @@ def _display_metadata(run_id, filename, path):
         base.update(
             {
                 "preview_status": "generating",
-                "preview_label": (
-                    "Preparing preview · "
-                    f"{app_settings.preview_height_label(configured_height)}"
-                ),
+                "preview_label": (f"Preparing preview · {app_settings.preview_height_label(configured_height)}"),
             }
         )
     elif state.get("status") == "failed":
@@ -541,10 +520,7 @@ def _display_metadata(run_id, filename, path):
             {
                 "preview_status": "failed",
                 "preview_error": state.get("error", "Preview unavailable"),
-                "preview_label": (
-                    "Preview unavailable · "
-                    f"{app_settings.preview_height_label(configured_height)}"
-                ),
+                "preview_label": (f"Preview unavailable · {app_settings.preview_height_label(configured_height)}"),
             }
         )
     return base
@@ -621,11 +597,7 @@ def request_preview(file_id):
 
     metadata = _display_metadata(run_id, filename, path)
     target_height = metadata.get("preview_target_height")
-    if (
-        target_height is None
-        or metadata.get("preview_status")
-        in {"original", "disabled", "ready", "generating"}
-    ):
+    if target_height is None or metadata.get("preview_status") in {"original", "disabled", "ready", "generating"}:
         return status_payload(), None
 
     key = _preview_key(file_id, target_height)
@@ -689,7 +661,9 @@ def _run_progress(run, now=None):
         label = "Waiting"
     elif run.get("status") == "running":
         if eta is None:
-            label = f"{percent}% complete · learning timing" if eta_confidence == "calibrating" else f"{percent}% complete"
+            label = (
+                f"{percent}% complete · learning timing" if eta_confidence == "calibrating" else f"{percent}% complete"
+            )
         else:
             label = f"{percent}% complete · about {format_duration(eta)} remaining"
     elif run.get("status") == "partial":
@@ -766,9 +740,7 @@ def enqueue_test_run(video_path, variants, lib_root=LIB_ROOT):
     first_variant_for_fingerprint = {}
     for index, raw in enumerate(variants, start=1):
         cfg = raw.get("cfg") or {}
-        name = (raw.get("name") or f"Variant {index}").strip()[
-            :MAX_DISPLAY_NAME_LENGTH
-        ]
+        name = (raw.get("name") or f"Variant {index}").strip()[:MAX_DISPLAY_NAME_LENGTH]
         filename = f"variant-{index}.gif"
         variant_id = f"variant-{index}"
         fingerprint = request_fingerprint(
@@ -853,11 +825,7 @@ def _complete_same_run_reuse(run, variant, logger):
     if not reuse_variant_id:
         return False
     source = next(
-        (
-            candidate
-            for candidate in run.get("variants") or []
-            if candidate.get("id") == reuse_variant_id
-        ),
+        (candidate for candidate in run.get("variants") or [] if candidate.get("id") == reuse_variant_id),
         None,
     )
     if not source:
@@ -942,10 +910,7 @@ def _process_variant(run, variant):
         logger.info(f"Background frame: {bg_image}")
     else:
         logger.info("Background frame: not found")
-    logger.info(
-        f"Segments: {len(segs)} clips, about "
-        f"{format_duration(len(segs)*variant['cfg']['clip_len'])}"
-    )
+    logger.info(f"Segments: {len(segs)} clips, about {format_duration(len(segs) * variant['cfg']['clip_len'])}")
     tmp_gif = os.path.join(variant["tmp_dir"], "poster.gif")
 
     ok, err_msg = make_gif_multi_inputs(
@@ -1148,22 +1113,14 @@ def _run_sort_ts(run):
 
 def _prune_test_lab_runs_locked(now=None):
     now = now or time.time()
-    terminal = [
-        (run_id, run)
-        for run_id, run in test_lab_runs.items()
-        if run.get("status") in LAB_TERMINAL_STATUSES
-    ]
+    terminal = [(run_id, run) for run_id, run in test_lab_runs.items() if run.get("status") in LAB_TERMINAL_STATUSES]
     for run_id, run in terminal:
         finished = run.get("_finished_ts") or run.get("_created_ts") or now
         if now - finished > TEST_LAB_RUN_MAX_AGE_SECONDS:
             test_lab_runs.pop(run_id, None)
 
     terminal = sorted(
-        (
-            (run_id, run)
-            for run_id, run in test_lab_runs.items()
-            if run.get("status") in LAB_TERMINAL_STATUSES
-        ),
+        ((run_id, run) for run_id, run in test_lab_runs.items() if run.get("status") in LAB_TERMINAL_STATUSES),
         key=lambda item: _run_sort_ts(item[1]),
         reverse=True,
     )
@@ -1190,11 +1147,7 @@ def _inventory_items(limit=None):
             continue
         manifest = _read_manifest(run_id)
         source_name = manifest.get("source_name", "")
-        variants = {
-            v.get("filename"): v
-            for v in manifest.get("variants") or []
-            if isinstance(v, dict)
-        }
+        variants = {v.get("filename"): v for v in manifest.get("variants") or [] if isinstance(v, dict)}
         try:
             filenames = sorted(os.listdir(run_dir))
         except Exception:
@@ -1243,11 +1196,7 @@ def _public_runs():
 def run_status_payload():
     runs = _public_runs()
     active = next(
-        (
-            run
-            for run in runs
-            if run.get("status") in {"queued", "running", "cancelling"}
-        ),
+        (run for run in runs if run.get("status") in {"queued", "running", "cancelling"}),
         None,
     )
     return {
@@ -1332,9 +1281,7 @@ def _cleanup_run_dir(run_id):
     if not os.path.isdir(run_dir):
         return
     try:
-        has_gifs = any(
-            name.lower().endswith(".gif") for name in os.listdir(run_dir)
-        )
+        has_gifs = any(name.lower().endswith(".gif") for name in os.listdir(run_dir))
     except Exception:
         return
     if has_gifs:

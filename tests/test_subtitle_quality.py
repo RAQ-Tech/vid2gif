@@ -3,8 +3,7 @@ from app import subtitle_quality
 
 def _write_srt(path, final_start, final_end):
     path.write_text(
-        "1\n00:00:01,000 --> 00:00:02,000\nOpening line\n\n"
-        f"2\n{final_start} --> {final_end}\nFinal line\n",
+        f"1\n00:00:01,000 --> 00:00:02,000\nOpening line\n\n2\n{final_start} --> {final_end}\nFinal line\n",
         encoding="utf-8",
     )
     return path

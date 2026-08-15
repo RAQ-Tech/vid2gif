@@ -92,9 +92,7 @@ def test_request_json_encodes_json_body_and_rejects_two_body_types():
     request = captured["request"]
     assert data == {"ok": True}
     assert result["status"] == "success"
-    assert json.loads(request.data) == {
-        "Updates": [{"Path": "/library/Movie", "UpdateType": "Updated"}]
-    }
+    assert json.loads(request.data) == {"Updates": [{"Path": "/library/Movie", "UpdateType": "Updated"}]}
     assert request.get_header("Content-type") == "application/json"
 
     with pytest.raises(ValueError, match="cannot both"):
@@ -295,9 +293,7 @@ def test_request_paged_json_rejects_early_empty_page():
             return _json_response({"Items": [{"Id": "1"}], "TotalRecordCount": 2})
         return _json_response({"Items": [], "TotalRecordCount": 2})
 
-    items, result = emby_client.request_paged_json(
-        _settings(), "/Items", page_size=1, opener=opener
-    )
+    items, result = emby_client.request_paged_json(_settings(), "/Items", page_size=1, opener=opener)
 
     assert items is None
     assert result["error_code"] == "invalid_response"
@@ -312,9 +308,7 @@ def test_request_paged_json_rejects_total_changes_between_pages():
         total = 2 if calls == 1 else 3
         return _json_response({"Items": [{"Id": str(calls)}], "TotalRecordCount": total})
 
-    items, result = emby_client.request_paged_json(
-        _settings(), "/Items", page_size=1, opener=opener
-    )
+    items, result = emby_client.request_paged_json(_settings(), "/Items", page_size=1, opener=opener)
 
     assert items is None
     assert result["error_code"] == "invalid_response"
@@ -330,9 +324,7 @@ def test_request_paged_json_discards_partial_results_after_failure():
             return _json_response({"Items": [{"Id": "1"}], "TotalRecordCount": 2})
         raise urllib.error.HTTPError(request.full_url, 500, "failed", None, None)
 
-    items, result = emby_client.request_paged_json(
-        _settings(), "/Items", page_size=1, opener=opener
-    )
+    items, result = emby_client.request_paged_json(_settings(), "/Items", page_size=1, opener=opener)
 
     assert items is None
     assert result["error_code"] == "http_error"
@@ -357,9 +349,7 @@ def test_request_paged_json_propagates_cancellation_before_next_page():
             "/Items",
             page_size=1,
             before_page=before_page,
-            opener=lambda request, timeout: _json_response(
-                {"Items": [{"Id": "1"}], "TotalRecordCount": 2}
-            ),
+            opener=lambda request, timeout: _json_response({"Items": [{"Id": "1"}], "TotalRecordCount": 2}),
         )
 
 

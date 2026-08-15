@@ -111,6 +111,7 @@ pip install -r requirements-dev.txt
 npm ci --ignore-scripts
 python -m pytest                              # 563 tests, ~35s; safe to run bare
 python -m ruff check .                        # what CI lints with
+python -m ruff format .                       # run before committing; CI checks it
 npm run test:frontend                         # 19 Node tests, needs no node_modules
 npm run build:frontend
 python -m app.main                            # dev server on port 904, workers started
@@ -145,6 +146,13 @@ at runtime in the deployed container.
 CI additionally runs `python -m pip_audit` over both requirements files and
 `npm audit --audit-level=low`; a new dependency carrying an advisory will fail the build. The
 image publishes to GHCR only if every one of those steps passed.
+
+`ruff format` owns layout. CI runs `ruff format --check .`, so hand-aligned code will fail
+the build -- run the formatter rather than arguing with it. Adopting it was a 5,000-line
+mechanical diff across 59 files, verified by comparing every file's parsed syntax tree
+before and after: all 83 came back identical, so no behaviour changed. Lines are capped at
+120 columns and that cap is now enforced (`E501`); the formatter holds it, and the only
+three lines it could not wrap were long f-strings, split by hand.
 
 Functions are capped at complexity 15 (`ruff` rule `C901`, in `ruff.toml` alongside the
 pycodestyle/pyflakes/bugbear selection). Existing offenders carry an explicit `# noqa: C901`

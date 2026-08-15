@@ -9,10 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _test_lab_frontend_source():
     source_root = ROOT / "frontend" / "test-lab"
-    return "\n".join(
-        (source_root / name).read_text()
-        for name in ("index.js", "logic.js", "player.js")
-    )
+    return "\n".join((source_root / name).read_text() for name in ("index.js", "logic.js", "player.js"))
 
 
 def _make_job(job_id="job1", status="queued", log_path="/tmp/job.txt"):
@@ -114,12 +111,14 @@ def test_queue_status_reports_overall_batch_progress():
         }
     )
     jobs.jobs["queued"] = _make_job(job_id="queued", status="queued")
-    jobs.jobs["queued"].update({
-        "batch_id": "batch1",
-        "_created_ts": 111,
-        "expected_duration_seconds": 10,
-        "eta_confidence": "history",
-    })
+    jobs.jobs["queued"].update(
+        {
+            "batch_id": "batch1",
+            "_created_ts": 111,
+            "expected_duration_seconds": 10,
+            "eta_confidence": "history",
+        }
+    )
     jobs.job_queue.put("queued")
 
     client = routes.app.test_client()
@@ -315,8 +314,8 @@ def test_gifs_workspace_contains_expected_controls_and_metrics():
     workspace_script = (ROOT / "app" / "static" / "gifs.js").read_text()
     test_lab_script = _test_lab_frontend_source()
 
-    assert '>GIFs</a>' in base_template
-    assert '>Settings</a>' in base_template
+    assert ">GIFs</a>" in base_template
+    assert ">Settings</a>" in base_template
     assert 'href="/queue"' not in base_template
     assert 'href="/completed"' not in base_template
     assert 'href="/live"' not in base_template
@@ -438,9 +437,7 @@ def test_container_runs_exactly_one_gunicorn_worker():
     # The workers are daemon threads started by wsgi.py; without them the queue
     # accepts jobs that nothing ever runs.
     wsgi = (ROOT / "app" / "wsgi.py").read_text()
-    for starter in ("start_worker()",
-                    "start_test_lab_worker()",
-                    "start_landscape_poster_worker()"):
+    for starter in ("start_worker()", "start_test_lab_worker()", "start_landscape_poster_worker()"):
         assert starter in wsgi, f"wsgi.py no longer calls {starter}"
 
 
@@ -448,7 +445,7 @@ def test_entrypoint_chowns_library_only_when_requested():
     entrypoint = (ROOT / "docker-entrypoint.sh").read_text()
 
     assert "CHOWN_LIBRARY" in entrypoint
-    assert 'chown -R app:app /state' in entrypoint
+    assert "chown -R app:app /state" in entrypoint
     assert '[ "${CHOWN_LIBRARY:-0}" = "1" ]' in entrypoint
     assert "for dir in /library /state" not in entrypoint
 
@@ -501,26 +498,25 @@ def test_templates_never_reach_for_a_third_party_cdn():
     static_dir = ROOT / "app" / "static"
     vendor_dir = static_dir / "vendor"
 
-    hosts = ("cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com",
-             "unpkg.com", "cdnjs.cloudflare.com", "stackpath.bootstrapcdn.com")
+    hosts = (
+        "cdn.jsdelivr.net",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+        "unpkg.com",
+        "cdnjs.cloudflare.com",
+        "stackpath.bootstrapcdn.com",
+    )
 
     sources = list(template_dir.rglob("*.html"))
-    sources += [
-        path for path in static_dir.rglob("*.js")
-        if vendor_dir not in path.parents
-    ]
-    sources += [
-        path for path in static_dir.rglob("*.css")
-        if vendor_dir not in path.parents
-    ]
+    sources += [path for path in static_dir.rglob("*.js") if vendor_dir not in path.parents]
+    sources += [path for path in static_dir.rglob("*.css") if vendor_dir not in path.parents]
     assert sources, "No templates or static sources found"
 
     for path in sources:
         content = path.read_text(encoding="utf-8")
         for host in hosts:
             assert host not in content, (
-                f"{path.relative_to(ROOT)} loads an asset from {host}; "
-                "vendor it under app/static/vendor instead"
+                f"{path.relative_to(ROOT)} loads an asset from {host}; vendor it under app/static/vendor instead"
             )
 
 
@@ -542,10 +538,12 @@ def test_vendored_frontend_assets_are_present():
         assert path.stat().st_size > 0, f"empty vendored asset: {relative}"
 
     base = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
-    for filename in ("vendor/bootstrap/bootstrap.min.css",
-                     "vendor/bootstrap-icons/bootstrap-icons.css",
-                     "vendor/inter/inter.css",
-                     "vendor/bootstrap/bootstrap.bundle.min.js"):
+    for filename in (
+        "vendor/bootstrap/bootstrap.min.css",
+        "vendor/bootstrap-icons/bootstrap-icons.css",
+        "vendor/inter/inter.css",
+        "vendor/bootstrap/bootstrap.bundle.min.js",
+    ):
         assert filename in base, f"base.html no longer links {filename}"
 
 
@@ -560,9 +558,7 @@ def test_container_publish_waits_for_the_test_suite():
         publishing.append(path.name)
         jobs = content.split("jobs:", 1)[1]
         build_job = jobs.split("build-and-push:", 1)[1]
-        assert "needs: [tests]" in build_job, (
-            f"{path.name} publishes an image without depending on the tests job"
-        )
+        assert "needs: [tests]" in build_job, f"{path.name} publishes an image without depending on the tests job"
         assert "python -m pytest" in content, (
             f"{path.name} publishes an image but its tests job is in another "
             "workflow file, where 'needs:' cannot reach it"

@@ -257,11 +257,7 @@ def _preview_summary():
     quality = _safe_scan_payload(video_preview_maintenance.quality_status_payload) or {}
     apply_run = _safe_apply_payload(video_preview_maintenance.quality_apply_status) or {}
     result = apply_run.get("result") or {}
-    active = bool(
-        scan.get("active")
-        or quality.get("active")
-        or apply_run.get("status") in {"queued", "running"}
-    )
+    active = bool(scan.get("active") or quality.get("active") or apply_run.get("status") in {"queued", "running"})
     missing = scan.get("missing_count") or 0
     bad = quality.get("bad_count") or 0
     warnings = quality.get("warning_count") or 0
@@ -280,12 +276,8 @@ def _preview_summary():
 
 
 def _subtitle_summary():
-    missing_scan = _safe_scan_payload(
-        lambda: subtitle_maintenance.status_payload(mode="missing")
-    ) or {}
-    coverage_scan = _safe_scan_payload(
-        lambda: subtitle_maintenance.status_payload(mode="coverage")
-    ) or {}
+    missing_scan = _safe_scan_payload(lambda: subtitle_maintenance.status_payload(mode="missing")) or {}
+    coverage_scan = _safe_scan_payload(lambda: subtitle_maintenance.status_payload(mode="coverage")) or {}
     active = bool(missing_scan.get("active") or coverage_scan.get("active"))
     missing = missing_scan.get("missing_count") or 0
     language_review = missing_scan.get("language_review_count") or 0
@@ -457,16 +449,22 @@ def _inventory_from_data(data, lib_root=LIB_ROOT):
     if isinstance(source.get("root"), dict):
         root = _normalise_library_stats(source.get("root"), root_item)
         folders = [
-            _normalise_library_stats(item, {"name": item.get("name", ""), "path": item.get("path", ""), "kind": "library"})
+            _normalise_library_stats(
+                item, {"name": item.get("name", ""), "path": item.get("path", ""), "kind": "library"}
+            )
             for item in source.get("folders") or []
             if isinstance(item, dict)
         ]
     else:
         old_libraries = [item for item in source.get("libraries") or [] if isinstance(item, dict)]
-        old_root = next((item for item in old_libraries if item.get("kind") == "root"), old_libraries[0] if old_libraries else {})
+        old_root = next(
+            (item for item in old_libraries if item.get("kind") == "root"), old_libraries[0] if old_libraries else {}
+        )
         root = _normalise_library_stats(old_root, root_item)
         folders = [
-            _normalise_library_stats(item, {"name": item.get("name", ""), "path": item.get("path", ""), "kind": "library"})
+            _normalise_library_stats(
+                item, {"name": item.get("name", ""), "path": item.get("path", ""), "kind": "library"}
+            )
             for item in old_libraries
             if item is not old_root and item.get("kind") != "root"
         ]
@@ -523,10 +521,7 @@ def _scan_library_inventory(scan):
             full_path = os.path.join(base, filename)
             if os.path.islink(full_path) or not os.path.isfile(full_path):
                 continue
-            if (
-                os.path.splitext(filename)[1].lower() in VIDEO_EXTS
-                and not media_scope.is_main_video_filename(filename)
-            ):
+            if os.path.splitext(filename)[1].lower() in VIDEO_EXTS and not media_scope.is_main_video_filename(filename):
                 continue
             _count_file(root_stats, full_path)
             child_name = _direct_child_name(root_path, full_path)
@@ -577,9 +572,7 @@ def _run_library_scan(scan_id):
     _run_library_scan_state(scan)
 
 
-@coordinated_library_operation(
-    "Scan library overview", kind="scan", href="/maintenance#overview"
-)
+@coordinated_library_operation("Scan library overview", kind="scan", href="/maintenance#overview")
 def _run_library_scan_state(scan):
     with dashboard_lock:
         started = time.time()
@@ -646,59 +639,66 @@ def _public_library_scan(scan):
     if not scan:
         cached = _inventory_from_data(_read_json(LIBRARY_INVENTORY_PATH, {}))
         if cached.get("finished_at"):
-            return _overview_scan_metadata({
-                "id": "",
-                "status": "cached",
-                "active": False,
-                "progress_percent": 100,
-                "progress_label": "Cached library inventory",
-                "started_at": None,
-                "finished_at": cached.get("finished_at"),
-                "error": "",
-                "library_count": cached.get("library_count", 0),
-                "folder_count": cached.get("folder_count", 0),
-                "scanned_library_count": cached.get("library_count", 0),
-                "video_count": cached.get("video_count", 0),
-                "video_size_bytes": cached.get("video_size_bytes", 0),
-                "video_size_label": cached.get("video_size_label", "0 B"),
-                "root": cached.get("root") or _empty_library_stats(_library_root_item()),
-            })
+            return _overview_scan_metadata(
+                {
+                    "id": "",
+                    "status": "cached",
+                    "active": False,
+                    "progress_percent": 100,
+                    "progress_label": "Cached library inventory",
+                    "started_at": None,
+                    "finished_at": cached.get("finished_at"),
+                    "error": "",
+                    "library_count": cached.get("library_count", 0),
+                    "folder_count": cached.get("folder_count", 0),
+                    "scanned_library_count": cached.get("library_count", 0),
+                    "video_count": cached.get("video_count", 0),
+                    "video_size_bytes": cached.get("video_size_bytes", 0),
+                    "video_size_label": cached.get("video_size_label", "0 B"),
+                    "root": cached.get("root") or _empty_library_stats(_library_root_item()),
+                }
+            )
         direct_folders = _direct_library_items()
         root = _empty_library_stats(_library_root_item())
-        return _overview_scan_metadata({
-            "id": "",
-            "status": "not_scanned",
-            "active": False,
-            "progress_percent": 0,
-            "progress_label": "Not scanned",
-            "started_at": None,
-            "finished_at": None,
-            "error": "",
-            "library_count": len(direct_folders) + 1,
-            "folder_count": len(direct_folders),
-            "scanned_library_count": 0,
-            "video_count": 0,
-            "video_size_bytes": 0,
-            "video_size_label": "0 B",
-            "root": root,
-        })
+        return _overview_scan_metadata(
+            {
+                "id": "",
+                "status": "not_scanned",
+                "active": False,
+                "progress_percent": 0,
+                "progress_label": "Not scanned",
+                "started_at": None,
+                "finished_at": None,
+                "error": "",
+                "library_count": len(direct_folders) + 1,
+                "folder_count": len(direct_folders),
+                "scanned_library_count": 0,
+                "video_count": 0,
+                "video_size_bytes": 0,
+                "video_size_label": "0 B",
+                "root": root,
+            }
+        )
     root = scan.get("root") or _empty_library_stats(_library_root_item(scan.get("path") or LIB_ROOT))
-    return _overview_scan_metadata({
-        "id": scan.get("id", ""),
-        "status": scan.get("status", ""),
-        "active": scan.get("status") in {"queued", "running", "cancelling"},
-        **task_progress.public_fields(scan),
-        "started_at": scan.get("started_at"),
-        "finished_at": scan.get("finished_at"),
-        "error": scan.get("error", ""),
-        "library_count": scan.get("library_count", 0),
-        "folder_count": scan.get("folder_count", 0),
-        "scanned_library_count": scan.get("scanned_library_count", 0),
-        "video_count": scan.get("video_count", 0),
-        "video_size_bytes": scan.get("video_size_bytes", 0),
-        "video_size_label": scan.get("video_size_label", "0 B"),
-        "root": root,
-    }, scan)
+    return _overview_scan_metadata(
+        {
+            "id": scan.get("id", ""),
+            "status": scan.get("status", ""),
+            "active": scan.get("status") in {"queued", "running", "cancelling"},
+            **task_progress.public_fields(scan),
+            "started_at": scan.get("started_at"),
+            "finished_at": scan.get("finished_at"),
+            "error": scan.get("error", ""),
+            "library_count": scan.get("library_count", 0),
+            "folder_count": scan.get("folder_count", 0),
+            "scanned_library_count": scan.get("scanned_library_count", 0),
+            "video_count": scan.get("video_count", 0),
+            "video_size_bytes": scan.get("video_size_bytes", 0),
+            "video_size_label": scan.get("video_size_label", "0 B"),
+            "root": root,
+        },
+        scan,
+    )
 
 
 def start_library_scan(path=None, synchronous=False):
@@ -791,9 +791,9 @@ def library_folders_payload(offset=0, limit=10, q="", sort="name", direction="as
     folders = list(inventory.get("folders") or [])
     if query:
         folders = [
-            item for item in folders
-            if query in str(item.get("name", "")).lower()
-            or query in str(item.get("path", "")).lower()
+            item
+            for item in folders
+            if query in str(item.get("name", "")).lower() or query in str(item.get("path", "")).lower()
         ]
     folders.sort(key=lambda item: str(item.get("name", "")).lower())
     if sort_key == "name":
@@ -801,7 +801,7 @@ def library_folders_payload(offset=0, limit=10, q="", sort="name", direction="as
     else:
         folders.sort(key=lambda item: int(item.get(sort_key, 0) or 0), reverse=direction == "desc")
     total = len(folders)
-    page = folders[offset:offset + limit]
+    page = folders[offset : offset + limit]
     count = len(page)
     return {
         "scan": scan,
@@ -870,12 +870,16 @@ def status_payload():
             "posters",
             "Landscape Posters",
             "/maintenance#posters",
-            status=(posters.get("scan") or {}).get("status") or ("active" if posters["active"] else ("ok" if posters["has_run"] else "not_scanned")),
+            status=(posters.get("scan") or {}).get("status")
+            or ("active" if posters["active"] else ("ok" if posters["has_run"] else "not_scanned")),
             found=posters["changed_count"] + posters["error_count"],
             ready=posters["changed_count"],
             resolved=posters["changed_count"],
             remaining=posters["error_count"],
-            detail=f"{posters['changed_count']} updated, {posters['skipped_count']} skipped, automation {'on' if posters['automation_enabled'] else 'off'}",
+            detail=(
+                f"{posters['changed_count']} updated, {posters['skipped_count']} skipped,"
+                f" automation {'on' if posters['automation_enabled'] else 'off'}"
+            ),
             action_label="Open posters",
             active=posters["active"],
         ),
@@ -888,7 +892,10 @@ def status_payload():
             ready=previews["bad_count"],
             resolved=0,
             remaining=preview_remaining,
-            detail=f"{previews['missing_count']} missing, {previews['bad_count']} bad, {previews['warning_count']} warnings",
+            detail=(
+                f"{previews['missing_count']} missing, {previews['bad_count']} bad,"
+                f" {previews['warning_count']} warnings"
+            ),
             action_label="Open previews",
             needs_verification=previews["needs_verification"],
             active=previews["active"],

@@ -48,6 +48,9 @@ jobs:
       - name: Lint
         run: python -m ruff check .
 
+      - name: Check formatting
+        run: python -m ruff format --check .
+
       - name: Audit runtime dependencies
         run: python -m pip_audit -r requirements.txt
 

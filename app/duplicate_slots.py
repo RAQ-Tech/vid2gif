@@ -98,12 +98,8 @@ def _default_bif_info(path):
     if not width:
         samples = parsed.get("samples") or []
         if samples:
-            width, _height = video_preview_maintenance._jpeg_dimensions(
-                samples[0].get("bytes")
-            )
-    interval = max(
-        1, int(round((parsed.get("timestamp_multiplier_ms") or 1000) / 1000))
-    )
+            width, _height = video_preview_maintenance._jpeg_dimensions(samples[0].get("bytes"))
+    interval = max(1, int(round((parsed.get("timestamp_multiplier_ms") or 1000) / 1000)))
     return {
         "frame_count": parsed.get("image_count") or 0,
         "width": int(width or 0),
@@ -157,9 +153,7 @@ def _rank_subtitles(candidates, keeper, options, analyze_subtitle):
     for entry in candidates:
         quality = analyze_subtitle(entry["file"].get("path"), duration) or {}
         last = quality.get("last_timestamp_seconds")
-        overrun = (
-            last is not None and duration > 0 and float(last) - duration > tolerance
-        )
+        overrun = last is not None and duration > 0 and float(last) - duration > tolerance
         scored.append(
             {
                 **entry,
@@ -177,9 +171,7 @@ def _rank_subtitles(candidates, keeper, options, analyze_subtitle):
     # Taking a file from another copy is only justified by evidence that it is
     # better. Unreadable or untimed subtitles give no such evidence, so the
     # keeper's own copy stays and the slot is raised for review instead.
-    measurable = [
-        item for item in scored if item["quality"].get("coverage_ratio") is not None
-    ]
+    measurable = [item for item in scored if item["quality"].get("coverage_ratio") is not None]
     if not measurable:
         return (
             _prefer_keeper(candidates, keeper),
@@ -278,9 +270,7 @@ def _rank_bif(candidates, keeper, options, bif_info):
         width = int(info.get("width") or 0)
         interval = float(entry["file"].get("interval_seconds") or 0) or 10.0
         implied = frames * interval
-        mismatch = duration > 0 and abs(implied - duration) > max(
-            options["runtime_tolerance_seconds"], interval * 2
-        )
+        mismatch = duration > 0 and abs(implied - duration) > max(options["runtime_tolerance_seconds"], interval * 2)
         scored.append(
             {
                 **entry,
@@ -364,9 +354,7 @@ def resolve_group_slots(
             "suffix": slot["suffix"],
             "label": _slot_label(role, slot["suffix"]),
             "candidate_count": len(candidates),
-            "candidate_file_ids": [
-                item["file"].get("id", "") for item in candidates
-            ],
+            "candidate_file_ids": [item["file"].get("id", "") for item in candidates],
             "winner_file_id": "",
             "winner_video_id": "",
             "destination_path": "",
@@ -401,20 +389,12 @@ def resolve_group_slots(
         # against the keeper's runtime before it is adopted.
         if equivalent and role not in TIME_BASED_ROLES:
             best = _prefer_keeper(candidates, keeper)
-            reason = (
-                "Only copy in the set"
-                if len(candidates) == 1
-                else "Identical in every copy"
-            )
+            reason = "Only copy in the set" if len(candidates) == 1 else "Identical in every copy"
             close, flags = False, []
         elif role == "subtitle":
-            best, reason, close, flags = _rank_subtitles(
-                candidates, keeper, options, analyze_subtitle
-            )
+            best, reason, close, flags = _rank_subtitles(candidates, keeper, options, analyze_subtitle)
         elif role in IMAGE_ROLES:
-            best, reason, close, flags = _rank_images(
-                candidates, keeper, options, probe_image
-            )
+            best, reason, close, flags = _rank_images(candidates, keeper, options, probe_image)
         elif role == "bif":
             best, reason, close, flags = _rank_bif(candidates, keeper, options, bif_info)
         else:
@@ -423,9 +403,7 @@ def resolve_group_slots(
         winner_file = best["file"]
         suffix = str(winner_file.get("suffix") or slot["suffix"] or "")
         destination = (
-            os.path.realpath(os.path.join(keeper_dir, f"{keeper_stem}{suffix}"))
-            if suffix and keeper_stem
-            else ""
+            os.path.realpath(os.path.join(keeper_dir, f"{keeper_stem}{suffix}")) if suffix and keeper_stem else ""
         )
         borrowed = best["video"].get("id") != keeper.get("id")
         if close:
@@ -440,9 +418,7 @@ def resolve_group_slots(
             winner_video_id=best["video"].get("id", ""),
             destination_path=destination,
             loser_file_ids=[
-                item["file"].get("id", "")
-                for item in candidates
-                if item["file"].get("id") != winner_file.get("id")
+                item["file"].get("id", "") for item in candidates if item["file"].get("id") != winner_file.get("id")
             ],
             reason=reason,
             flags=flags,
@@ -461,7 +437,5 @@ def slot_summary(slots):
         "borrowed_count": sum(1 for slot in slots if slot.get("borrowed")),
         "review_count": sum(1 for slot in slots if slot.get("needs_review")),
         "identical_count": sum(1 for slot in slots if slot.get("identical")),
-        "source_video_ids": sorted(
-            {slot.get("winner_video_id") for slot in slots if slot.get("winner_video_id")}
-        ),
+        "source_video_ids": sorted({slot.get("winner_video_id") for slot in slots if slot.get("winner_video_id")}),
     }

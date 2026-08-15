@@ -119,12 +119,7 @@ def _validate_scan_path(path, lib_root):
     if not target:
         return None, "Choose a folder under the library"
     real = resolve_case_insensitive(target)
-    if (
-        not real
-        or not path_is_under(real, lib_root)
-        or not os.path.isdir(real)
-        or os.path.islink(real)
-    ):
+    if not real or not path_is_under(real, lib_root) or not os.path.isdir(real) or os.path.islink(real):
         return None, "Path not found"
     return os.path.realpath(real), None
 
@@ -154,10 +149,7 @@ def subtitle_matches_video(subtitle_name, video_stem):
 
 
 def _subtitle_owner_stem(subtitle_name, video_stems):
-    matches = [
-        stem for stem in (video_stems or [])
-        if subtitle_matches_video(subtitle_name, stem)
-    ]
+    matches = [stem for stem in (video_stems or []) if subtitle_matches_video(subtitle_name, stem)]
     if not matches:
         return ""
     return max(matches, key=lambda stem: (len(stem), stem.casefold()))
@@ -218,8 +210,7 @@ def _classify_video(video_path, folder_files, settings, lib_root, video_stems=No
         if os.path.islink(full_path) or not os.path.isfile(full_path):
             continue
         if subtitle_matches_video(entry, stem) and (
-            not video_stems
-            or _subtitle_owner_stem(entry, video_stems).casefold() == stem.casefold()
+            not video_stems or _subtitle_owner_stem(entry, video_stems).casefold() == stem.casefold()
         ):
             subtitles.append(_public_subtitle(full_path, stem, lib_root, settings))
     subtitles.sort(key=lambda item: item["name"].lower())
@@ -227,13 +218,11 @@ def _classify_video(video_path, folder_files, settings, lib_root, video_stems=No
     flag_missing = bool(settings.get("subtitle_flag_missing", True))
     flag_unknown = bool(settings.get("subtitle_flag_unknown_language", True))
     non_expected = [
-        item for item in subtitles
-        if item.get("language_code") and item.get("language_code") not in expected
+        item for item in subtitles if item.get("language_code") and item.get("language_code") not in expected
     ]
     unknown = [item for item in subtitles if not item.get("language_code")]
     expected_matches = [
-        item for item in subtitles
-        if item.get("language_code") and item.get("language_code") in expected
+        item for item in subtitles if item.get("language_code") and item.get("language_code") in expected
     ]
     for subtitle in subtitles:
         code = subtitle.get("language_code")
@@ -275,9 +264,7 @@ def _classify_video(video_path, folder_files, settings, lib_root, video_stems=No
         "detail": detail,
         "subtitle_count": len(subtitles),
         "srt_files": subtitles,
-        "language_codes": sorted(
-            {item.get("language_code") or "unknown" for item in subtitles}
-        ),
+        "language_codes": sorted({item.get("language_code") or "unknown" for item in subtitles}),
         "size_bytes": stat.st_size if stat else 0,
         "size_label": format_size(stat.st_size if stat else 0),
         "modified_at": utc_iso(stat.st_mtime) if stat else None,
@@ -326,8 +313,7 @@ def _scan_videos(scan, settings, lib_root):
         videos = [
             filename
             for filename in files
-            if os.path.splitext(filename)[1].lower() in VIDEO_EXTS
-            and media_scope.is_main_video_filename(filename)
+            if os.path.splitext(filename)[1].lower() in VIDEO_EXTS and media_scope.is_main_video_filename(filename)
         ]
         video_stems = [os.path.splitext(filename)[0] for filename in videos]
         for filename in sorted(videos, key=str.lower):
@@ -352,13 +338,13 @@ def _scan_videos(scan, settings, lib_root):
                     f"Scanned {scanned} videos",
                     stage_workflow=SUBTITLE_FILESYSTEM_WORKFLOW,
                     completed_units=scanned,
-                    remaining_stages=[{
-                        "workflow": (
-                            SUBTITLE_QUALITY_WORKFLOW
-                            if scan.get("mode") == "coverage"
-                            else SUBTITLE_EMBY_WORKFLOW
-                        )
-                    }],
+                    remaining_stages=[
+                        {
+                            "workflow": (
+                                SUBTITLE_QUALITY_WORKFLOW if scan.get("mode") == "coverage" else SUBTITLE_EMBY_WORKFLOW
+                            )
+                        }
+                    ],
                     unit_label="videos",
                     scanned_video_count=scanned,
                 )
@@ -395,11 +381,7 @@ def _counts(items, mode="missing"):
     if mode == "coverage":
         counts["review_count"] = counts["incomplete_count"] + counts["coverage_review_count"]
     else:
-        counts["review_count"] = (
-            counts["missing_count"]
-            + counts["language_review_count"]
-            + counts["unknown_count"]
-        )
+        counts["review_count"] = counts["missing_count"] + counts["language_review_count"] + counts["unknown_count"]
     return counts
 
 
@@ -425,9 +407,7 @@ def _enrich_subtitle_quality(  # noqa: C901
             if progress and (index == total or index % 25 == 0):
                 progress(index, total)
             continue
-        duration = emby_catalog.duration_seconds_for_path(
-            catalog, item.get("path"), mappings
-        ) if catalog else None
+        duration = emby_catalog.duration_seconds_for_path(catalog, item.get("path"), mappings) if catalog else None
         duration_source = "emby" if duration else ""
         video_identity = _stat_identity(item.get("path"))
         if not duration and not force_full:
@@ -459,10 +439,12 @@ def _enrich_subtitle_quality(  # noqa: C901
                 previous_reason = str(subtitle.get("action_reason") or "").strip()
                 subtitle["actionable"] = True
                 subtitle["action_reason"] = "; ".join(
-                    value for value in (
+                    value
+                    for value in (
                         quality.get("label") or "Likely incomplete subtitle",
                         previous_reason,
-                    ) if value
+                    )
+                    if value
                 )
                 incomplete.append(subtitle)
             elif quality.get("status") != "complete":
@@ -483,10 +465,7 @@ def _enrich_subtitle_quality(  # noqa: C901
         elif review:
             item.update(
                 status="coverage_review",
-                detail=(
-                    f"{len(review)} subtitle file{'s need' if len(review) != 1 else ' needs'} "
-                    "coverage review"
-                ),
+                detail=(f"{len(review)} subtitle file{'s need' if len(review) != 1 else ' needs'} coverage review"),
             )
         else:
             item.update(status="ok", detail="Subtitle timestamps cover the video duration")
@@ -495,7 +474,9 @@ def _enrich_subtitle_quality(  # noqa: C901
     return {"reused_count": reused_count, "analyzed_count": analyzed_count}
 
 
-def _stream_summary(status="not_checked", message="Emby subtitle streams were not checked; rescan to add stream details.", settings=None):
+def _stream_summary(
+    status="not_checked", message="Emby subtitle streams were not checked; rescan to add stream details.", settings=None
+):
     return {
         "status": status,
         "checked_at": None,
@@ -533,14 +514,8 @@ def _classify_with_emby(item, settings):
     expected = expected_language_set(settings)
     sidecars = item.get("srt_files") or []
     streams = item.get("emby_subtitle_streams") or []
-    actionable_non_expected = any(
-        sidecar.get("actionable") and sidecar.get("language_code")
-        for sidecar in sidecars
-    )
-    actionable_unknown = any(
-        sidecar.get("actionable") and not sidecar.get("language_code")
-        for sidecar in sidecars
-    )
+    actionable_non_expected = any(sidecar.get("actionable") and sidecar.get("language_code") for sidecar in sidecars)
+    actionable_unknown = any(sidecar.get("actionable") and not sidecar.get("language_code") for sidecar in sidecars)
     known_languages = {
         str(value or "")
         for value in [
@@ -555,7 +530,9 @@ def _classify_with_emby(item, settings):
     elif actionable_unknown:
         item.update(status="unknown", detail="Filesystem subtitle language could not be identified")
     elif known_languages & expected:
-        source = "Emby stream" if not any(sidecar.get("language_code") in expected for sidecar in sidecars) else "subtitle"
+        source = (
+            "Emby stream" if not any(sidecar.get("language_code") in expected for sidecar in sidecars) else "subtitle"
+        )
         item.update(status="ok", detail=f"Expected {source} language found")
     elif known_languages:
         item.update(
@@ -688,9 +665,7 @@ def _enrich_subtitle_streams(items, settings, catalog, catalog_summary):
 def public_settings(settings=None):
     settings = settings or app_settings.load_settings()
     return {
-        "expected_languages": app_settings.parse_subtitle_languages(
-            settings.get("subtitle_expected_languages")
-        ),
+        "expected_languages": app_settings.parse_subtitle_languages(settings.get("subtitle_expected_languages")),
         "flag_missing": bool(settings.get("subtitle_flag_missing", True)),
         "flag_unknown_language": bool(settings.get("subtitle_flag_unknown_language", True)),
         "subgen_detection": bool(settings.get("subtitle_subgen_detection", True)),
@@ -720,18 +695,10 @@ def public_scan(scan):
         "force_full": bool(scan.get("force_full")),
         "settings": public_settings(scan.get("settings") or app_settings.load_settings()),
         **counts,
-        "emby_mapping": emby_catalog.public_summary(
-            scan.get("emby_mapping"), app_settings.load_settings()
-        ),
-        "emby_streams": public_stream_summary(
-            scan.get("emby_streams"), app_settings.load_settings()
-        ),
+        "emby_mapping": emby_catalog.public_summary(scan.get("emby_mapping"), app_settings.load_settings()),
+        "emby_streams": public_stream_summary(scan.get("emby_streams"), app_settings.load_settings()),
     }
-    public.update(
-        maintenance_scan_store.public_cache_metadata(
-            _scan_cache_key(scan.get("mode", "missing")), scan
-        )
-    )
+    public.update(maintenance_scan_store.public_cache_metadata(_scan_cache_key(scan.get("mode", "missing")), scan))
     return public
 
 
@@ -770,11 +737,7 @@ def _prune_scans_locked(now=None):
         if not scan.get("_persisted_latest") and now - finished > SCAN_MAX_AGE_SECONDS:
             subtitle_scans.pop(scan_id, None)
     terminal = sorted(
-        (
-            (scan_id, scan)
-            for scan_id, scan in subtitle_scans.items()
-            if scan.get("status") in SCAN_TERMINAL_STATUSES
-        ),
+        ((scan_id, scan) for scan_id, scan in subtitle_scans.items() if scan.get("status") in SCAN_TERMINAL_STATUSES),
         key=lambda item: item[1].get("_finished_ts") or item[1].get("_created_ts") or 0,
         reverse=True,
     )
@@ -787,8 +750,7 @@ def _active_scan_locked(mode=None):
     active = [
         scan
         for scan in subtitle_scans.values()
-        if scan.get("status") in SCAN_ACTIVE_STATUSES
-        and (not mode or scan.get("mode", "missing") == mode)
+        if scan.get("status") in SCAN_ACTIVE_STATUSES and (not mode or scan.get("mode", "missing") == mode)
     ]
     if not active:
         return None
@@ -818,17 +780,13 @@ def _latest_reusable_subtitle_scan(scan):
         return copy.deepcopy(latest)
 
 
-@coordinated_library_operation(
-    "Scan subtitle health", kind="scan", href="/maintenance#subtitles"
-)
+@coordinated_library_operation("Scan subtitle health", kind="scan", href="/maintenance#subtitles")
 def _run_scan(scan, settings, lib_root):
     try:
         started = time.time()
         mode = scan.get("mode", "missing")
         remaining = (
-            [{"workflow": SUBTITLE_EMBY_WORKFLOW}]
-            if mode == "missing"
-            else [{"workflow": SUBTITLE_QUALITY_WORKFLOW}]
+            [{"workflow": SUBTITLE_EMBY_WORKFLOW}] if mode == "missing" else [{"workflow": SUBTITLE_QUALITY_WORKFLOW}]
         )
         _set_scan_progress(
             scan,
@@ -910,9 +868,7 @@ def _run_scan(scan, settings, lib_root):
             )
             previous = None if scan.get("force_full") else _latest_reusable_subtitle_scan(scan)
             previous_by_path = {
-                item.get("path"): item
-                for item in ((previous or {}).get("items") or [])
-                if item.get("path")
+                item.get("path"): item for item in ((previous or {}).get("items") or []) if item.get("path")
             }
             quality_counts = _enrich_subtitle_quality(
                 items,
@@ -981,9 +937,7 @@ def _run_scan(scan, settings, lib_root):
             ],
             timestamp=utc_iso(finished),
         )
-        persisted = maintenance_scan_store.persist_success(
-            _scan_cache_key(mode), "subtitles", scan, lib_root
-        )
+        persisted = maintenance_scan_store.persist_success(_scan_cache_key(mode), "subtitles", scan, lib_root)
         if persisted:
             with subtitle_lock:
                 for candidate in subtitle_scans.values():
@@ -1103,18 +1057,12 @@ def status_payload(scan_id=None, mode=None):
                 return None, "Scan not found"
         elif subtitle_scans:
             active = _active_scan_locked(mode or None)
-            candidates = [
-                item for item in subtitle_scans.values()
-                if not mode or item.get("mode", "missing") == mode
-            ]
+            candidates = [item for item in subtitle_scans.values() if not mode or item.get("mode", "missing") == mode]
             successful = [item for item in candidates if item.get("status") == "success"]
             scan = active or (
                 max(successful, key=lambda item: item.get("_finished_ts") or 0)
                 if successful
-                else (
-                    max(candidates, key=lambda item: item.get("_created_ts") or 0)
-                    if candidates else None
-                )
+                else (max(candidates, key=lambda item: item.get("_created_ts") or 0) if candidates else None)
             )
         else:
             scan = None
@@ -1135,13 +1083,22 @@ def _coerce_page(offset, limit):
 
 def _filter_items(items, status, query):
     status = str(status or "review").lower()
-    if status not in {"review", "missing", "language_review", "unknown", "incomplete", "coverage_review", "ok", "index_mismatch", "all"}:
+    if status not in {
+        "review",
+        "missing",
+        "language_review",
+        "unknown",
+        "incomplete",
+        "coverage_review",
+        "ok",
+        "index_mismatch",
+        "all",
+    }:
         status = "review"
     filtered = list(items)
     if status == "review":
         filtered = [
-            item for item in filtered
-            if item.get("status") != "ok" or item.get("emby_index_status") == "mismatch"
+            item for item in filtered if item.get("status") != "ok" or item.get("emby_index_status") == "mismatch"
         ]
     elif status == "index_mismatch":
         filtered = [item for item in filtered if item.get("emby_index_status") == "mismatch"]
@@ -1157,7 +1114,8 @@ def _filter_items(items, status, query):
             or query in str(item.get("relative_path", "")).lower()
             or any(query in str(srt.get("name", "")).lower() for srt in item.get("srt_files") or [])
             or any(
-                query in " ".join(
+                query
+                in " ".join(
                     str(stream.get(key) or "").lower()
                     for key in ("language_code", "display_language", "display_title", "codec")
                 )
@@ -1180,7 +1138,9 @@ def items_payload(scan_id, status="review", offset=0, limit=ITEM_PAGE_DEFAULT, q
         items = list(scan.get("items") or [])
     status, items = _filter_items(items, status, q)
     items, sort, direction = sort_records(
-        items, sort, direction,
+        items,
+        sort,
+        direction,
         {
             "status": lambda item: item.get("status"),
             "video": lambda item: item.get("relative_path") or item.get("name"),
@@ -1219,9 +1179,7 @@ def _subtitle_quarantine_root(lib_root):
     empty or points outside the mounted root.
     """
     fallback = os.path.realpath(os.path.join(lib_root, SUBTITLE_QUARANTINE_DIRNAME))
-    configured = str(
-        app_settings.load_settings().get("subtitle_quarantine_root") or ""
-    ).strip()
+    configured = str(app_settings.load_settings().get("subtitle_quarantine_root") or "").strip()
     if not configured:
         return fallback
     real = os.path.realpath(configured)
@@ -1267,10 +1225,7 @@ def build_action_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
     if operation not in {"quarantine", "delete"}:
         return None, "Choose quarantine or delete"
     files_by_id = _all_subtitles(scan)
-    actionable_ids = [
-        file_id for file_id, subtitle in files_by_id.items()
-        if subtitle.get("actionable")
-    ]
+    actionable_ids = [file_id for file_id, subtitle in files_by_id.items() if subtitle.get("actionable")]
     selection = payload.get("selection")
     selection_mode = "visible_page"
     if isinstance(selection, dict) and selection.get("mode") == "all_eligible":
@@ -1280,9 +1235,9 @@ def build_action_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
         visible = set(actionable_ids)
     elif isinstance(selection, dict) and selection.get("mode") == "explicit":
         selection_mode = "explicit"
-        selected = list(dict.fromkeys(
-            str(value or "") for value in selection.get("file_ids") or [] if str(value or "")
-        ))
+        selected = list(
+            dict.fromkeys(str(value or "") for value in selection.get("file_ids") or [] if str(value or ""))
+        )
         visible = set(actionable_ids)
     else:
         visible_ids = payload.get("visible_file_ids")
@@ -1292,9 +1247,7 @@ def build_action_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
         if not isinstance(selected_ids, list) or not selected_ids:
             return None, "Select at least one subtitle file"
         visible = {str(value or "") for value in visible_ids if str(value or "")}
-        selected = list(dict.fromkeys(
-            str(value or "") for value in selected_ids if str(value or "")
-        ))
+        selected = list(dict.fromkeys(str(value or "") for value in selected_ids if str(value or "")))
         if any(file_id not in visible for file_id in selected):
             return None, "Selected subtitles must be visible on the current page"
         if any(file_id not in files_by_id for file_id in visible):
@@ -1317,20 +1270,22 @@ def build_action_plan(payload, lib_root=LIB_ROOT):  # noqa: C901
         destination = os.path.realpath(os.path.join(quarantine_root, relative)) if operation == "quarantine" else ""
         if destination and not path_is_under(destination, quarantine_root):
             return None, "Subtitle quarantine path is unsafe"
-        files.append({
-            "file_id": file_id,
-            "source_path": source,
-            "relative_path": relative,
-            "destination_path": destination,
-            "size_bytes": subtitle.get("size_bytes") or 0,
-            "size_label": subtitle.get("size_label") or "",
-            "language_code": subtitle.get("language_code") or "unknown",
-            "identity": dict(subtitle.get("identity") or {}),
-            "emby_item_id": subtitle.get("emby_parent_item_id", ""),
-            "emby_item_type": subtitle.get("emby_parent_item_type", ""),
-            "video_path": subtitle.get("_video_path", ""),
-            "video_id": subtitle.get("_video_id", ""),
-        })
+        files.append(
+            {
+                "file_id": file_id,
+                "source_path": source,
+                "relative_path": relative,
+                "destination_path": destination,
+                "size_bytes": subtitle.get("size_bytes") or 0,
+                "size_label": subtitle.get("size_label") or "",
+                "language_code": subtitle.get("language_code") or "unknown",
+                "identity": dict(subtitle.get("identity") or {}),
+                "emby_item_id": subtitle.get("emby_parent_item_id", ""),
+                "emby_item_type": subtitle.get("emby_parent_item_type", ""),
+                "video_path": subtitle.get("_video_path", ""),
+                "video_id": subtitle.get("_video_id", ""),
+            }
+        )
     playback_targets = [
         {
             "id": item["file_id"],
@@ -1380,15 +1335,17 @@ def public_apply_run(run):
     if isinstance(public.get("result"), dict):
         public["result"] = dict(public["result"])
         if public["result"].get("emby_playback"):
-            public["result"]["emby_playback"] = emby_playback.public_result(
-                public["result"].get("emby_playback")
-            )
+            public["result"]["emby_playback"] = emby_playback.public_result(public["result"].get("emby_playback"))
     return public
 
 
 def _identity_matches(path, expected):
     current = _stat_identity(path)
-    return bool(current and expected and all(current.get(key) == expected.get(key) for key in ("size", "mtime_ns", "inode", "device")))
+    return bool(
+        current
+        and expected
+        and all(current.get(key) == expected.get(key) for key in ("size", "mtime_ns", "inode", "device"))
+    )
 
 
 def _save_action_log(plan, run, records):
@@ -1476,38 +1433,53 @@ def _run_action(plan, run):
                 applied_bytes += item.get("size_bytes") or 0
             except Exception as exc:
                 reason = str(exc)
-        records.append({"file_id": item.get("file_id"), "path": item.get("relative_path"), "status": status, "reason": reason})
-        run.update({
-            "processed_count": index,
-            "applied_count": sum(1 for record in records if record["status"] == "applied"),
-            "refused_count": sum(1 for record in records if record["status"] == "refused"),
-            "deferred_count": sum(1 for record in records if record["status"] == "deferred"),
-            "progress_label": f"Processed {index} of {len(plan.get('files') or [])} subtitles",
-        })
-    run.update({
-        "progress_label": "Subtitle files processed",
-        "applied_bytes": applied_bytes,
-        "deferred_bytes": deferred_bytes,
-        "result": {"records": records, "scan_path": plan.get("scan_path"), "applied_bytes": applied_bytes, "deferred_bytes": deferred_bytes},
-    })
+        records.append(
+            {"file_id": item.get("file_id"), "path": item.get("relative_path"), "status": status, "reason": reason}
+        )
+        run.update(
+            {
+                "processed_count": index,
+                "applied_count": sum(1 for record in records if record["status"] == "applied"),
+                "refused_count": sum(1 for record in records if record["status"] == "refused"),
+                "deferred_count": sum(1 for record in records if record["status"] == "deferred"),
+                "progress_label": f"Processed {index} of {len(plan.get('files') or [])} subtitles",
+            }
+        )
+    run.update(
+        {
+            "progress_label": "Subtitle files processed",
+            "applied_bytes": applied_bytes,
+            "deferred_bytes": deferred_bytes,
+            "result": {
+                "records": records,
+                "scan_path": plan.get("scan_path"),
+                "applied_bytes": applied_bytes,
+                "deferred_bytes": deferred_bytes,
+            },
+        }
+    )
     _save_action_log(plan, run, records)
     applied_ids = {record.get("file_id") for record in records if record.get("status") == "applied"}
     applied_files = [item for item in plan.get("files") or [] if item.get("file_id") in applied_ids]
     if applied_files:
         run.update(progress_label="Synchronizing subtitle changes with Emby")
-    sync_result = emby_sync.sync_changes(
-        [
-            {
-                "local_path": item.get("source_path"),
-                "update_type": "Deleted",
-                "emby_item_id": item.get("emby_item_id", ""),
-                "refresh_scope": "metadata",
-            }
-            for item in applied_files
-        ],
-        workflow="subtitles",
-        run_id=run["id"],
-    ) if applied_files else None
+    sync_result = (
+        emby_sync.sync_changes(
+            [
+                {
+                    "local_path": item.get("source_path"),
+                    "update_type": "Deleted",
+                    "emby_item_id": item.get("emby_item_id", ""),
+                    "refresh_scope": "metadata",
+                }
+                for item in applied_files
+            ],
+            workflow="subtitles",
+            run_id=run["id"],
+        )
+        if applied_files
+        else None
+    )
     run["result"]["emby_sync"] = sync_result
     run["result"]["emby_playback"] = playback
     operation = plan.get("operation")
@@ -1575,12 +1547,20 @@ def start_action_apply(plan_id, synchronous=False):
             "created_at": utc_iso(),
         }
         subtitle_apply_runs[run["id"]] = run
+
     def execute():
         run.update({"status": "running", "started_at": utc_iso(), "progress_label": "Applying subtitle cleanup"})
         try:
             _run_action(plan, run)
         except Exception as exc:
-            run.update({"status": "failed", "error": str(exc), "finished_at": utc_iso(), "progress_label": "Subtitle cleanup failed"})
+            run.update(
+                {
+                    "status": "failed",
+                    "error": str(exc),
+                    "finished_at": utc_iso(),
+                    "progress_label": "Subtitle cleanup failed",
+                }
+            )
             run["emby_notification"] = emby_notifications.notify_maintenance(
                 "Subtitle cleanup",
                 run["id"],
@@ -1591,6 +1571,7 @@ def start_action_apply(plan_id, synchronous=False):
                 refused_count=run.get("refused_count", 0),
                 deferred_count=run.get("deferred_count", 0),
             )
+
     if synchronous:
         execute()
     else:

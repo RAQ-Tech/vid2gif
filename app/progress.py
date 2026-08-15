@@ -10,9 +10,7 @@ TERMINAL_STATUSES = {"success", "failed", "stopped", "interrupted", "cancelled"}
 def utc_iso(ts=None):
     if ts is None:
         ts = time.time()
-    return datetime.datetime.fromtimestamp(
-        ts, tz=datetime.timezone.utc
-    ).isoformat()
+    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).isoformat()
 
 
 def clamp_percent(value):
@@ -147,9 +145,7 @@ def update_job_label(job, now=None):
     elif job.get("status") == "running":
         projected = job.get("_projected_total_seconds") or job.get("expected_duration_seconds")
         if projected is not None and job.get("elapsed_seconds") is not None:
-            job["eta_seconds"] = rounded_seconds(
-                max(0, float(projected) - float(job["elapsed_seconds"]))
-            )
+            job["eta_seconds"] = rounded_seconds(max(0, float(projected) - float(job["elapsed_seconds"])))
 
     job["progress_percent"] = clamp_percent(job.get("progress_percent", 0))
     job["progress_label"] = progress_label(
@@ -209,18 +205,14 @@ def update_render_progress(
         if previous_total:
             target_total = float(previous_total) * 0.8 + target_total * 0.2
         job["_projected_total_seconds"] = max(elapsed, target_total)
-        job["eta_seconds"] = rounded_seconds(
-            max(0, job["_projected_total_seconds"] - elapsed)
-        )
+        job["eta_seconds"] = rounded_seconds(max(0, job["_projected_total_seconds"] - elapsed))
 
     return update_job_label(job, now=now)
 
 
 def update_job_stage(job, percent, stage, now=None):
     now = time.time() if now is None else now
-    job["progress_percent"] = max(
-        clamp_percent(job.get("progress_percent", 0)), clamp_percent(percent)
-    )
+    job["progress_percent"] = max(clamp_percent(job.get("progress_percent", 0)), clamp_percent(percent))
     job["progress_stage"] = str(stage or "Processing")
     return update_job_label(job, now=now)
 

@@ -40,9 +40,21 @@ DUPLICATE_ACCESSORY_POLICIES = {
     "remove_all": "Remove all matched-stem sidecars",
 }
 DEFAULT_DUPLICATE_EXCLUDED_FOLDERS = (
-    "trailer", "trailers", "extra", "extras", "featurette", "featurettes",
-    "behind the scenes", "deleted scenes", "interviews", "scene", "scenes",
-    "short", "shorts", "sample", "samples",
+    "trailer",
+    "trailers",
+    "extra",
+    "extras",
+    "featurette",
+    "featurettes",
+    "behind the scenes",
+    "deleted scenes",
+    "interviews",
+    "scene",
+    "scenes",
+    "short",
+    "shorts",
+    "sample",
+    "samples",
 )
 DEFAULT_SUBTITLE_EXPECTED_LANGUAGES = ("eng", "en", "en-us", "en-gb")
 DEFAULT_VIDEO_PREVIEW_BIF_WIDTH = 320
@@ -171,10 +183,7 @@ def parse_emby_path_mappings(value):
 
 
 def emby_path_mappings_text(value):
-    return "\n".join(
-        f"{item.get('emby_prefix', '')} => {item.get('local_prefix', '')}"
-        for item in (value or [])
-    )
+    return "\n".join(f"{item.get('emby_prefix', '')} => {item.get('local_prefix', '')}" for item in (value or []))
 
 
 def _coerce_emby_path_mappings(value):
@@ -186,10 +195,7 @@ def _coerce_emby_path_mappings(value):
 
 def _looks_absolute_path(value):
     value = str(value or "").strip()
-    return bool(
-        value.startswith(("/", "\\\\", "//"))
-        or re.match(r"^[A-Za-z]:[\\/]", value)
-    )
+    return bool(value.startswith(("/", "\\\\", "//")) or re.match(r"^[A-Za-z]:[\\/]", value))
 
 
 def validate_emby_path_mappings(value, lib_root=None):
@@ -317,22 +323,16 @@ def _coerce_settings(data):
     if not isinstance(data, dict):
         return default_settings()
     defaults = default_settings()
-    height, err = parse_preview_height(
-        data.get("test_lab_preview_height", DEFAULT_TEST_LAB_PREVIEW_HEIGHT)
-    )
+    height, err = parse_preview_height(data.get("test_lab_preview_height", DEFAULT_TEST_LAB_PREVIEW_HEIGHT))
     if err:
         height = DEFAULT_TEST_LAB_PREVIEW_HEIGHT
     move_root = str(data.get("duplicate_move_root", defaults["duplicate_move_root"]) or "").strip()
     damaged_root = str(data.get("damaged_move_root", defaults["damaged_move_root"]) or "").strip()
-    repair_root = str(
-        data.get("video_preview_repair_root", defaults["video_preview_repair_root"]) or ""
-    ).strip()
-    subtitle_root = str(
-        data.get("subtitle_quarantine_root", defaults["subtitle_quarantine_root"]) or ""
-    ).strip()
-    local_prefix = str(
-        data.get("library_local_path_prefix", defaults["library_local_path_prefix"]) or ""
-    ).strip().rstrip("/\\")
+    repair_root = str(data.get("video_preview_repair_root", defaults["video_preview_repair_root"]) or "").strip()
+    subtitle_root = str(data.get("subtitle_quarantine_root", defaults["subtitle_quarantine_root"]) or "").strip()
+    local_prefix = (
+        str(data.get("library_local_path_prefix", defaults["library_local_path_prefix"]) or "").strip().rstrip("/\\")
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "test_lab_preview_height": height,
@@ -424,9 +424,7 @@ def _coerce_settings(data):
             {"off": "Off", "warnings": "Warnings", "all": "All"},
             defaults["emby_admin_notifications"],
         ),
-        "table_preferences": _coerce_table_preferences(
-            data.get("table_preferences", defaults["table_preferences"])
-        ),
+        "table_preferences": _coerce_table_preferences(data.get("table_preferences", defaults["table_preferences"])),
     }
 
 
@@ -595,7 +593,10 @@ def update_settings(updates, path=None):  # noqa: C901
         settings = _coerce_settings(merged)
         if not _write_settings_unlocked(path, settings):
             return None, "Settings could not be saved"
-    if any(key in updates for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings", "emby_playback_protection")):
+    if any(
+        key in updates
+        for key in ("emby_url", "emby_api_key", "emby_api_key_clear", "emby_path_mappings", "emby_playback_protection")
+    ):
         try:
             from . import emby_catalog
 

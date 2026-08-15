@@ -26,8 +26,17 @@ VIDEO_EXTS = set(config.VIDEO_EXTS)
 SUBTITLE_EXTS = {".srt"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 DUPLICATE_ACCESSORY_EXTS = {
-    ".srt", ".ass", ".ssa", ".vtt", ".sub", ".nfo", ".jpg", ".jpeg",
-    ".png", ".webp", ".bif",
+    ".srt",
+    ".ass",
+    ".ssa",
+    ".vtt",
+    ".sub",
+    ".nfo",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bif",
 }
 OVERVIEW_EXTS = VIDEO_EXTS | DUPLICATE_ACCESSORY_EXTS
 SKIP_DIRS = {
@@ -168,9 +177,7 @@ def _is_relevant(area, filename):
         return ext in VIDEO_EXTS or ext in SUBTITLE_EXTS
     if area == "posters":
         return ext in IMAGE_EXTS and (
-            lower.endswith("-background")
-            or lower.endswith("-poster")
-            or lower.endswith("-poster-backup")
+            lower.endswith("-background") or lower.endswith("-poster") or lower.endswith("-poster-backup")
         )
     if area == "actor_images":
         return ext in VIDEO_EXTS or ext in IMAGE_EXTS
@@ -185,7 +192,8 @@ def capture_manifest(area, path, lib_root=None):
     files = {}
     for base, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = [
-            name for name in dirs
+            name
+            for name in dirs
             if name not in SKIP_DIRS
             # Configured quarantine destinations are excluded by path, so the
             # freshness manifest does not treat cleaned-up files as library
@@ -226,9 +234,7 @@ def compare_manifests(original, current):
     current = current or {}
     added = len(set(current) - set(original))
     removed = len(set(original) - set(current))
-    changed = sum(
-        1 for key in set(current) & set(original) if current[key] != original[key]
-    )
+    changed = sum(1 for key in set(current) & set(original) if current[key] != original[key])
     return {
         "status": "changed" if added or removed or changed else "unchanged",
         "checked_at": utc_iso(),
@@ -260,7 +266,9 @@ def persist_success(
             "library_root_identity": _library_root_identity(lib_root),
             "scan": _json_safe(copy.deepcopy(scan)),
             "manifest": identities,
-            "freshness": dict(freshness) if isinstance(freshness, dict) else {
+            "freshness": dict(freshness)
+            if isinstance(freshness, dict)
+            else {
                 "status": "unchanged",
                 "checked_at": utc_iso(),
                 "added": 0,
@@ -364,7 +372,11 @@ def update_persisted_scan(
             key = relative_key(path)
             if not key:
                 continue
-            if not os.path.isfile(path) or os.path.islink(path) or not _is_relevant(payload.get("area"), os.path.basename(path)):
+            if (
+                not os.path.isfile(path)
+                or os.path.islink(path)
+                or not _is_relevant(payload.get("area"), os.path.basename(path))
+            ):
                 manifest.pop(key, None)
                 continue
             try:

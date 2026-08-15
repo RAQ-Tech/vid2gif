@@ -277,9 +277,7 @@ def request_paged_json(
         raise ValueError("page_size must be a positive integer")
 
     base_params = {
-        key: value
-        for key, value in dict(params or {}).items()
-        if str(key).lower() not in {"startindex", "limit"}
+        key: value for key, value in dict(params or {}).items() if str(key).lower() not in {"startindex", "limit"}
     }
     collected = []
     start = 0

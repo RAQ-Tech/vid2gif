@@ -135,21 +135,12 @@ def duration_estimate(workflow, work_units=None):
             "typical_units": None,
         }
     with _lock:
-        raw = list((_load().get("workflows") or {}).get(workflow, []))[
-            -ESTIMATE_SAMPLE_WINDOW:
-        ]
+        raw = list((_load().get("workflows") or {}).get(workflow, []))[-ESTIMATE_SAMPLE_WINDOW:]
     samples = [sample for value in raw if (sample := _sample(value))]
     unit_samples = [sample for sample in samples if sample.get("work_units")]
-    typical_units = (
-        statistics.median(sample["work_units"] for sample in unit_samples)
-        if unit_samples
-        else None
-    )
+    typical_units = statistics.median(sample["work_units"] for sample in unit_samples) if unit_samples else None
     if target_units is not None:
-        rates = [
-            sample["duration_seconds"] / sample["work_units"]
-            for sample in unit_samples
-        ]
+        rates = [sample["duration_seconds"] / sample["work_units"] for sample in unit_samples]
         if not rates:
             return {
                 "seconds": None,
@@ -176,10 +167,7 @@ def duration_estimate(workflow, work_units=None):
         }
     seconds = statistics.median(sample["duration_seconds"] for sample in samples)
     rate = (
-        statistics.median(
-            sample["duration_seconds"] / sample["work_units"]
-            for sample in unit_samples
-        )
+        statistics.median(sample["duration_seconds"] / sample["work_units"] for sample in unit_samples)
         if unit_samples
         else None
     )
@@ -396,10 +384,7 @@ def update_scan(
     task["progress_workflow"] = workflow
     task["progress_label_base"] = str(label or status.title())
     task["elapsed_seconds"] = _elapsed(task, now)
-    instrumented = any(
-        value is not None
-        for value in (stage_workflow, completed_units, total_units, remaining_stages)
-    )
+    instrumented = any(value is not None for value in (stage_workflow, completed_units, total_units, remaining_stages))
 
     if _active(status) and use_history and instrumented:
         return _instrumented_update(
@@ -438,10 +423,7 @@ def update_scan(
         return task
 
     if _active(status):
-        detail = str(
-            task.get("progress_detail")
-            or "Remaining time varies with library and Emby response time"
-        )
+        detail = str(task.get("progress_detail") or "Remaining time varies with library and Emby response time")
         task.update(
             progress_percent=0,
             progress_indeterminate=True,

@@ -133,9 +133,7 @@ def probe_media_duration(path, timeout=FFPROBE_TIMEOUT_SECONDS):
     if proc.returncode != 0:
         return None
     try:
-        duration = float(
-            (json.loads(proc.stdout or "{}").get("format") or {}).get("duration") or 0
-        )
+        duration = float((json.loads(proc.stdout or "{}").get("format") or {}).get("duration") or 0)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
     return duration if duration > 0 else None
@@ -171,9 +169,7 @@ def clear_quality_winner(items):
     second_quality = second.get("subtitle_quality") or {}
     best_status = best_quality.get("status")
     second_status = second_quality.get("status")
-    if best_status == "complete" and second_status in {
-        "likely_incomplete", "timing_review", "invalid", "unreadable"
-    }:
+    if best_status == "complete" and second_status in {"likely_incomplete", "timing_review", "invalid", "unreadable"}:
         return best
     best_ratio = best_quality.get("coverage_ratio")
     second_ratio = second_quality.get("coverage_ratio")

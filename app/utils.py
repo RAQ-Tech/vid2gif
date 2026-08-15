@@ -8,6 +8,7 @@ def parse_float(s, fb):
     except Exception:
         return fb
 
+
 def parse_int_list(s):
     out = []
     for tok in s.split(","):
@@ -19,6 +20,7 @@ def parse_int_list(s):
         except Exception:
             pass
     return out
+
 
 def choose_numeric(form, preset_key, custom_key, caster, default_val):
     """Handle preset/custom numeric inputs from forms."""
@@ -46,6 +48,7 @@ def choose_numeric(form, preset_key, custom_key, caster, default_val):
             return default_val
     return default_val
 
+
 def path_is_under(path: str, root: str) -> bool:
     """Return True when path is contained by root after normalization."""
     if not path or not root:
@@ -56,6 +59,7 @@ def path_is_under(path: str, root: str) -> bool:
         return os.path.commonpath([path_abs, root_abs]) == root_abs
     except (OSError, ValueError):
         return False
+
 
 def resolve_case_insensitive(path: str):
     """Return the actual filesystem path matching the given path, ignoring case.
@@ -97,7 +101,7 @@ def _background_variant_number(name: str, image_type: str):
     if name == image_type:
         return 0
 
-    suffix = name[len(image_type):]
+    suffix = name[len(image_type) :]
     if suffix.isdigit():
         return int(suffix)
     if suffix.startswith("-") and suffix[1:].isdigit():
@@ -111,7 +115,7 @@ def _background_image_score(name: str, video_base: str):
     prefixed = f"{lower_base}-"
 
     if lower_name.startswith(prefixed):
-        suffix = lower_name[len(prefixed):]
+        suffix = lower_name[len(prefixed) :]
         for type_index, image_type in enumerate(BACKGROUND_IMAGE_TYPES):
             variant = _background_variant_number(suffix, image_type)
             if variant is not None:

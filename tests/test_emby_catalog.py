@@ -57,9 +57,7 @@ def test_catalog_requests_documented_fields_and_indexes_media_sources():
         }
     ]
 
-    catalog, summary = emby_catalog.load_catalog(
-        _settings(), opener=_catalog_opener(items, captured)
-    )
+    catalog, summary = emby_catalog.load_catalog(_settings(), opener=_catalog_opener(items, captured))
 
     request = captured[-1]
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)
@@ -93,9 +91,7 @@ def test_explicit_path_mapping_supports_posix_windows_and_longest_prefix(tmp_pat
 
     assert emby_catalog.match_path(catalog, "/library/One.mkv", mappings)["emby_item_id"] == "one"
     assert emby_catalog.match_path(catalog, "/library/tv/Show/Two.mkv", mappings)["emby_item_id"] == "two"
-    assert emby_catalog.mapped_emby_paths("/library/movies/Film.mkv", mappings) == [
-        "/media/movies/film.mkv"
-    ]
+    assert emby_catalog.mapped_emby_paths("/library/movies/Film.mkv", mappings) == ["/media/movies/film.mkv"]
 
 
 def test_catalog_deduplicates_same_id_and_marks_distinct_id_collisions_ambiguous():
@@ -271,4 +267,7 @@ def test_catalog_reports_partial_or_ambiguous_stream_coverage():
         {"emby_prefix": "/one", "local_prefix": "/library"},
         {"emby_prefix": "/two", "local_prefix": "/library"},
     ]
-    assert emby_catalog.subtitle_streams_for_path(catalog, "movie", "/library/Movie.mkv", mappings)["status"] == "ambiguous"
+    assert (
+        emby_catalog.subtitle_streams_for_path(catalog, "movie", "/library/Movie.mkv", mappings)["status"]
+        == "ambiguous"
+    )

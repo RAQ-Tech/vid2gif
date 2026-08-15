@@ -13,11 +13,13 @@ class DummyLogger:
 
     def info(self, msg):
         self.info_msgs.append(msg)
+
     def warning(self, msg, *args):
         pass
         if args:
             msg = msg % args
         self.info_msgs.append(msg)
+
     def error(self, msg):
         self.error_msgs.append(msg)
 
@@ -42,24 +44,17 @@ def _patch_probe(monkeypatch, width=640, height=360, fps="24/1"):
     monkeypatch.setattr(ffmpeg_utils, "probe_video_details", fake_probe)
 
 
-
 def test_parse_ffmpeg_progress_line_out_time_ms():
-    assert ffmpeg_utils.parse_ffmpeg_progress_line("out_time_ms=1500000") == {
-        "out_time_seconds": 1.5
-    }
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("out_time_ms=1500000") == {"out_time_seconds": 1.5}
 
 
 def test_parse_ffmpeg_progress_line_out_time():
-    assert ffmpeg_utils.parse_ffmpeg_progress_line("out_time=00:01:02.500000") == {
-        "out_time_seconds": 62.5
-    }
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("out_time=00:01:02.500000") == {"out_time_seconds": 62.5}
 
 
 def test_parse_ffmpeg_progress_line_frame_and_completion():
     assert ffmpeg_utils.parse_ffmpeg_progress_line("frame=42") == {"frame": 42}
-    assert ffmpeg_utils.parse_ffmpeg_progress_line("progress=end") == {
-        "progress": "end"
-    }
+    assert ffmpeg_utils.parse_ffmpeg_progress_line("progress=end") == {"progress": "end"}
 
 
 @pytest.mark.parametrize(
@@ -84,6 +79,7 @@ def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
             captured["args"] = args
             self.stdout = []
             self.returncode = 0
+
         def wait(self):
             return self.returncode
 

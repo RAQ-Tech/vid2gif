@@ -60,10 +60,12 @@ app = Flask(__name__)
 # edits without a restart. The container has no one editing templates and would
 # just be paying a stat() per template per request, so let it be turned off
 # there; the Dockerfile sets it.
-app.config["TEMPLATES_AUTO_RELOAD"] = (
-    os.getenv("TEMPLATES_AUTO_RELOAD", "1").strip().lower()
-    not in {"0", "false", "no", "off"}
-)
+app.config["TEMPLATES_AUTO_RELOAD"] = os.getenv("TEMPLATES_AUTO_RELOAD", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 QUEUE_LIMITS = (10, 25, 50, 100)
 SCAN_CACHE_TTL_SECONDS = 300
@@ -93,16 +95,12 @@ def _optional_truthy(values, key, default):
 
 
 def _job_config_from_values(values):
-    height = choose_numeric(
-        values, "height_preset", "height_custom", int, DEFAULTS["height"]
-    )
+    height = choose_numeric(values, "height_preset", "height_custom", int, DEFAULTS["height"])
     fps_preset = str(values.get("fps_preset") or values.get("fps") or "").strip().lower()
     if _truthy(values.get("fps_original")) or fps_preset == "original":
         fps = "original"
     else:
-        fps = choose_numeric(
-            values, "fps_preset", "fps_custom", int, DEFAULTS["fps"]
-        )
+        fps = choose_numeric(values, "fps_preset", "fps_custom", int, DEFAULTS["fps"])
     clip_len = choose_numeric(
         values,
         "clip_len_preset",
@@ -115,13 +113,9 @@ def _job_config_from_values(values):
         "height": height,
         "fps": fps,
         "clip_len": clip_len,
-        "percent_points": parse_int_list(
-            values.get("percent_points", DEFAULTS["percent_points"])
-        )
+        "percent_points": parse_int_list(values.get("percent_points", DEFAULTS["percent_points"]))
         or parse_int_list(DEFAULTS["percent_points"]),
-        "abs_early": parse_float(
-            values.get("abs_early", DEFAULTS["abs_early"]), DEFAULTS["abs_early"]
-        ),
+        "abs_early": parse_float(values.get("abs_early", DEFAULTS["abs_early"]), DEFAULTS["abs_early"]),
         "abs_late_from_end": parse_float(
             values.get("abs_late_from_end", DEFAULTS["abs_late_from_end"]),
             DEFAULTS["abs_late_from_end"],
@@ -147,20 +141,13 @@ def _compatible_file_count(real_path):
         return cached["count"], cached["is_dir"]
 
     if os.path.isfile(real_path):
-        count = (
-            1
-            if not os.path.islink(real_path)
-            and os.path.splitext(real_path)[1].lower() in VIDEO_EXTS
-            else 0
-        )
+        count = 1 if not os.path.islink(real_path) and os.path.splitext(real_path)[1].lower() in VIDEO_EXTS else 0
         is_dir = False
     elif os.path.isdir(real_path):
         count = 0
         is_dir = True
         for base, dirs, files in os.walk(real_path, followlinks=False):
-            dirs[:] = [
-                d for d in dirs if not os.path.islink(os.path.join(base, d))
-            ]
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(base, d))]
             for fn in files:
                 candidate = os.path.join(base, fn)
                 if os.path.islink(candidate):
@@ -182,20 +169,14 @@ def _compatible_file_count(real_path):
 def _gifs_workspace_context(limit):
     prune_job_history()
     with lock:
-        running_jobs = [
-            public_job(j)
-            for j in jobs.values()
-            if j.get("status") in {"running", "cancelling"}
-        ]
+        running_jobs = [public_job(j) for j in jobs.values() if j.get("status") in {"running", "cancelling"}]
 
     with job_queue.mutex:
         queued_ids = list(job_queue.queue)
 
     remaining = max(0, limit - len(running_jobs))
     with lock:
-        queued_jobs = [
-            public_job(jobs[jid]) for jid in queued_ids[:remaining] if jid in jobs
-        ]
+        queued_jobs = [public_job(jobs[jid]) for jid in queued_ids[:remaining] if jid in jobs]
         completed_jobs = [
             public_job(j)
             for j in jobs.values()
@@ -208,11 +189,7 @@ def _gifs_workspace_context(limit):
     shown = len(running_jobs) + len(queued_jobs)
     total = len(queued_ids) + len(running_jobs)
     latest_optimization_label = next(
-        (
-            j.get("gif_optimization_label")
-            for j in completed_jobs
-            if j.get("gif_optimization_label")
-        ),
+        (j.get("gif_optimization_label") for j in completed_jobs if j.get("gif_optimization_label")),
         "",
     )
 
@@ -282,30 +259,20 @@ def _settings_context(error="", saved=False, form_values=None):
                 form_values.get("duplicate_excluded_folders")
             )
         settings["subtitle_flag_missing"] = _truthy(form_values.get("subtitle_flag_missing"))
-        settings["subtitle_flag_unknown_language"] = _truthy(
-            form_values.get("subtitle_flag_unknown_language")
-        )
-        settings["subtitle_subgen_detection"] = _truthy(
-            form_values.get("subtitle_subgen_detection")
-        )
+        settings["subtitle_flag_unknown_language"] = _truthy(form_values.get("subtitle_flag_unknown_language"))
+        settings["subtitle_subgen_detection"] = _truthy(form_values.get("subtitle_subgen_detection"))
     return {
         "settings": settings,
         "preview_height_presets": app_settings.PREVIEW_HEIGHT_PRESETS,
         "preview_height_selected": selected,
         "preview_height_custom": custom,
         "preview_height_label": app_settings.preview_height_label(preview_height),
-        "preview_height_warning": app_settings.warning_for_preview_height(
-            preview_height
-        ),
+        "preview_height_warning": app_settings.warning_for_preview_height(preview_height),
         "duplicate_grouping_modes": app_settings.DUPLICATE_GROUPING_MODES,
         "duplicate_keeper_rules": app_settings.DUPLICATE_KEEPER_RULES,
         "duplicate_accessory_policies": app_settings.DUPLICATE_ACCESSORY_POLICIES,
-        "duplicate_excluded_folders_text": ", ".join(
-            settings.get("duplicate_excluded_folders") or []
-        ),
-        "subtitle_expected_languages_text": ", ".join(
-            settings.get("subtitle_expected_languages") or []
-        ),
+        "duplicate_excluded_folders_text": ", ".join(settings.get("duplicate_excluded_folders") or []),
+        "subtitle_expected_languages_text": ", ".join(settings.get("subtitle_expected_languages") or []),
         "emby_path_mappings_text": (
             form_values.get("emby_path_mappings")
             if form_values and "emby_path_mappings" in form_values
@@ -320,11 +287,7 @@ def _settings_context(error="", saved=False, form_values=None):
 def settings_page():
     if request.method == "POST":
         preset = (request.form.get("preview_height_preset") or "").strip().lower()
-        raw_height = (
-            request.form.get("preview_height_custom")
-            if preset == "custom"
-            else preset
-        )
+        raw_height = request.form.get("preview_height_custom") if preset == "custom" else preset
         height, err = app_settings.parse_preview_height(raw_height)
         if err:
             return (
@@ -359,12 +322,8 @@ def settings_page():
                 "emby_api_key": request.form.get("emby_api_key"),
                 "emby_api_key_clear": _truthy(request.form.get("emby_api_key_clear")),
                 "emby_path_mappings": request.form.get("emby_path_mappings"),
-                "emby_sync_after_maintenance": _truthy(
-                    request.form.get("emby_sync_after_maintenance")
-                ),
-                "emby_playback_protection": _truthy(
-                    request.form.get("emby_playback_protection")
-                ),
+                "emby_sync_after_maintenance": _truthy(request.form.get("emby_sync_after_maintenance")),
+                "emby_playback_protection": _truthy(request.form.get("emby_playback_protection")),
                 "emby_admin_notifications": request.form.get("emby_admin_notifications")
                 or app_settings.load_settings().get("emby_admin_notifications", "warnings"),
             }
@@ -545,9 +504,7 @@ def system_backup():
 
     response = Response(stream_archive(), mimetype="application/zip")
     response.content_length = archive_size
-    response.headers.set(
-        "Content-Disposition", "attachment", filename=backup["download_name"]
-    )
+    response.headers.set("Content-Disposition", "attachment", filename=backup["download_name"])
     response.headers["X-vid2gif-Backup-Files"] = str(backup["file_count"])
     response.headers["X-vid2gif-Backup-Bytes"] = str(backup["total_bytes"])
     response.headers["X-vid2gif-Backup-Redacted"] = str(backup.get("redacted_count", 0))
@@ -574,7 +531,9 @@ def api_dashboard_maintenance_scans():
 
 @app.route("/api/dashboard/maintenance-scans/status")
 def api_dashboard_maintenance_scans_status():
-    return jsonify({"run": maintenance_scan_orchestrator.status(), "freshness": maintenance_scan_store.freshness_status()})
+    return jsonify(
+        {"run": maintenance_scan_orchestrator.status(), "freshness": maintenance_scan_store.freshness_status()}
+    )
 
 
 @app.route("/api/dashboard/maintenance-scans/cancel", methods=["POST"])
@@ -643,9 +602,7 @@ def api_queue_control(action):
         with job_queue.mutex:
             ids = list(job_queue.queue)
             job_queue.queue.clear()
-            job_queue.unfinished_tasks = max(
-                0, job_queue.unfinished_tasks - len(ids)
-            )
+            job_queue.unfinished_tasks = max(0, job_queue.unfinished_tasks - len(ids))
             if job_queue.unfinished_tasks == 0:
                 job_queue.all_tasks_done.notify_all()
         with lock:
@@ -729,9 +686,7 @@ def api_logs(job_id):
 
     path = j["log_path"]
     if not os.path.isfile(path):
-        return jsonify(
-            {"job": public_job(j), "lines": [], "offset": 0, "reset": offset > 0}
-        )
+        return jsonify({"job": public_job(j), "lines": [], "offset": 0, "reset": offset > 0})
 
     try:
         size = os.path.getsize(path)
@@ -781,11 +736,7 @@ def api_listdir():
     if not real or not path_is_under(real, LIB_ROOT) or not os.path.isdir(real):
         return jsonify([])
     try:
-        entries = [
-            d
-            for d in os.listdir(real)
-            if os.path.isdir(os.path.join(real, d))
-        ]
+        entries = [d for d in os.listdir(real) if os.path.isdir(os.path.join(real, d))]
         entries.sort()
     except Exception:
         entries = []
@@ -833,7 +784,11 @@ def api_media_browser():
     parent = ""
     lib_real = resolve_case_insensitive(LIB_ROOT) or LIB_ROOT
     real_parent = os.path.dirname(real)
-    if real_parent and path_is_under(real_parent, lib_real) and os.path.normcase(os.path.realpath(real)) != os.path.normcase(os.path.realpath(lib_real)):
+    if (
+        real_parent
+        and path_is_under(real_parent, lib_real)
+        and os.path.normcase(os.path.realpath(real)) != os.path.normcase(os.path.realpath(lib_real))
+    ):
         parent = real_parent
 
     return jsonify(
@@ -991,9 +946,7 @@ def api_maintenance_duplicates_restore_plan(log_id):
     data = request.get_json(silent=True) or {}
     raw_ids = data.get("file_ids")
     file_ids = [str(value) for value in raw_ids if str(value or "").strip()] if isinstance(raw_ids, list) else None
-    plan, err = maintenance.build_duplicate_restore_plan(
-        log_id, lib_root=LIB_ROOT, file_ids=file_ids
-    )
+    plan, err = maintenance.build_duplicate_restore_plan(log_id, lib_root=LIB_ROOT, file_ids=file_ids)
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"plan": plan})
@@ -1071,7 +1024,9 @@ def api_maintenance_landscape_posters_plan():
 @app.route("/api/maintenance/landscape-posters/apply", methods=["POST"])
 def api_maintenance_landscape_posters_apply():
     data = request.get_json(silent=True) or {}
-    run, err = poster_maintenance.start_poster_apply(data.get("plan_id"), synchronous=_truthy(data.get("synchronous")), lib_root=LIB_ROOT)
+    run, err = poster_maintenance.start_poster_apply(
+        data.get("plan_id"), synchronous=_truthy(data.get("synchronous")), lib_root=LIB_ROOT
+    )
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"apply": poster_maintenance.public_poster_apply(run)})
@@ -1181,9 +1136,7 @@ def api_maintenance_video_previews_items():
 
 @app.route("/api/maintenance/video-previews/generation/settings", methods=["POST"])
 def api_maintenance_video_previews_generation_settings():
-    settings, err = video_preview_maintenance.save_generation_settings(
-        request.get_json(silent=True) or {}
-    )
+    settings, err = video_preview_maintenance.save_generation_settings(request.get_json(silent=True) or {})
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"settings": settings})
@@ -1192,9 +1145,7 @@ def api_maintenance_video_previews_generation_settings():
 @app.route("/api/maintenance/video-previews/damaged/quarantine", methods=["POST"])
 def api_maintenance_video_previews_quarantine_damaged():
     data = request.get_json(silent=True) or {}
-    result, err = video_preview_maintenance.quarantine_damaged_video(
-        data.get("path"), lib_root=LIB_ROOT
-    )
+    result, err = video_preview_maintenance.quarantine_damaged_video(data.get("path"), lib_root=LIB_ROOT)
     if err:
         return jsonify({"error": err}), 400
     return jsonify({"result": result})
@@ -1204,11 +1155,7 @@ def api_maintenance_video_previews_quarantine_damaged():
 def api_maintenance_video_previews_clear_generation_issues():
     data = request.get_json(silent=True) or {}
     raw_ids = data.get("item_ids")
-    item_ids = (
-        [str(value) for value in raw_ids if str(value or "").strip()]
-        if isinstance(raw_ids, list)
-        else None
-    )
+    item_ids = [str(value) for value in raw_ids if str(value or "").strip()] if isinstance(raw_ids, list) else None
     return jsonify(video_preview_maintenance.clear_generation_issues(item_ids))
 
 
@@ -1383,9 +1330,7 @@ def api_maintenance_subtitles_scan():
 
 @app.route("/api/maintenance/subtitles/status")
 def api_maintenance_subtitles_status():
-    payload, err = subtitle_maintenance.status_payload(
-        request.args.get("scan_id"), request.args.get("mode")
-    )
+    payload, err = subtitle_maintenance.status_payload(request.args.get("scan_id"), request.args.get("mode"))
     if err:
         return jsonify({"error": err}), 404
     return jsonify(payload)
@@ -1614,9 +1559,7 @@ def api_scan_estimate():
     compatible_count, is_dir = _compatible_file_count(real_target)
     with lock:
         in_memory_samples = estimate_history.samples_from_jobs(jobs.values())
-    payload = estimate_history.estimate_payload(
-        compatible_count, cfg, in_memory_samples=in_memory_samples
-    )
+    payload = estimate_history.estimate_payload(compatible_count, cfg, in_memory_samples=in_memory_samples)
     payload.update(
         {
             "status": "ready",
@@ -1647,9 +1590,7 @@ def api_test_lab_run():
         return jsonify({"error": "Choose one compatible video file"}), 400
 
     raw_variants = data.get("variants") or []
-    if not isinstance(raw_variants, list) or not (
-        test_lab.MIN_VARIANTS <= len(raw_variants) <= test_lab.MAX_VARIANTS
-    ):
+    if not isinstance(raw_variants, list) or not (test_lab.MIN_VARIANTS <= len(raw_variants) <= test_lab.MAX_VARIANTS):
         return jsonify({"error": "Choose 1 to 4 variants"}), 400
 
     variants = []

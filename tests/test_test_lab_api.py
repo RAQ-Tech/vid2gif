@@ -48,12 +48,7 @@ def _run_payload(video, variants=2):
 
 
 def _gif_bytes(width=320, height=180, payload=b"GIF89a"):
-    return (
-        b"GIF89a"
-        + int(width).to_bytes(2, "little")
-        + int(height).to_bytes(2, "little")
-        + payload
-    )
+    return b"GIF89a" + int(width).to_bytes(2, "little") + int(height).to_bytes(2, "little") + payload
 
 
 def test_media_browser_lists_compatible_files_and_skips_symlinks(monkeypatch, tmp_path):
@@ -482,9 +477,7 @@ def test_test_lab_status_caps_inventory_payload(monkeypatch, tmp_path):
                 {
                     "schema_version": 1,
                     "run_id": f"run{index}",
-                    "variants": [
-                        {"id": f"variant-{index}", "filename": f"variant-{index}.gif"}
-                    ],
+                    "variants": [{"id": f"variant-{index}", "filename": f"variant-{index}.gif"}],
                 }
             ),
             encoding="utf-8",

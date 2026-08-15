@@ -224,9 +224,7 @@ def create_state_backup(state_root=None):
             allowZip64=True,
         ) as archive:
             for base, dirs, files in os.walk(state_root, followlinks=False):
-                dirs[:] = [
-                    name for name in dirs if not os.path.islink(os.path.join(base, name))
-                ]
+                dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
                 for name in sorted(files):
                     source = os.path.join(base, name)
                     relative = os.path.relpath(source, state_root)
@@ -240,9 +238,7 @@ def create_state_backup(state_root=None):
                             archive.write(source, os.path.join("state", relative))
                         else:
                             size = len(cleaned)
-                            archive.writestr(
-                                os.path.join("state", relative), cleaned
-                            )
+                            archive.writestr(os.path.join("state", relative), cleaned)
                             redacted.append(relative)
                     except OSError:
                         skipped.append(relative)

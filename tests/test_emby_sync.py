@@ -117,11 +117,7 @@ def test_failed_item_refresh_falls_back_to_mapped_path(monkeypatch, tmp_path):
                 "refresh_scope": "metadata",
             }
         ],
-        settings=_settings(
-            emby_path_mappings=[
-                {"emby_prefix": "/media", "local_prefix": str(tmp_path / "library")}
-            ]
-        ),
+        settings=_settings(emby_path_mappings=[{"emby_prefix": "/media", "local_prefix": str(tmp_path / "library")}]),
         opener=opener,
     )
 
@@ -130,9 +126,7 @@ def test_failed_item_refresh_falls_back_to_mapped_path(monkeypatch, tmp_path):
     assert result["path_notification_count"] == 1
     assert len(requests) == 2
     assert requests[1].full_url == "http://emby:8096/emby/Library/Media/Updated"
-    assert json.loads(requests[1].data) == {
-        "Updates": [{"Path": "/media/Movie/Movie.mkv", "UpdateType": "Modified"}]
-    }
+    assert json.loads(requests[1].data) == {"Updates": [{"Path": "/media/Movie/Movie.mkv", "UpdateType": "Modified"}]}
 
 
 def test_path_notifications_are_deduplicated_and_batched_by_one_hundred(monkeypatch, tmp_path):
@@ -211,9 +205,7 @@ def test_same_path_changes_share_one_notification(monkeypatch, tmp_path):
     assert result["succeeded_count"] == 2
     assert result["path_notification_count"] == 2
     assert len(requests) == 1
-    assert json.loads(requests[0].data)["Updates"] == [
-        {"Path": os.path.realpath(path), "UpdateType": "Created"}
-    ]
+    assert json.loads(requests[0].data)["Updates"] == [{"Path": os.path.realpath(path), "UpdateType": "Created"}]
 
 
 def test_longest_local_mapping_wins_and_equal_matches_are_ambiguous(tmp_path):
@@ -224,9 +216,7 @@ def test_longest_local_mapping_wins_and_equal_matches_are_ambiguous(tmp_path):
     ]
     assert emby_sync.emby_paths_for_local(media, mappings) == ["/films/Film.mkv"]
 
-    ambiguous = mappings + [
-        {"local_prefix": str(tmp_path / "library" / "movies"), "emby_prefix": "/other"}
-    ]
+    ambiguous = mappings + [{"local_prefix": str(tmp_path / "library" / "movies"), "emby_prefix": "/other"}]
     assert emby_sync.emby_paths_for_local(media, ambiguous) == [
         "/films/Film.mkv",
         "/other/Film.mkv",
@@ -315,9 +305,7 @@ def test_disabled_and_unconfigured_sync_do_not_send_requests(tmp_path, settings,
 
 def test_retry_reloads_current_settings_and_only_retries_failed_targets(monkeypatch, tmp_path):
     media = tmp_path / "library" / "Movie.mkv"
-    current = _settings(
-        emby_path_mappings=[{"local_prefix": str(tmp_path / "library"), "emby_prefix": "/new"}]
-    )
+    current = _settings(emby_path_mappings=[{"local_prefix": str(tmp_path / "library"), "emby_prefix": "/new"}])
 
     def fail(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 503, "offline", {}, None)

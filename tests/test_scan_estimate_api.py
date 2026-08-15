@@ -68,9 +68,7 @@ def test_scan_estimate_counts_single_compatible_file_case_insensitively(monkeypa
     assert payload["scan_status"] == "complete"
     assert payload["compatible_count"] == 1
     assert payload["is_dir"] is False
-    assert payload["message"] == (
-        "1 compatible file. Run one GIF to calibrate time and size estimates."
-    )
+    assert payload["message"] == ("1 compatible file. Run one GIF to calibrate time and size estimates.")
 
 
 def test_scan_estimate_counts_recursive_folder(monkeypatch, tmp_path):
@@ -167,10 +165,7 @@ def test_scan_estimate_uses_history_for_time_and_storage(monkeypatch, tmp_path):
     assert payload["compatible_count"] == 2
     assert payload["estimated_seconds"] == 1200
     assert payload["estimated_size_bytes"] == 1024 * 1024 * 100
-    assert payload["message"] == (
-        "2 compatible files, estimated time 20 minutes, "
-        "estimated total size 100.0 MB"
-    )
+    assert payload["message"] == ("2 compatible files, estimated time 20 minutes, estimated total size 100.0 MB")
 
 
 def test_scan_estimate_uses_matching_optimization_samples(monkeypatch, tmp_path):

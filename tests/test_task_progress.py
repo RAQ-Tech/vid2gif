@@ -7,9 +7,7 @@ def test_first_scan_is_indeterminate_and_explains_calibration(monkeypatch, tmp_p
     monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path / "state"))
     scan = {"status": "running", "_started_ts": 100.0}
 
-    task_progress.update_scan(
-        scan, "video-previews", 56, "Scanned 1490 videos", now=130.0
-    )
+    task_progress.update_scan(scan, "video-previews", 56, "Scanned 1490 videos", now=130.0)
 
     assert scan["progress_indeterminate"] is True
     assert scan["progress_percent"] == 0
@@ -61,9 +59,7 @@ def test_success_records_duration_for_future_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path / "state"))
     scan = {"status": "running", "_started_ts": 100.0}
 
-    task_progress.update_scan(
-        scan, "subtitles", 100, "Subtitle scan complete", now=145.0, status="success"
-    )
+    task_progress.update_scan(scan, "subtitles", 100, "Subtitle scan complete", now=145.0, status="success")
 
     estimate = task_progress.duration_estimate("subtitles")
     assert scan["progress_percent"] == 100
@@ -195,9 +191,7 @@ def test_stage_transitions_record_each_operation_rate(monkeypatch, tmp_path):
     assert task_progress.duration_estimate("duplicate_scan", 200)["seconds"] == 30
 
 
-def test_unknown_live_total_stops_countdown_after_exceeding_recent_workload(
-    monkeypatch, tmp_path
-):
+def test_unknown_live_total_stops_countdown_after_exceeding_recent_workload(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path / "state"))
     for _ in range(3):
         assert task_progress.record_duration("subtitle.filesystem", 10, 100)
@@ -220,9 +214,7 @@ def test_unknown_live_total_stops_countdown_after_exceeding_recent_workload(
     assert "larger than recent runs" in scan["progress_detail"]
 
 
-def test_version_one_duration_history_is_migrated_without_losing_samples(
-    monkeypatch, tmp_path
-):
+def test_version_one_duration_history_is_migrated_without_losing_samples(monkeypatch, tmp_path):
     state = tmp_path / "state"
     state.mkdir()
     monkeypatch.setattr(config, "STATE_ROOT", str(state))

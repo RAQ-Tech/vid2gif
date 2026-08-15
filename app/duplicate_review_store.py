@@ -70,11 +70,7 @@ def _scope_locked(value, scan, create=False):
 def _group_maps(scan):
     groups = list((scan or {}).get("groups") or [])
     by_id = {str(group.get("id") or ""): group for group in groups if group.get("id")}
-    by_key = {
-        str(group.get("review_key") or ""): group
-        for group in groups
-        if group.get("review_key")
-    }
+    by_key = {str(group.get("review_key") or ""): group for group in groups if group.get("review_key")}
     return by_id, by_key
 
 
@@ -133,9 +129,7 @@ def mapped_payload(scan):
     unmatched_folders = {
         _folder_key(record.get("folder"))
         for review_key, record in records.items()
-        if isinstance(record, dict)
-        and review_key not in by_key
-        and record.get("folder")
+        if isinstance(record, dict) and review_key not in by_key and record.get("folder")
     }
     for group in by_id.values():
         if group["id"] in mapped_groups or _folder_key(group.get("folder")) not in unmatched_folders:
@@ -183,29 +177,26 @@ def mapped_payload(scan):
         "updated_at": scope.get("updated_at"),
         "selection": {
             "mode": "explicit" if scope.get("selection_mode") == "explicit" else "all_eligible",
-            "excluded_group_ids": [
-                group["id"] for key, group in by_key.items() if key in excluded_keys
-            ],
-            "group_ids": [
-                group["id"] for key, group in by_key.items() if key in selected_keys
-            ],
+            "excluded_group_ids": [group["id"] for key, group in by_key.items() if key in excluded_keys],
+            "group_ids": [group["id"] for key, group in by_key.items() if key in selected_keys],
         },
         "groups": mapped_groups,
         "saved_group_count": sum(1 for state in mapped_groups.values() if state.get("saved")),
-        "review_required_count": sum(
-            1 for state in mapped_groups.values() if state.get("requires_review")
-        ),
+        "review_required_count": sum(1 for state in mapped_groups.values() if state.get("requires_review")),
     }
 
 
 def group_state(scan, group, mapped=None):
     mapped = mapped if isinstance(mapped, dict) else mapped_payload(scan)
-    return copy.deepcopy((mapped.get("groups") or {}).get(group.get("id")) or {
-        "saved": False,
-        "requires_review": False,
-        "status": "default",
-        "reason": "",
-    })
+    return copy.deepcopy(
+        (mapped.get("groups") or {}).get(group.get("id"))
+        or {
+            "saved": False,
+            "requires_review": False,
+            "status": "default",
+            "reason": "",
+        }
+    )
 
 
 def patch(scan, payload):
@@ -251,9 +242,7 @@ def patch(scan, payload):
             record = {
                 "folder": _folder_key(group.get("folder")),
                 "enabled": bool(submitted.get("enabled", existing.get("enabled", True))),
-                "keep_video_id": str(
-                    submitted.get("keep_video_id") or existing.get("keep_video_id") or ""
-                ),
+                "keep_video_id": str(submitted.get("keep_video_id") or existing.get("keep_video_id") or ""),
                 "include_file_ids": sorted(
                     {
                         str(item)
@@ -285,9 +274,7 @@ def patch(scan, payload):
                     if submitted.get("accept_current")
                     else bool(submitted.get("require_review", existing.get("review_required", False)))
                 ),
-                "review_reason": str(
-                    submitted.get("review_reason") or existing.get("review_reason") or ""
-                ),
+                "review_reason": str(submitted.get("review_reason") or existing.get("review_reason") or ""),
                 "updated_at": utc_iso(),
             }
             records[review_key] = record
@@ -320,15 +307,16 @@ def ensure_groups(scan, group_ids, overrides=None, require_review=None, review_r
         included = override.get("include_file_ids")
         if not isinstance(included, list):
             included = [
-                item.get("id") for item in candidates
-                if item.get("default_selected") is not False
-                and item.get("default_operation") != "keep"
+                item.get("id")
+                for item in candidates
+                if item.get("default_selected") is not False and item.get("default_operation") != "keep"
             ]
         elif saved:
             previous_known = {str(item) for item in saved.get("known_file_ids") or []}
             included = set(included)
             included.update(
-                item.get("id") for item in candidates
+                item.get("id")
+                for item in candidates
                 if item.get("id") not in previous_known
                 and item.get("default_selected") is not False
                 and item.get("default_operation") != "keep"
@@ -362,12 +350,8 @@ def remove_review_keys(scan, review_keys):
         records = scope.get("groups") if isinstance(scope.get("groups"), dict) else {}
         for key in keys:
             records.pop(key, None)
-        scope["excluded_review_keys"] = [
-            key for key in scope.get("excluded_review_keys") or [] if key not in keys
-        ]
-        scope["selected_review_keys"] = [
-            key for key in scope.get("selected_review_keys") or [] if key not in keys
-        ]
+        scope["excluded_review_keys"] = [key for key in scope.get("excluded_review_keys") or [] if key not in keys]
+        scope["selected_review_keys"] = [key for key in scope.get("selected_review_keys") or [] if key not in keys]
         scope["updated_at"] = utc_iso()
         _write_locked(value)
 

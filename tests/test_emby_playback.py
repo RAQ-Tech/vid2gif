@@ -94,14 +94,8 @@ def test_snapshot_cache_and_force_refresh():
 
 
 def test_targets_match_item_id_and_exact_mapped_paths():
-    sessions = [
-        {"NowPlayingItem": {"Id": "movie-1", "Path": "Z:\\Movies\\Movie.mkv"}, "PlayState": {}}
-    ]
-    settings = _settings(
-        emby_path_mappings=[
-            {"emby_prefix": "Z:\\Movies", "local_prefix": "/library/movies"}
-        ]
-    )
+    sessions = [{"NowPlayingItem": {"Id": "movie-1", "Path": "Z:\\Movies\\Movie.mkv"}, "PlayState": {}}]
+    settings = _settings(emby_path_mappings=[{"emby_prefix": "Z:\\Movies", "local_prefix": "/library/movies"}])
     result = emby_playback.check_targets(
         [
             {"id": "by-id", "emby_item_id": "movie-1", "local_path": "/other.mkv"},

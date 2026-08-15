@@ -268,8 +268,5 @@ def estimate_payload(compatible_count, cfg, in_memory_samples=None):
         "confidence": "low" if low_confidence else "history",
         "low_confidence": low_confidence,
         "detail": detail,
-        "message": (
-            f"{count_label}, estimated time {time_label}, "
-            f"estimated total size {size_label}"
-        ),
+        "message": (f"{count_label}, estimated time {time_label}, estimated total size {size_label}"),
     }

@@ -131,12 +131,14 @@ def test_app_settings_invalid_file_falls_back_to_default(tmp_path):
 def test_app_settings_preserves_recognized_values_from_older_schema(tmp_path):
     path = tmp_path / "app_settings.json"
     path.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "test_lab_preview_height": 1080,
-            "subtitle_flag_missing": False,
-            "duplicate_keeper_rule": "largest",
-        }),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "test_lab_preview_height": 1080,
+                "subtitle_flag_missing": False,
+                "duplicate_keeper_rule": "largest",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -283,18 +285,12 @@ def test_emby_path_mapping_text_validation_is_atomic(monkeypatch, tmp_path):
     path = tmp_path / "app_settings.json"
     monkeypatch.setattr(app_settings, "LIB_ROOT", str(root))
 
-    settings, err = app_settings.update_settings(
-        {"emby_path_mappings": f"/media/movies => {movies}"}, str(path)
-    )
+    settings, err = app_settings.update_settings({"emby_path_mappings": f"/media/movies => {movies}"}, str(path))
     assert err is None
-    assert settings["emby_path_mappings"] == [
-        {"emby_prefix": "/media/movies", "local_prefix": str(movies.resolve())}
-    ]
+    assert settings["emby_path_mappings"] == [{"emby_prefix": "/media/movies", "local_prefix": str(movies.resolve())}]
 
     previous = path.read_text(encoding="utf-8")
-    settings, err = app_settings.update_settings(
-        {"emby_path_mappings": "/media => ../outside"}, str(path)
-    )
+    settings, err = app_settings.update_settings({"emby_path_mappings": "/media => ../outside"}, str(path))
     assert settings is None
     assert "absolute" in err.lower()
     assert path.read_text(encoding="utf-8") == previous
@@ -338,9 +334,7 @@ def test_settings_page_contains_global_emby_controls_without_echoing_secret(monk
     path = tmp_path / "app_settings.json"
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(path))
     monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
-    app_settings.update_settings(
-        {"emby_url": "http://emby:8096", "emby_api_key": "html-secret"}, str(path)
-    )
+    app_settings.update_settings({"emby_url": "http://emby:8096", "emby_api_key": "html-secret"}, str(path))
 
     response = routes.app.test_client().get("/settings")
     html = response.get_data(as_text=True)
@@ -362,9 +356,7 @@ def test_playback_protection_environment_default_and_patch(monkeypatch, tmp_path
     monkeypatch.setenv("EMBY_PLAYBACK_PROTECTION", "false")
 
     assert app_settings.default_settings()["emby_playback_protection"] is False
-    saved, err = app_settings.update_settings(
-        {"emby_playback_protection": True}, str(path)
-    )
+    saved, err = app_settings.update_settings({"emby_playback_protection": True}, str(path))
 
     assert err is None
     assert saved["emby_playback_protection"] is True
@@ -389,9 +381,7 @@ def test_global_emby_test_route_uses_saved_key_without_exposing_it(monkeypatch, 
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", str(path))
     monkeypatch.setattr(routes.app_settings, "SETTINGS_PATH", str(path))
     monkeypatch.setattr(routes.poster_maintenance, "EMBY_STATUS_PATH", str(status_path))
-    app_settings.update_settings(
-        {"emby_url": "http://emby:8096", "emby_api_key": "route-secret"}, str(path)
-    )
+    app_settings.update_settings({"emby_url": "http://emby:8096", "emby_api_key": "route-secret"}, str(path))
     captured = {}
 
     class Response:

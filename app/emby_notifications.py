@@ -119,9 +119,25 @@ def _send(name, description, *, event_key, settings=None, opener=None, force=Fal
         policy = str(settings.get("emby_admin_notifications") or "warnings").casefold()
         created_at = utc_iso()
         if policy == "off" and not force:
-            return public_result({"id": notification_id, "status": "disabled", "message": "Emby administrator notifications are disabled", "created_at": created_at, "sent_at": None})
+            return public_result(
+                {
+                    "id": notification_id,
+                    "status": "disabled",
+                    "message": "Emby administrator notifications are disabled",
+                    "created_at": created_at,
+                    "sent_at": None,
+                }
+            )
         if not settings.get("emby_url") or not settings.get("emby_api_key"):
-            return public_result({"id": notification_id, "status": "not_configured", "message": "Configure Emby to send administrator notifications", "created_at": created_at, "sent_at": None})
+            return public_result(
+                {
+                    "id": notification_id,
+                    "status": "not_configured",
+                    "message": "Configure Emby to send administrator notifications",
+                    "created_at": created_at,
+                    "sent_at": None,
+                }
+            )
         record = {
             "id": notification_id,
             "event_key": str(event_key or ""),
@@ -145,7 +161,10 @@ def _send(name, description, *, event_key, settings=None, opener=None, force=Fal
         if result.get("status") == "success":
             record.update(status="success", message="Emby accepted the administrator notification", sent_at=utc_iso())
         else:
-            record.update(status="failed", message=_clean(result.get("message") or "Administrator notification failed", settings, 300))
+            record.update(
+                status="failed",
+                message=_clean(result.get("message") or "Administrator notification failed", settings, 300),
+            )
         _write(record)
         _prune()
     return public_result(record)
@@ -167,9 +186,7 @@ def send(name, description, *, event_key, settings=None, opener=None, force=Fals
             {
                 "id": _id(event_key),
                 "status": "failed",
-                "message": _clean(
-                    f"Administrator notification failed: {exc}", current, 300
-                ),
+                "message": _clean(f"Administrator notification failed: {exc}", current, 300),
                 "created_at": utc_iso(),
                 "sent_at": None,
             }
@@ -200,7 +217,13 @@ def notify_maintenance(
         return public_result({**base, "status": "disabled", "message": "Emby administrator notifications are disabled"})
     status_key = str(status or "").casefold()
     if status_key in {"cancelled", "canceled", "cancelling"} or int(attempted_count or 0) <= 0:
-        return public_result({**base, "status": "skipped", "message": "This maintenance outcome does not require an administrator notification"})
+        return public_result(
+            {
+                **base,
+                "status": "skipped",
+                "message": "This maintenance outcome does not require an administrator notification",
+            }
+        )
     sync_status = str((emby_sync or {}).get("status") or "")
     warning = (
         status_key in {"failed", "complete_with_issues", "partial"}
@@ -208,14 +231,21 @@ def notify_maintenance(
         or sync_status in {"partial", "failed"}
     )
     if policy == "warnings" and not warning:
-        return public_result({**base, "status": "skipped", "message": "Successful maintenance does not require a warning notification"})
+        return public_result(
+            {**base, "status": "skipped", "message": "Successful maintenance does not require a warning notification"}
+        )
     title = f"vid2gif: {workflow} needs attention" if warning else f"vid2gif: {workflow} completed"
     parts = [
         f"Outcome {status_key or 'complete'}",
         f"attempted {int(attempted_count or 0)}",
         f"succeeded {int(succeeded_count or 0)}",
     ]
-    for label, value in (("failed", failed_count), ("refused", refused_count), ("deferred", deferred_count), ("unresolved", unresolved_count)):
+    for label, value in (
+        ("failed", failed_count),
+        ("refused", refused_count),
+        ("deferred", deferred_count),
+        ("unresolved", unresolved_count),
+    ):
         if int(value or 0):
             parts.append(f"{label} {int(value)}")
     if int(reclaimed_bytes or 0):

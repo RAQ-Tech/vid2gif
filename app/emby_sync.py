@@ -298,10 +298,7 @@ def _path_batches(changes, settings, opener=None):
             "/Library/Media/Updated",
             method="POST",
             json_body={
-                "Updates": [
-                    {"Path": target.get("path"), "UpdateType": target.get("update_type")}
-                    for target in batch
-                ]
+                "Updates": [{"Path": target.get("path"), "UpdateType": target.get("update_type")} for target in batch]
             },
             opener=opener,
             timeout=15,
@@ -315,7 +312,11 @@ def _path_batches(changes, settings, opener=None):
         else:
             for target in batch:
                 for change in target.get("changes") or []:
-                    change.update(status="failed", method="path", message=request_result.get("message") or "Path notification failed")
+                    change.update(
+                        status="failed",
+                        method="path",
+                        message=request_result.get("message") or "Path notification failed",
+                    )
                     failed += 1
     return accepted, failed, unresolved, batch_count
 
@@ -386,12 +387,12 @@ def _execute(job, settings=None, opener=None):
                 change.update(status="accepted", method="item", message="Emby accepted the targeted item refresh")
         else:
             for change in grouped:
-                change.update(status="pending", method="item", message=request_result.get("message") or "Item refresh failed")
+                change.update(
+                    status="pending", method="item", message=request_result.get("message") or "Item refresh failed"
+                )
                 path_changes.append(change)
 
-    path_accepted, _path_failed, _unresolved, batch_count = _path_batches(
-        path_changes, settings, opener=opener
-    )
+    path_accepted, _path_failed, _unresolved, batch_count = _path_batches(path_changes, settings, opener=opener)
     attempted += len(path_changes)
     succeeded = sum(1 for change in job.get("changes") or [] if change.get("status") == "accepted")
     failed = sum(1 for change in job.get("changes") or [] if change.get("status") == "failed")

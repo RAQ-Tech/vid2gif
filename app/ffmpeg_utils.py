@@ -76,17 +76,13 @@ def get_duration(video_path):
 
     if proc.returncode != 0:
         cmd_str = " ".join(shlex.quote(c) for c in cmd)
-        return None, (
-            f"Command {cmd_str} returned {proc.returncode}: {proc.stderr.strip()}"
-        )
+        return None, (f"Command {cmd_str} returned {proc.returncode}: {proc.stderr.strip()}")
 
     try:
         return float(proc.stdout.strip()), None
     except Exception:
         cmd_str = " ".join(shlex.quote(c) for c in cmd)
-        return None, (
-            f"Command {cmd_str} produced unexpected output: {proc.stdout.strip()}"
-        )
+        return None, (f"Command {cmd_str} produced unexpected output: {proc.stdout.strip()}")
 
 
 def probe_video_details(video_path):
@@ -118,9 +114,7 @@ def probe_video_details(video_path):
 
     if proc.returncode != 0:
         cmd_str = " ".join(shlex.quote(c) for c in cmd)
-        return None, (
-            f"Command {cmd_str} returned {proc.returncode}: {proc.stderr.strip()}"
-        )
+        return None, (f"Command {cmd_str} returned {proc.returncode}: {proc.stderr.strip()}")
 
     return proc.stdout, None
 
@@ -339,14 +333,8 @@ def _target_width_for_height(stream, height):
 
 
 def _normalize_filter(ref, label, width, height):
-    scale = (
-        f"{ref}scale=w={width}:h={height}:force_original_aspect_ratio=decrease:"
-        f"flags=lanczos,"
-    )
-    pad = (
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-        "setsar=1"
-    )
+    scale = f"{ref}scale=w={width}:h={height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+    pad = f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
     return f"{scale}{pad}[{label}]"
 
 
@@ -402,9 +390,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
             background_image,
         ]
         input_filters.append(_normalize_filter("[0:v]", "bg_norm", width, height))
-        input_filters.append(
-            f"[bg_norm]fps={fps},trim=end_frame=1,setpts=PTS-STARTPTS[bg]"
-        )
+        input_filters.append(f"[bg_norm]fps={fps},trim=end_frame=1,setpts=PTS-STARTPTS[bg]")
         background_ref = "[bg]"
 
     stream_idx = _first_video_stream_index(video, job["logger"])
@@ -435,9 +421,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     video_filters += f"fps={fps},setpts=PTS-STARTPTS[vmain]"
 
     filter_parts = list(input_filters)
-    filter_parts.append(
-        f"{video_concat_inputs}concat=n={len(video_refs)}:v=1:a=0[vcatraw]"
-    )
+    filter_parts.append(f"{video_concat_inputs}concat=n={len(video_refs)}:v=1:a=0[vcatraw]")
     filter_parts.append(f"[vcatraw]{video_filters}")
 
     if background_ref:
@@ -446,9 +430,7 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     else:
         final_ref = "[vmain]"
 
-    filter_parts.append(
-        f"{final_ref}format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
-    )
+    filter_parts.append(f"{final_ref}format=rgb24,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse")
     filter_graph = ";".join(filter_parts)
 
     args += ["-filter_complex", filter_graph, "-loop", loop, out_gif]
@@ -484,13 +466,8 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
                 )
             percent = job.get("progress_percent", 0)
             now = time.time()
-            should_log = (
-                percent > 0
-                and (
-                    percent >= 100
-                    or percent - last_logged_percent >= 5
-                    or now - last_logged_at >= 15
-                )
+            should_log = percent > 0 and (
+                percent >= 100 or percent - last_logged_percent >= 5 or now - last_logged_at >= 15
             )
             if should_log:
                 job["logger"].info(f"Progress: {job.get('progress_label', '')}")
@@ -508,19 +485,14 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
         return False, "GIF generation cancelled"
     if result.stalled:
         return False, (
-            "GIF generation stopped because FFmpeg produced no progress for "
-            f"{GIF_GENERATION_STALL_TIMEOUT} seconds"
+            f"GIF generation stopped because FFmpeg produced no progress for {GIF_GENERATION_STALL_TIMEOUT} seconds"
         )
     if result.launch_error:
         return False, f"Could not start FFmpeg: {result.launch_error}"
     if result.returncode != 0:
         msg = f"ffmpeg exited with code {result.returncode}"
         if result.output_tail:
-            diagnostic_lines = [
-                line
-                for line in result.output_tail.splitlines()
-                if not is_ffmpeg_progress_line(line)
-            ]
+            diagnostic_lines = [line for line in result.output_tail.splitlines() if not is_ffmpeg_progress_line(line)]
             if diagnostic_lines:
                 msg = f"{msg}\n" + "\n".join(diagnostic_lines)
         job["logger"].error(msg)

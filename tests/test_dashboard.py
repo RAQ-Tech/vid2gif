@@ -161,8 +161,22 @@ def test_old_library_inventory_cache_is_read_without_full_status_payload(monkeyp
         "video_size_bytes": 300,
         "video_size_label": "300 B",
         "libraries": [
-            {"name": "library", "path": str(lib), "kind": "root", "video_count": 3, "video_size_bytes": 300, "video_size_label": "300 B"},
-            {"name": "Movies", "path": str(lib / "Movies"), "kind": "library", "video_count": 2, "video_size_bytes": 200, "video_size_label": "200 B"},
+            {
+                "name": "library",
+                "path": str(lib),
+                "kind": "root",
+                "video_count": 3,
+                "video_size_bytes": 300,
+                "video_size_label": "300 B",
+            },
+            {
+                "name": "Movies",
+                "path": str(lib / "Movies"),
+                "kind": "library",
+                "video_count": 2,
+                "video_size_bytes": 200,
+                "video_size_label": "200 B",
+            },
         ],
     }
     dashboard._write_json(dashboard.LIBRARY_INVENTORY_PATH, old_cache)

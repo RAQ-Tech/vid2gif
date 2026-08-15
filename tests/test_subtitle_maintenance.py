@@ -131,22 +131,31 @@ def test_subtitle_filename_matching_and_language_parsing():
         f"{stem}.subgen.large-v3.eng.srt",
         stem,
     )
-    assert subtitle_maintenance.subtitle_language_code(
-        f"{stem}.subgen.large-v3.eng.srt",
-        stem,
-    ) == "eng"
-    assert subtitle_maintenance.subtitle_language_code(
-        f"{stem}.subgen.large-v3.nno.srt",
-        stem,
-    ) == "nno"
+    assert (
+        subtitle_maintenance.subtitle_language_code(
+            f"{stem}.subgen.large-v3.eng.srt",
+            stem,
+        )
+        == "eng"
+    )
+    assert (
+        subtitle_maintenance.subtitle_language_code(
+            f"{stem}.subgen.large-v3.nno.srt",
+            stem,
+        )
+        == "nno"
+    )
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.en-US.srt", stem) == "en-us"
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.eng.forced.srt", stem) == "eng"
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.subgen.large-v3.srt", stem) is None
     assert subtitle_maintenance.subtitle_language_code(f"{stem}.srt", stem) is None
-    assert subtitle_maintenance._subtitle_owner_stem(
-        "Movie 2024-01-05.subgen.large-v3.eng.srt",
-        ["Movie 2024", "Movie 2024-01-05"],
-    ) == "Movie 2024-01-05"
+    assert (
+        subtitle_maintenance._subtitle_owner_stem(
+            "Movie 2024-01-05.subgen.large-v3.eng.srt",
+            ["Movie 2024", "Movie 2024-01-05"],
+        )
+        == "Movie 2024-01-05"
+    )
 
 
 def test_subtitle_scan_flags_missing_non_english_and_unknown(monkeypatch, tmp_path):
@@ -192,12 +201,8 @@ def test_subtitle_scan_flags_only_the_likely_incomplete_srt(monkeypatch, tmp_pat
         lambda path: 41.5 * 60 if path == str(movie) else None,
     )
 
-    scan, err = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
-    )
-    page, page_err = subtitle_maintenance.items_payload(
-        scan["id"], status="incomplete"
-    )
+    scan, err = subtitle_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True, mode="coverage")
+    page, page_err = subtitle_maintenance.items_payload(scan["id"], status="incomplete")
 
     assert err is None
     assert page_err is None
@@ -224,12 +229,8 @@ def test_subtitle_coverage_uncertainty_requires_review_but_is_not_auto_selected(
         lambda _path: None,
     )
 
-    scan, err = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
-    )
-    page, page_err = subtitle_maintenance.items_payload(
-        scan["id"], status="coverage_review"
-    )
+    scan, err = subtitle_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True, mode="coverage")
+    page, page_err = subtitle_maintenance.items_payload(scan["id"], status="coverage_review")
 
     assert err is None
     assert page_err is None
@@ -253,16 +254,10 @@ def test_subtitle_coverage_scan_reuses_unchanged_video_duration(monkeypatch, tmp
         calls.append(path)
         return 41.5 * 60
 
-    monkeypatch.setattr(
-        subtitle_maintenance.subtitle_quality, "probe_media_duration", counting_probe
-    )
+    monkeypatch.setattr(subtitle_maintenance.subtitle_quality, "probe_media_duration", counting_probe)
 
-    first, err1 = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
-    )
-    second, err2 = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
-    )
+    first, err1 = subtitle_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True, mode="coverage")
+    second, err2 = subtitle_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True, mode="coverage")
 
     assert err1 is None and err2 is None
     assert len(calls) == 1, "second scan should reuse the cached video duration"
@@ -287,9 +282,7 @@ def test_subtitle_coverage_scan_force_full_bypasses_reuse_cache(monkeypatch, tmp
         lambda _path: 41.5 * 60,
     )
 
-    first, err1 = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
-    )
+    first, err1 = subtitle_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True, mode="coverage")
     second, err2 = subtitle_maintenance.start_scan(
         str(lib), lib_root=str(lib), synchronous=True, mode="coverage", force_full=True
     )
@@ -380,9 +373,7 @@ def test_subtitle_scans_only_main_videos_not_trailers_extras_or_samples(monkeypa
 
     missing = _scan(lib, monkeypatch)
     _reset_subtitles(monkeypatch)
-    coverage, err = subtitle_maintenance.start_scan(
-        str(lib), lib_root=str(lib), synchronous=True, mode="coverage"
-    )
+    coverage, err = subtitle_maintenance.start_scan(str(lib), lib_root=str(lib), synchronous=True, mode="coverage")
 
     assert err is None
     assert missing["mode"] == "missing"
@@ -420,9 +411,7 @@ def test_subtitle_cleanup_selection_spans_result_pages(monkeypatch, tmp_path):
         _write(folder / f"Movie {index:02d}.mkv")
         _write(folder / f"Movie {index:02d}.nno.srt")
     scan = _scan(lib, monkeypatch)
-    first_page, err = subtitle_maintenance.items_payload(
-        scan["id"], status="language_review", limit=5
-    )
+    first_page, err = subtitle_maintenance.items_payload(scan["id"], status="language_review", limit=5)
     excluded = first_page["items"][0]["srt_files"][0]["id"]
 
     plan, plan_err = subtitle_maintenance.build_action_plan(
@@ -792,9 +781,7 @@ def test_external_stream_matching_and_index_mismatch_filter(monkeypatch, tmp_pat
 
 
 def test_legacy_subtitle_cache_reports_streams_not_checked():
-    public = subtitle_maintenance.public_scan(
-        {"id": "legacy", "status": "success", "counts": {}, "settings": {}}
-    )
+    public = subtitle_maintenance.public_scan({"id": "legacy", "status": "success", "counts": {}, "settings": {}})
     assert public["emby_streams"]["status"] == "not_checked"
 
 
@@ -830,8 +817,9 @@ def test_subtitle_cleanup_defers_active_parent_without_sync(monkeypatch, tmp_pat
     monkeypatch.setattr(
         subtitle_maintenance.emby_notifications,
         "notify_maintenance",
-        lambda *args, **kwargs: notification_calls.append((args, kwargs))
-        or {"id": "notice", "status": "success", "message": "accepted"},
+        lambda *args, **kwargs: (
+            notification_calls.append((args, kwargs)) or {"id": "notice", "status": "success", "message": "accepted"}
+        ),
     )
     plan, err = subtitle_maintenance.build_action_plan(
         {

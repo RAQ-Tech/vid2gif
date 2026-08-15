@@ -154,7 +154,15 @@ def test_control_rejects_unrelated_missing_and_active_tasks_without_posting():
 def test_activity_filters_task_entries_and_drops_identity_and_overview():
     activity = {
         "Items": [
-            {"Name": "Thumbnail Image Extraction completed", "Type": "ScheduledTaskCompleted", "Date": "2026-01-01", "Severity": "Info", "Overview": "private path", "UserId": "user", "ItemId": "item"},
+            {
+                "Name": "Thumbnail Image Extraction completed",
+                "Type": "ScheduledTaskCompleted",
+                "Date": "2026-01-01",
+                "Severity": "Info",
+                "Overview": "private path",
+                "UserId": "user",
+                "ItemId": "item",
+            },
             {"Name": "Someone logged in", "Type": "AuthenticationSucceeded", "UserId": "private"},
         ],
         "TotalRecordCount": 2,
@@ -167,7 +175,14 @@ def test_activity_filters_task_entries_and_drops_identity_and_overview():
 
     result = emby_operations.load_activity(settings(), opener=opener)
     assert result["status"] == "ready"
-    assert result["entries"] == [{"name": "Thumbnail Image Extraction completed", "type": "ScheduledTaskCompleted", "date": "2026-01-01", "severity": "Info"}]
+    assert result["entries"] == [
+        {
+            "name": "Thumbnail Image Extraction completed",
+            "type": "ScheduledTaskCompleted",
+            "date": "2026-01-01",
+            "severity": "Info",
+        }
+    ]
     assert "private" not in str(result)
     assert "UserId" not in str(result)
 
@@ -186,8 +201,20 @@ def test_configuration_malformed_and_permission_failures_are_clean():
 
 
 def test_public_routes_do_not_expose_private_task_or_activity_fields(monkeypatch):
-    monkeypatch.setattr(routes.emby_operations, "load_tasks", lambda force=False: {"status": "ready", "tasks": [{"id": "one", "name": "Task"}], "message": "ok"})
-    monkeypatch.setattr(routes.emby_operations, "load_activity", lambda limit=20: {"status": "ready", "entries": [{"name": "Task", "type": "ScheduledTask", "date": None, "severity": "Info"}], "message": "ok"})
+    monkeypatch.setattr(
+        routes.emby_operations,
+        "load_tasks",
+        lambda force=False: {"status": "ready", "tasks": [{"id": "one", "name": "Task"}], "message": "ok"},
+    )
+    monkeypatch.setattr(
+        routes.emby_operations,
+        "load_activity",
+        lambda limit=20: {
+            "status": "ready",
+            "entries": [{"name": "Task", "type": "ScheduledTask", "date": None, "severity": "Info"}],
+            "message": "ok",
+        },
+    )
     client = routes.app.test_client()
     assert client.get("/api/emby/tasks").get_json()["tasks"][0] == {"id": "one", "name": "Task"}
     body = client.get("/api/emby/activity").get_json()
@@ -196,8 +223,14 @@ def test_public_routes_do_not_expose_private_task_or_activity_fields(monkeypatch
 
 
 def test_task_control_routes_map_errors_and_ui_contains_polling_controls(monkeypatch):
-    monkeypatch.setattr(routes.emby_operations, "start_task", lambda task_id: ({"status": "failed", "message": "busy"}, "conflict"))
-    monkeypatch.setattr(routes.emby_operations, "cancel_task", lambda task_id: ({"status": "failed", "message": "read only"}, "forbidden"))
+    monkeypatch.setattr(
+        routes.emby_operations, "start_task", lambda task_id: ({"status": "failed", "message": "busy"}, "conflict")
+    )
+    monkeypatch.setattr(
+        routes.emby_operations,
+        "cancel_task",
+        lambda task_id: ({"status": "failed", "message": "read only"}, "forbidden"),
+    )
     client = routes.app.test_client()
     assert client.post("/api/emby/tasks/task/start").status_code == 409
     assert client.post("/api/emby/tasks/task/cancel").status_code == 403

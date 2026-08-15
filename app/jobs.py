@@ -89,9 +89,7 @@ def public_job(job):
         "gif_size_before_opt_bytes": job.get("gif_size_before_opt_bytes"),
         "gif_size_after_opt_bytes": job.get("gif_size_after_opt_bytes"),
         "gif_optimization_saved_bytes": job.get("gif_optimization_saved_bytes"),
-        "gif_optimization_savings_percent": job.get(
-            "gif_optimization_savings_percent"
-        ),
+        "gif_optimization_savings_percent": job.get("gif_optimization_savings_percent"),
         "gif_optimization_status": job.get("gif_optimization_status"),
         "gif_optimization_seconds": job.get("gif_optimization_seconds"),
         "gif_optimization_label": job.get("gif_optimization_label", ""),
@@ -111,11 +109,7 @@ def _prune_completed_jobs_locked(now=None):
         for job in jobs.values()
         if job.get("status") not in TERMINAL_STATUSES and job.get("batch_id")
     }
-    terminal = [
-        (job_id, job)
-        for job_id, job in jobs.items()
-        if job.get("status") in TERMINAL_STATUSES
-    ]
+    terminal = [(job_id, job) for job_id, job in jobs.items() if job.get("status") in TERMINAL_STATUSES]
     for job_id, job in terminal:
         if job.get("batch_id") in active_batch_ids:
             continue
@@ -127,8 +121,7 @@ def _prune_completed_jobs_locked(now=None):
         (
             (job_id, job)
             for job_id, job in jobs.items()
-            if job.get("status") in TERMINAL_STATUSES
-            and job.get("batch_id") not in active_batch_ids
+            if job.get("status") in TERMINAL_STATUSES and job.get("batch_id") not in active_batch_ids
         ),
         key=lambda item: _job_sort_ts(item[1]),
         reverse=True,
@@ -168,11 +161,7 @@ def _prune_job_logs(active_log_paths, now=None):
 def prune_job_history():
     with lock:
         _prune_completed_jobs_locked()
-        active_log_paths = {
-            os.path.realpath(job.get("log_path", ""))
-            for job in jobs.values()
-            if job.get("log_path")
-        }
+        active_log_paths = {os.path.realpath(job.get("log_path", "")) for job in jobs.values() if job.get("log_path")}
     _prune_job_logs(active_log_paths)
 
 
@@ -205,15 +194,11 @@ def _queue_summary(all_jobs):
     running = [j for j in relevant if j.get("status") in {"running", "cancelling"}]
     queued = [j for j in relevant if j.get("status") == "queued"]
     completed_units = float(len(completed))
-    completed_units += sum(
-        max(0, min(100, j.get("progress_percent") or 0)) / 100.0 for j in running
-    )
+    completed_units += sum(max(0, min(100, j.get("progress_percent") or 0)) / 100.0 for j in running)
     percent = max(0, min(100, int(round(100 * completed_units / total))))
 
     starts = [
-        j.get("_started_ts") or j.get("_created_ts")
-        for j in relevant
-        if j.get("_started_ts") or j.get("_created_ts")
+        j.get("_started_ts") or j.get("_created_ts") for j in relevant if j.get("_started_ts") or j.get("_created_ts")
     ]
     finishes = [j.get("_finished_ts") for j in relevant if j.get("_finished_ts")]
     elapsed = None
@@ -228,9 +213,9 @@ def _queue_summary(all_jobs):
         remaining.extend(j.get("expected_duration_seconds") for j in queued)
         if remaining and all(value is not None for value in remaining):
             eta = rounded_seconds(sum(float(value) for value in remaining))
-            confidence = "history" if all(
-                j.get("eta_confidence") == "history" for j in running + queued
-            ) else "learning"
+            confidence = (
+                "history" if all(j.get("eta_confidence") == "history" for j in running + queued) else "learning"
+            )
         elif running or queued:
             confidence = "calibrating"
 
@@ -255,11 +240,7 @@ def _queue_summary(all_jobs):
 def queue_status_payload():
     prune_job_history()
     with lock:
-        running = [
-            public_job(j)
-            for j in jobs.values()
-            if j.get("status") in {"running", "cancelling"}
-        ]
+        running = [public_job(j) for j in jobs.values() if j.get("status") in {"running", "cancelling"}]
         all_jobs = list(jobs.values())
     with job_queue.mutex:
         queued_ids = list(job_queue.queue)
@@ -449,9 +430,7 @@ def _restore_jobs_once():
         ]
         order.extend(
             job_id
-            for job_id, job in sorted(
-                restored.items(), key=lambda item: item[1].get("_created_ts") or 0
-            )
+            for job_id, job in sorted(restored.items(), key=lambda item: item[1].get("_created_ts") or 0)
             if job.get("status") == "queued" and job_id not in order
         )
         with lock:
@@ -475,9 +454,7 @@ def new_queue_batch_id():
 
 
 def _safe_video_identity(video_path):
-    return regular_file_identity(
-        video_path, root=LIB_ROOT, allowed_extensions=VIDEO_EXTS
-    )
+    return regular_file_identity(video_path, root=LIB_ROOT, allowed_extensions=VIDEO_EXTS)
 
 
 def _valid_staged_gif(path):
@@ -631,9 +608,7 @@ def _process_job(job):  # noqa: C901
     fps_label = "original FPS" if cfg.get("fps") == "original" else f"{cfg.get('fps')} FPS"
     optimize_label = "on" if cfg.get("optimize", True) else "off"
     job["logger"].info(
-        "Settings: "
-        f"{cfg['height']}px high, {fps_label}, {cfg['clip_len']}s clips, "
-        f"optimization {optimize_label}"
+        f"Settings: {cfg['height']}px high, {fps_label}, {cfg['clip_len']}s clips, optimization {optimize_label}"
     )
 
     dur, err = get_duration(job["video"])
@@ -649,13 +624,8 @@ def _process_job(job):  # noqa: C901
     job["logger"].info(f"Duration: {format_duration(dur)}")
     segs = build_segments(dur, job["cfg"])
     bg_image = find_background_image(job["video"])
-    job["logger"].info(
-        f"Background frame: {bg_image}" if bg_image else "Background frame: not found"
-    )
-    job["logger"].info(
-        f"Segments: {len(segs)} clips, about "
-        f"{format_duration(len(segs)*job['cfg']['clip_len'])}"
-    )
+    job["logger"].info(f"Background frame: {bg_image}" if bg_image else "Background frame: not found")
+    job["logger"].info(f"Segments: {len(segs)} clips, about {format_duration(len(segs) * job['cfg']['clip_len'])}")
     tmp_gif = os.path.join(job["tmp_dir"], "poster.gif")
     ok, err_msg = make_gif_multi_inputs(
         job["video"],
