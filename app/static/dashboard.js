@@ -21,6 +21,45 @@
       .replaceAll("'", '&#39;');
   }
 
+  // The lifetime total includes history replayed from the audit logs, and those
+  // logs do not hold everything. Saying so is the difference between a figure
+  // someone can trust and one that quietly understates the truth.
+  function renderBackfillNote(backfill) {
+    const wrap = document.getElementById('dashboardBackfillNote');
+    const summary = document.getElementById('dashboardBackfillSummary');
+    const detail = document.getElementById('dashboardBackfillDetail');
+    const toggle = document.getElementById('dashboardBackfillToggle');
+    if (!wrap || !summary || !detail || !toggle) return;
+
+    const events = Number(backfill && backfill.events_applied) || 0;
+    if (!backfill || !events) {
+      wrap.classList.add('d-none');
+      return;
+    }
+
+    wrap.classList.remove('d-none');
+    const files = formatNumber(backfill.files_recovered);
+    summary.textContent =
+      `Includes ${formatNumber(events)} earlier run${events === 1 ? '' : 's'} recovered from audit logs `
+      + `(${files} files) — what could not be recovered`;
+
+    if (!detail.dataset.filled) {
+      detail.innerHTML = '';
+      (backfill.not_recoverable || []).forEach(line => {
+        const item = document.createElement('li');
+        item.textContent = line;
+        detail.appendChild(item);
+      });
+      detail.dataset.filled = '1';
+      toggle.addEventListener('click', () => {
+        // classList.toggle returns true when the class was added, i.e. when the
+        // list just became hidden -- so aria-expanded is the negation of it.
+        const hidden = detail.classList.toggle('d-none');
+        toggle.setAttribute('aria-expanded', String(!hidden));
+      });
+    }
+  }
+
   function clampPercent(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return 0;
@@ -130,6 +169,7 @@
     setText('dashboardDeletedFiles', formatNumber(operations.deleted_files));
     setText('dashboardDeletedSize', `${operations.deleted_size_label || '0 B'} reclaimed`);
     setProgress('dashboardImpactProgressBar', pct);
+    renderBackfillNote(impact.backfill);
 
     const band = document.querySelector('.dashboard-impact-band');
     if (band) band.classList.toggle('dashboard-impact-error', impact.status === 'error');

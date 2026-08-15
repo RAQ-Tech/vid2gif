@@ -3,13 +3,40 @@ import test from 'node:test';
 
 
 class FakeElement {
-  constructor() {
+  constructor(tag = 'div') {
+    this.tagName = tag.toUpperCase();
     this.textContent = '';
     this.innerHTML = '';
     this.style = {};
     this.attributes = {};
-    this.classList = { toggle() {} };
+    this.dataset = {};
+    this.children = [];
+    this.listeners = {};
+    this.classes = new Set();
+    this.classList = {
+      add: (name) => this.classes.add(name),
+      remove: (name) => this.classes.delete(name),
+      contains: (name) => this.classes.has(name),
+      toggle: (name) => {
+        if (this.classes.has(name)) {
+          this.classes.delete(name);
+          return false;
+        }
+        this.classes.add(name);
+        return true;
+      },
+    };
   }
+
+  setAttribute(key, value) { this.attributes[key] = value; }
+
+  getAttribute(key) { return this.attributes[key]; }
+
+  appendChild(child) { this.children.push(child); return child; }
+
+  addEventListener(name, handler) { this.listeners[name] = handler; }
+
+  click() { if (this.listeners.click) this.listeners.click(); }
 
   closest() {
     return { setAttribute: (key, value) => { this.attributes[key] = value; } };
@@ -29,6 +56,9 @@ globalThis.document = {
   },
   querySelector() {
     return new FakeElement();
+  },
+  createElement(tag) {
+    return new FakeElement(tag);
   },
   addEventListener() {},
 };
@@ -97,4 +127,75 @@ test('percentage clamping is stable', () => {
   assert.equal(dashboard.clampPercent(49.6), 50);
   assert.equal(dashboard.clampPercent(120), 100);
   assert.equal(dashboard.clampPercent('invalid'), 0);
+});
+
+
+test('the backfill note stays hidden when no history was recovered', () => {
+  const base = {
+    status: 'ok', total_fixes: 0, resolved_count: 0, discovered_count: 0,
+    cleared_elsewhere_count: 0, open_count: 0, resolution_percent: 0,
+    operations: {}, categories: [], daily: [], milestones: { earned: [] },
+  };
+
+  dashboard.renderImpact({ impact: { ...base, backfill: null } });
+  assert.equal(document.getElementById('dashboardBackfillNote').classList.contains('d-none'), true);
+
+  // A backfill that recovered nothing is not worth a note either.
+  dashboard.renderImpact({ impact: { ...base, backfill: { events_applied: 0, files_recovered: 0 } } });
+  assert.equal(document.getElementById('dashboardBackfillNote').classList.contains('d-none'), true);
+});
+
+
+test('recovered history is disclosed with what could not be recovered', () => {
+  dashboard.renderImpact({
+    impact: {
+      status: 'ok', total_fixes: 9, resolved_count: 9, discovered_count: 9,
+      cleared_elsewhere_count: 0, open_count: 0, resolution_percent: 100,
+      operations: { quarantined_files: 40, deleted_files: 2 },
+      categories: [], daily: [], milestones: { earned: [] },
+      backfill: {
+        events_applied: 3,
+        files_recovered: 42,
+        not_recoverable: ['Issue history was never logged.', 'Subtitle byte totals are gone.'],
+      },
+    },
+  });
+
+  const note = document.getElementById('dashboardBackfillNote');
+  const summary = document.getElementById('dashboardBackfillSummary');
+  const detail = document.getElementById('dashboardBackfillDetail');
+
+  assert.equal(note.classList.contains('d-none'), false);
+  assert.match(summary.textContent, /3 earlier runs recovered from audit logs/);
+  assert.match(summary.textContent, /42 files/);
+  // The caveats are listed rather than summarised away.
+  assert.equal(detail.children.length, 2);
+  assert.equal(detail.children[0].textContent, 'Issue history was never logged.');
+});
+
+
+test('the caveat list expands and collapses', () => {
+  dashboard.renderImpact({
+    impact: {
+      status: 'ok', total_fixes: 1, resolved_count: 1, discovered_count: 1,
+      cleared_elsewhere_count: 0, open_count: 0, resolution_percent: 100,
+      operations: {}, categories: [], daily: [], milestones: { earned: [] },
+      backfill: { events_applied: 1, files_recovered: 5, not_recoverable: ['Only this.'] },
+    },
+  });
+
+  const toggle = document.getElementById('dashboardBackfillToggle');
+  const detail = document.getElementById('dashboardBackfillDetail');
+
+  // The markup ships collapsed; the stub does not read class attributes, so
+  // put it in that state explicitly before exercising the toggle.
+  detail.classList.add('d-none');
+
+  toggle.click();
+  assert.equal(detail.classList.contains('d-none'), false, 'first click expands');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+
+  toggle.click();
+  assert.equal(detail.classList.contains('d-none'), true, 'second click collapses');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
 });

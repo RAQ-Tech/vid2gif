@@ -152,6 +152,36 @@ def ensure_store():
             return False
 
 
+def get_backfill_report():
+    """The stored backfill report, or None if the logs were never replayed."""
+    with impact_lock:
+        try:
+            data, _recovered = _load_store(create=True)
+        except Exception:
+            return None
+        report = data.get("backfill")
+        return copy.deepcopy(report) if isinstance(report, dict) else None
+
+
+def set_backfill_report(report):
+    """Persist the report. Held separately from the counters it produced.
+
+    Kept out of `record_maintenance_action` deliberately: the backfill calls
+    that function once per historical run, and each call takes `impact_lock`,
+    so writing the report has to happen outside that loop.
+    """
+    global _last_error
+    with impact_lock:
+        try:
+            data, _recovered = _load_store(create=True)
+            data["backfill"] = dict(report or {})
+            _write_store(data)
+            return True
+        except Exception as exc:
+            _last_error = str(exc)
+            return False
+
+
 def _event_seen(data, event_id):
     return bool(event_id and event_id in data.get("processed_events", {}))
 
@@ -493,6 +523,7 @@ def status_payload(now=None):
                 "milestones": {"earned": [], "latest": None, "next": None},
                 "recent_events": [],
                 "creative_output": {},
+                "backfill": None,
             }
 
     open_counts = {}
@@ -553,4 +584,8 @@ def status_payload(now=None):
         "milestones": _milestones(total_fixes, categories),
         "recent_events": copy.deepcopy(data.get("recent_events") or []),
         "creative_output": creative,
+        # Present once the audit logs have been replayed, so the dashboard can
+        # say which part of the lifetime total came from history and what the
+        # logs could not support. Absent on an install that never needed it.
+        "backfill": copy.deepcopy(data.get("backfill")) if isinstance(data.get("backfill"), dict) else None,
     }

@@ -301,7 +301,13 @@ so a name that will never match automatically stops asking. Each applied run
 writes a bounded JSONL log under `/state/maintenance-logs/actor-images`.
 
 The dashboard tracks maintenance impact from the first launch after this
-feature is installed. It does not backfill bounded historical logs. Distinct
+feature is installed, and on that first launch it replays the maintenance audit
+logs to recover the file operations they record, so the lifetime total is not
+limited to work done since. The logs do not hold everything: the per-issue
+history, subtitle byte totals, actor image imports (which write to Emby rather
+than the library) and GIF creation predate any audit record, and runs older than
+the log retention limits are gone. The dashboard lists exactly what it could not
+recover rather than folding an estimate into the total. Distinct
 actionable issues, completed fixes, quarantine/delete totals, milestones, daily
 activity, and newly created GIF output persist in
 `/state/dashboard/impact-metrics.json`; retaining the `/state` volume retains
