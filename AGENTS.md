@@ -109,7 +109,7 @@ worker would silently get its own copy of every scan, plan, and job queue.
 ```bash
 pip install -r requirements-dev.txt
 npm ci --ignore-scripts
-python -m pytest                              # ~539 tests, ~35s; safe to run bare
+python -m pytest                              # 563 tests, ~35s; safe to run bare
 python -m ruff check .                        # what CI lints with
 npm run test:frontend                         # 19 Node tests, needs no node_modules
 npm run build:frontend
@@ -132,7 +132,8 @@ path directly, so an override fails them. Set it only when actually serving a li
 
 `npm run test:browser` runs Playwright + axe accessibility checks against a real Flask server
 on port 19040; it additionally needs `npx playwright install --with-deps chromium` and a
-`.venv`.
+`.venv`. Fifty tests cover every page and every maintenance tab, each with an axe pass on
+populated data — empty states hide the contrast and labelling defects that matter.
 
 `npm run build:frontend` first vendors third-party assets (`npm run vendor:assets`), then
 bundles `frontend/test-lab/` and `frontend/tables/` into `app/static/`. **Rebuild and commit

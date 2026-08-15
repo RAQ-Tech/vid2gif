@@ -7,40 +7,27 @@ code, the docs, and CI -- each one cites what it is based on.
 Current state: 563 Python tests, all of which pass on CI with none skipped; a
 Windows checkout runs 554 of them, since nine need symlinks or media tools. 19
 frontend tests, 50 browser tests covering every page and maintenance tab with an
-axe pass on each. `ruff check` is clean, coverage is 83.04% against an 80%
-floor, and CI is green on `main`.
+axe pass on each. `ruff check` is clean (including a C901 complexity ceiling),
+coverage is 83.04% against an 80% floor, and CI is green on `main`.
 
 There are no open questions. Everything below is mine to do.
 
-## Repository housekeeping
-
-### 1. Draft PR #43 now conflicts with everything merged today
-
-[PR #43](https://github.com/RAQ-Tech/vid2gif/pull/43), "Add AGENTS.md, and give
-the project a complexity linter", was opened on 2026-08-13 before this session's
-work and is still a draft. It edits `CLAUDE.md`, `ruff.toml`, and
-`requirements-dev.txt`, all three of which changed on `main` since -- so it will
-not merge cleanly, and it proposes `AGENTS.md` as the single source of truth
-while `CLAUDE.md` has been serving that role.
-
-Decide which file is authoritative before rebasing it, and fold its complexity
-linter into the existing `ruff.toml` rather than alongside it.
-
 ## Lower priority
 
-### 2. No formatter, and 1,267 lines exceed 88 columns
+### 1. No formatter, and 1,267 lines exceed 88 columns
 
-`ruff check` now runs in CI, but `E501` (line too long) is switched off in
-`ruff.toml`. 1,267 lines exceed ruff's default 88 columns and 133 exceed 120,
-concentrated in `maintenance.py`, `video_preview_maintenance.py`, and
-`poster_maintenance.py`. Rewrapping them by hand would be a large diff through
-the code that moves users' files, for no behavioural gain.
+`ruff check` now runs in CI with pycodestyle, pyflakes, bugbear and a C901
+complexity ceiling, but `E501` (line too long) is switched off in `ruff.toml`.
+1,267 lines exceed ruff's default 88 columns and 133 exceed 120, concentrated in
+`maintenance.py`, `video_preview_maintenance.py`, and `poster_maintenance.py`.
+Rewrapping them by hand would be a large diff through the code that moves users'
+files, for no behavioural gain.
 
 Adopting `ruff format` would do it mechanically and consistently, but it would
 touch nearly every Python file in one commit. Worth doing deliberately, on a
 quiet branch, not folded into other work.
 
-### 3. Several modules have outgrown one file
+### 2. Several modules have outgrown one file
 
 `app/video_preview_maintenance.py` (4,211 lines), `app/maintenance.py` (4,127),
 `app/poster_maintenance.py` (1,950), `app/routes.py` (1,776), and
@@ -52,7 +39,7 @@ already visible in the module names (`duplicate_slots.py` and
 Split opportunistically when touching one of these for another reason, not as a
 standalone refactor.
 
-### 4. Dashboard impact metrics cannot be backfilled
+### 3. Dashboard impact metrics cannot be backfilled
 
 `README.md` states the dashboard tracks impact only from first launch after the
 feature was installed and does not backfill. Existing installations therefore
