@@ -312,7 +312,7 @@
     const existing = target.querySelector('.emby-sync-notice');
     if (existing) existing.remove();
     const notice = document.createElement('div');
-    notice.className = `emby-sync-notice mt-2 ${['partial', 'failed', 'not_configured'].includes(sync.status) ? 'text-warning' : ''}`;
+    notice.className = `emby-sync-notice mt-2 ${['partial', 'failed', 'not_configured'].includes(sync.status) ? 'text-warning-emphasis' : ''}`;
     notice.append(document.createTextNode(`${embySyncText(sync)} `));
     if (sync.retryable && sync.id) {
       const button = document.createElement('button');
@@ -334,7 +334,7 @@
     if (!target || !notification || ['skipped', 'disabled'].includes(notification.status)) return;
     target.querySelector('.emby-notification-notice')?.remove();
     const notice = document.createElement('div');
-    notice.className = `emby-notification-notice mt-2 ${['failed', 'not_configured'].includes(notification.status) ? 'text-warning' : ''}`;
+    notice.className = `emby-notification-notice mt-2 ${['failed', 'not_configured'].includes(notification.status) ? 'text-warning-emphasis' : ''}`;
     notice.textContent = notification.message || 'Emby administrator notification status is unavailable.';
     target.append(notice);
   }
@@ -4067,7 +4067,7 @@
       const quality = file.subtitle_quality || {};
       const qualityClass = quality.status === 'complete'
         ? 'text-success'
-        : (quality.status === 'likely_incomplete' ? 'text-danger fw-semibold' : 'text-warning');
+        : (quality.status === 'likely_incomplete' ? 'text-danger fw-semibold' : 'text-warning-emphasis');
       const qualityDetail = quality.status
         ? `<div class="small ${qualityClass}">${escapeHtml(quality.coverage_percent != null ? `${quality.coverage_percent}% coverage · ends ${quality.last_timestamp_label || '?'} of ${quality.video_duration_label || '?'} · ${quality.cue_count || 0} cues` : (quality.label || 'Coverage unavailable'))}</div>`
         : '';
@@ -4577,7 +4577,7 @@
       const checked = actorItemIsSelected(item.id);
       const selectable = item.status === 'ready';
       return `<tr>` +
-        `<td><input class="form-check-input" type="checkbox" data-actor-select="${escapeHtml(item.id)}"${checked && selectable ? ' checked' : ''}${selectable ? '' : ' disabled'}></td>` +
+        `<td><input class="form-check-input" type="checkbox" data-actor-select="${escapeHtml(item.id)}" aria-label="Import image for ${escapeHtml(item.name || 'actor')}"${checked && selectable ? ' checked' : ''}${selectable ? '' : ' disabled'}></td>` +
         `<td>${actorStatusBadge(item.status)}<div class="fw-semibold mt-1">${escapeHtml(item.name || '')}</div><div class="text-muted small">${escapeHtml(item.person_id || '')}</div></td>` +
         `<td>${actorCandidateCell(item)}</td>` +
         `<td>${actorRelatedCell(item)}</td>` +

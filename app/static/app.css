@@ -5,7 +5,14 @@
   --app-surface-subtle: #f1f3f5;
   --app-border: #dfe3e7;
   --app-text: #212529;
-  --app-muted: #66727d;
+  /* Muted text sits on white panels, the #f7f8fa canvas, and the translucent
+     navbar. At #66727d it measured 4.42:1 on the dashboard -- just under the
+     4.5:1 WCAG AA floor that DESIGN.md requires, which axe caught. Darkened
+     until every one of those surfaces clears it with margin. Bootstrap's own
+     secondary text colour is overridden for the same reason: it measured
+     4.41:1. */
+  --app-muted: #5c6770;
+  --bs-secondary-color: #5c6770;
   --app-primary: #0d6efd;
   --app-success: #198754;
   --app-warning: #b78103;
@@ -13,6 +20,16 @@
   --app-info: #087e99;
   --app-radius: 8px;
   --app-control-height: 34px;
+}
+
+/* Bootstrap paints outline-secondary button text with its own --bs-btn-color
+   (#6c757d), which measures 4.41:1 on a white panel -- under the 4.5:1 AA floor
+   for the 14px labels used throughout the toolbars. It is a separate variable
+   from --bs-secondary-color, so it needs its own override. Dark theme already
+   has ample contrast and is left alone. */
+.btn-outline-secondary {
+  --bs-btn-color: #5c6770;
+  --bs-btn-disabled-color: #5c6770;
 }
 
 [data-bs-theme="dark"] {
