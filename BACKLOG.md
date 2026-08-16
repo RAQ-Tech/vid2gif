@@ -4,11 +4,11 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 588 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 579 of them, since nine need symlinks or media tools. 22
+Current state: 597 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 587 of them, since ten need symlinks or media tools. 22
 frontend tests, 50 browser tests covering every page and maintenance tab with an
 axe pass on each. `ruff check` is clean (including a C901 complexity ceiling and
-an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.27%
+an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.72%
 against an 80% floor, and CI is green on `main`.
 
 There are no open questions. Everything below is mine to do.
@@ -26,6 +26,14 @@ already visible in the module names (`duplicate_slots.py` and
 
 Split opportunistically when touching one of these for another reason, not as a
 standalone refactor.
+
+`apply_duplicate_cleanup_plan` (441 lines, complexity 43) was surveyed as a
+candidate, since AGENTS.md flags it and `build_duplicate_cleanup_plan` as worth
+untangling. Its guards turned out to be four group-level checks that between
+them shadow most of the per-file gate behind them, so a naive extraction would
+reorder protections whose interaction is the whole point. Both layers now have
+tests (`tests/test_duplicate_apply_guards.py`), which is the prerequisite for
+touching it safely later.
 
 ## Deliberately not on this list
 
