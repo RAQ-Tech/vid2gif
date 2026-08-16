@@ -4,11 +4,11 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 597 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 587 of them, since ten need symlinks or media tools. 22
+Current state: 619 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 609 of them, since ten need symlinks or media tools. 22
 frontend tests, 50 browser tests covering every page and maintenance tab with an
 axe pass on each. `ruff check` is clean (including a C901 complexity ceiling and
-an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.72%
+an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.57%
 against an 80% floor, and CI is green on `main`.
 
 There are no open questions. Everything below is mine to do.
