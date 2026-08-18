@@ -40,6 +40,15 @@ This limits the blast radius of the unauthenticated endpoint; it is not a
 substitute for keeping the app off the public internet. The archive still
 contains library paths, file names, maintenance logs, and job history.
 
+### Excluded From Backups
+
+The Emby library index under `/state/emby-index` is left out of the archive
+entirely and listed under `excluded` in the manifest. It records what has been
+watched and marked as a favourite, which is a different order of personal than
+maintenance logs, and there is no field to blank the way the Emby key is blanked
+-- the whole file is the sensitive part. Restoring a backup therefore does not
+restore the index; rebuild it from the Settings page instead.
+
 ### Credentials at Rest
 
 Redaction applies to the backup archive only. The Emby API key is stored in

@@ -24,6 +24,12 @@ WORKER_THREADS = {
 # /system/backup is unauthenticated by design (the app is LAN-only), so the
 # archive is treated as readable by anyone who can reach the port.
 SECRET_SETTING_KEYS = frozenset({"emby_api_key"})
+# Directories left out of the backup archive entirely. /system/backup is
+# unauthenticated like every other endpoint, and the Emby library index
+# records what has been watched and favourited -- a different order of
+# personal than maintenance logs. It is excluded rather than redacted
+# because there is no field to blank: the whole file is the sensitive part.
+EXCLUDED_STATE_DIRS = frozenset({"emby-index"})
 BACKUP_REDACTED_VALUE = ""
 
 
@@ -216,6 +222,7 @@ def create_state_backup(state_root=None):
     total_bytes = 0
     skipped = []
     redacted = []
+    excluded = []
     try:
         with zipfile.ZipFile(
             archive_path,
@@ -225,6 +232,10 @@ def create_state_backup(state_root=None):
         ) as archive:
             for base, dirs, files in os.walk(state_root, followlinks=False):
                 dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(base, name))]
+                if base == state_root:
+                    for name in sorted(set(dirs) & EXCLUDED_STATE_DIRS):
+                        excluded.append(name)
+                    dirs[:] = [name for name in dirs if name not in EXCLUDED_STATE_DIRS]
                 for name in sorted(files):
                     source = os.path.join(base, name)
                     relative = os.path.relpath(source, state_root)
@@ -255,6 +266,7 @@ def create_state_backup(state_root=None):
                 "skipped": skipped,
                 "redacted": sorted(redacted),
                 "redacted_keys": sorted(SECRET_SETTING_KEYS),
+                "excluded": sorted(excluded),
                 "python": sys.version.split()[0],
             }
             archive.writestr(
@@ -276,4 +288,5 @@ def create_state_backup(state_root=None):
         "total_size_label": format_size(total_bytes),
         "skipped_count": len(skipped),
         "redacted_count": len(redacted),
+        "excluded": sorted(excluded),
     }

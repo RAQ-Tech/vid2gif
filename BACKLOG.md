@@ -4,14 +4,43 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 619 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 609 of them, since ten need symlinks or media tools. 22
+Current state: 643 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 633 of them, since ten need symlinks or media tools. 22
 frontend tests, 50 browser tests covering every page and maintenance tab with an
 axe pass on each. `ruff check` is clean (including a C901 complexity ceiling and
 an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.57%
 against an 80% floor, and CI is green on `main`.
 
 There are no open questions. Everything below is mine to do.
+
+## Emby library index
+
+The index itself is built (`app/emby_library_index.py`): it sweeps Emby for
+genres, tags, studios, people and this user's watch state, stores the result
+under `/state/emby-index`, and filters locally so several tags can be required
+at once. What remains is everything around it.
+
+### 1. No way to build or use the index from the interface
+
+There is no route, no Settings control to pick the Emby account, and no search
+screen -- the module is reachable only from Python. It needs: a user picker on
+Settings (`list_users` already returns the accounts), a "Rebuild index" action,
+and a filter surface that uses `facets()` to offer values rather than asking the
+operator to remember exact spellings.
+
+### 2. Confirm how Emby handles multiple tags server-side
+
+The index filters locally, which sidesteps the question -- but if Emby can
+require several tags itself, a large library could be filtered without holding
+every row in memory. Worth measuring once there is a real library indexed, not
+before.
+
+### 3. Preference signals from watch history
+
+The rows now carry played, play count and favourite alongside every facet, which
+is the dataset a "what does this operator like" summary needs. Deliberately not
+built yet: the aggregates should be looked at against a real library before any
+recommendation behaviour is designed on top of them.
 
 ## Lower priority
 

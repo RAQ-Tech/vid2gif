@@ -86,6 +86,7 @@ _SETTING_KEYS = {
     "video_preview_scan_path",
     "emby_url",
     "emby_api_key",
+    "emby_user_id",
     "emby_api_key_clear",
     "emby_path_mappings",
     "emby_sync_after_maintenance",
@@ -141,6 +142,10 @@ def default_settings():
         "video_preview_scan_path": LIB_ROOT,
         "emby_url": str(os.getenv("EMBY_URL", "") or "").strip(),
         "emby_api_key": str(os.getenv("EMBY_API_KEY", "") or "").strip(),
+        # Which Emby account the library index reads watch state for. Empty
+        # means the index is built without personal columns rather than with
+        # someone else's.
+        "emby_user_id": str(os.getenv("EMBY_USER_ID", "") or "").strip(),
         "emby_path_mappings": [],
         "emby_sync_after_maintenance": _bool(os.getenv("EMBY_SYNC_AFTER_MAINTENANCE"), True),
         "emby_playback_protection": _bool(os.getenv("EMBY_PLAYBACK_PROTECTION"), True),
@@ -410,6 +415,7 @@ def _coerce_settings(data):
         ).strip(),
         "emby_url": str(data.get("emby_url", defaults["emby_url"]) or "").strip(),
         "emby_api_key": str(data.get("emby_api_key", defaults["emby_api_key"]) or "").strip(),
+        "emby_user_id": str(data.get("emby_user_id", defaults["emby_user_id"]) or "").strip(),
         "emby_path_mappings": _coerce_emby_path_mappings(data.get("emby_path_mappings", [])),
         "emby_sync_after_maintenance": _bool(
             data.get("emby_sync_after_maintenance", defaults["emby_sync_after_maintenance"]),
