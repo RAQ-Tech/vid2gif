@@ -66,7 +66,11 @@
       var path = location.pathname.replace(/\/+$/,'') || '/';
       document.querySelectorAll('.navbar-nav .nav-link').forEach(function(a){
         var href = a.getAttribute('href').replace(/\/+$/,'') || '/';
-        if (href === path || (href === '/' && path === '/dashboard')) a.classList.add('active');
+        if (href === path || (href === '/' && path === '/dashboard')) {
+          a.classList.add('active');
+          // Colour alone does not tell a screen reader which page this is.
+          a.setAttribute('aria-current', 'page');
+        }
       });
       const toggle = document.getElementById('themeToggle');
       const preferred = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark':'light');

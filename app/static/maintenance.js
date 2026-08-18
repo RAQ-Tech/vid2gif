@@ -138,11 +138,68 @@
     return document.getElementById(id);
   }
 
+  const SHARED_SCAN_SOURCE_KEY = 'vid2gif_maintenance_scan_source';
+
+  // Which path field belongs to which tab. Every tab writes the shared source
+  // when it scans; until now nothing read it back, so choosing a folder on one
+  // tab left the other five showing the library root and the folder had to be
+  // picked again on each.
+  const SCAN_SOURCE_INPUTS = [
+    {inputId: 'maintenancePath', pageKey: 'vid2gif_duplicate_scan_source'},
+    {inputId: 'previewPath', pageKey: 'vid2gif_preview_scan_source'},
+    {inputId: 'subtitlePath', pageKey: 'vid2gif_subtitle_scan_source'},
+    {inputId: 'actorPath', pageKey: 'vid2gif_actor_scan_source'},
+    {inputId: 'posterPath', pageKey: 'vid2gif_poster_scan_source'},
+  ];
+
   function rememberScanSource(path, pageKey = '') {
     try {
-      localStorage.setItem('vid2gif_maintenance_scan_source', path);
+      localStorage.setItem(SHARED_SCAN_SOURCE_KEY, path);
       if (pageKey) localStorage.setItem(pageKey, path);
     } catch (_e) {}
+    applyScanSourceToOtherTabs(path, pageKey);
+  }
+
+  // Carry the chosen folder to the tabs still sitting on the untouched default.
+  // A field holding anything else was configured deliberately -- the video
+  // preview path is a saved setting, not a scratch value -- so it is left alone.
+  function applyScanSourceToOtherTabs(path, originPageKey = '') {
+    const libRoot = (window.vid2gifMaintenanceConfig || {}).libRoot || '';
+    if (!path) return;
+    SCAN_SOURCE_INPUTS.forEach(({inputId, pageKey}) => {
+      if (pageKey === originPageKey) return;
+      const input = byId(inputId);
+      if (!input) return;
+      const current = String(input.value || '').trim();
+      if (current && current !== libRoot) return;
+      input.value = path;
+    });
+  }
+
+  // On load, start every tab from the folder last chosen anywhere, so the
+  // workbench opens where the operator left off instead of at the library root.
+  function restoreScanSource() {
+    let shared = '';
+    try {
+      shared = localStorage.getItem(SHARED_SCAN_SOURCE_KEY) || '';
+    } catch (_e) {
+      return;
+    }
+    if (!shared) return;
+    const libRoot = (window.vid2gifMaintenanceConfig || {}).libRoot || '';
+    SCAN_SOURCE_INPUTS.forEach(({inputId, pageKey}) => {
+      const input = byId(inputId);
+      if (!input) return;
+      let remembered = '';
+      try {
+        remembered = localStorage.getItem(pageKey) || '';
+      } catch (_e) {}
+      const current = String(input.value || '').trim();
+      // A tab that was pointed somewhere specific keeps its own folder; one
+      // still on the default follows the shared choice.
+      if (current && current !== libRoot) return;
+      input.value = remembered || shared;
+    });
   }
 
   function escapeHtml(value) {
@@ -6190,6 +6247,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
 
   document.addEventListener('DOMContentLoaded', () => {
     initMaintenanceTabs();
+    restoreScanSource();
     initFolderPickers();
     initEvents();
     try {
