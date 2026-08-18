@@ -8,7 +8,7 @@ Current state: 643 Python tests, all of which pass on CI with none skipped; a
 Windows checkout runs 633 of them, since ten need symlinks or media tools. 22
 frontend tests, 50 browser tests covering every page and maintenance tab with an
 axe pass on each. `ruff check` is clean (including a C901 complexity ceiling and
-an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.57%
+an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.70%
 against an 80% floor, and CI is green on `main`.
 
 There are no open questions. Everything below is mine to do.
