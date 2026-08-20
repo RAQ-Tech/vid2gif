@@ -6355,3 +6355,373 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     });
   });
 }());
+
+
+// Tagline Titles: clean episode markers out of titles and taglines over the
+// Emby API. Self-contained so the main maintenance module stays untouched;
+// initialises the first time the Emby Operations tab is shown.
+(function () {
+  const PAGE_LIMIT = 25;
+  let scan = null;
+  let renderedScanId = '';
+  let statusFilter = 'ready';
+  let offset = 0;
+  let plan = null;
+  let pollTimer = null;
+  let runTimer = null;
+  let initialised = false;
+  // All eligible items are selected by default; unticking a row excludes it.
+  const excluded = new Set();
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[ch]));
+  }
+
+  async function readJson(res) {
+    try { return await res.json(); } catch (_e) { return {}; }
+  }
+
+  function setMessage(title, detail) {
+    const t = byId('taglineMessageTitle');
+    const d = byId('taglineMessageDetail');
+    if (t) t.textContent = title || '';
+    if (d) d.textContent = detail || '';
+  }
+
+  function selectedCount() {
+    const ready = scan?.counts?.ready || 0;
+    return Math.max(0, ready - excluded.size);
+  }
+
+  function updateSelectionControls() {
+    const count = selectedCount();
+    const summary = byId('taglineSelectionSummary');
+    if (summary) summary.textContent = `${count} selected across all result pages`;
+    const planButton = byId('taglinePlanButton');
+    if (planButton) planButton.disabled = !count || !scan || scan.status !== 'success';
+    const hasItems = Boolean(scan && scan.status === 'success');
+    if (byId('taglineSelectVisibleButton')) byId('taglineSelectVisibleButton').disabled = !hasItems;
+    if (byId('taglineDeselectButton')) byId('taglineDeselectButton').disabled = !hasItems;
+  }
+
+  function invalidatePlan() {
+    plan = null;
+    const summary = byId('taglinePlanSummary');
+    if (summary) summary.innerHTML = '';
+    const applyButton = byId('taglineApplyButton');
+    if (applyButton) applyButton.disabled = true;
+  }
+
+  function statusBadge(status) {
+    const map = {
+      ready: ['Ready', 'text-bg-primary'],
+      done: ['Done', 'text-bg-success'],
+      unusable: ['Needs review', 'text-bg-warning'],
+    };
+    const [label, klass] = map[status] || [status || 'Unknown', 'text-bg-secondary'];
+    return `<span class="badge ${klass}">${esc(label)}</span>`;
+  }
+
+  function pager(page) {
+    const total = page.total || 0;
+    const from = total ? page.offset + 1 : 0;
+    const to = page.offset + (page.count || 0);
+    return `<div class="d-flex align-items-center gap-2 mb-2">` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-tagline-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
+      `<span class="small text-muted">${from}-${to} of ${total}</span>` +
+      `<button class="btn btn-outline-secondary btn-sm" type="button" data-tagline-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
+      `</div>`;
+  }
+
+  function renderItems(page) {
+    const target = byId('taglineItems');
+    if (!target) return;
+    if (!page || !(page.items || []).length) {
+      target.innerHTML = `${page ? pager(page) : ''}<div class="text-muted text-center py-4">No items in this view.</div>`;
+      return;
+    }
+    const rows = page.items.map(item => {
+      const selectable = item.status === 'ready';
+      const checked = selectable && !excluded.has(item.id) ? ' checked' : '';
+      const box = selectable
+        ? `<input class="form-check-input" type="checkbox" data-tagline-select="${esc(item.id)}" aria-label="Update ${esc(item.name || 'item')}"${checked}>`
+        : `<input class="form-check-input" type="checkbox" aria-label="Not applicable for ${esc(item.name || 'item')}" disabled>`;
+      const titleCell = item.writes_title && item.title_differs
+        ? `<div>${esc(item.name)}</div><div class="small text-success">→ ${esc(item.proposed_tagline)}</div>`
+        : `<div>${esc(item.name)}</div>`;
+      return `<tr>` +
+        `<td>${box}</td>` +
+        `<td>${statusBadge(item.status)}</td>` +
+        `<td class="path-cell">${titleCell}</td>` +
+        `<td class="path-cell text-muted">${esc(item.current_tagline || '—')}</td>` +
+        `<td class="path-cell">${esc(item.proposed_tagline || '—')}</td>` +
+        `<td class="small text-muted">${esc(item.detail || '')}</td>` +
+        `</tr>`;
+    }).join('');
+    target.innerHTML =
+      pager(page) +
+      `<div class="table-responsive workspace-table-wrap">` +
+      `<table class="table table-hover align-middle workspace-table">` +
+      `<thead><tr><th>Apply</th><th>Status</th><th>Title</th><th>Current tagline</th><th>New tagline</th><th>Detail</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      pager(page);
+  }
+
+  async function loadItems(nextOffset = 0) {
+    if (!scan?.id || scan.status !== 'success') return;
+    offset = Math.max(0, nextOffset);
+    const params = new URLSearchParams({
+      scan_id: scan.id, status: statusFilter, offset: String(offset), limit: String(PAGE_LIMIT),
+    });
+    const res = await fetch(`/api/maintenance/emby-taglines/items?${params}`);
+    const data = await readJson(res);
+    if (!res.ok) {
+      setMessage(data.error || 'Tagline results unavailable', '');
+      return;
+    }
+    renderItems(data);
+    updateSelectionControls();
+  }
+
+  function applyScanPayload(next) {
+    scan = next;
+    if (!scan) {
+      setMessage('No tagline scan yet.', '');
+      return;
+    }
+    const counts = scan.counts || {};
+    if (scan.active) {
+      setMessage(scan.progress_label || 'Scanning titles', 'Reading the library from Emby.');
+    } else if (scan.status === 'success') {
+      setMessage(
+        `${counts.ready || 0} ready, ${counts.done || 0} already done, ${counts.unusable || 0} need review`,
+        scan.lock_items ? 'Updated items will be locked against metadata refreshes.' : 'Items will not be locked.'
+      );
+      if (renderedScanId !== scan.id) {
+        renderedScanId = scan.id;
+        excluded.clear();
+        invalidatePlan();
+        loadItems(0);
+      }
+    } else if (scan.status === 'failed') {
+      setMessage('Tagline scan failed', scan.error || '');
+    }
+    updateSelectionControls();
+  }
+
+  async function refreshStatus() {
+    clearTimeout(pollTimer);
+    const res = await fetch('/api/maintenance/emby-taglines/status');
+    const data = await readJson(res);
+    if (res.ok) applyScanPayload(data.scan);
+    if (data.scan?.active) pollTimer = setTimeout(refreshStatus, 1200);
+  }
+
+  function renderRun(run) {
+    const target = byId('taglineRunStatus');
+    if (!target) return;
+    if (!run) {
+      target.textContent = '';
+      return;
+    }
+    const verb = run.kind === 'undo' ? 'Restoring' : 'Applying';
+    target.textContent = run.active
+      ? `${verb}: ${run.processed_count || 0} of ${run.item_count || 0} — ${run.current_name || run.progress_label || ''}`
+      : run.progress_label || '';
+  }
+
+  async function pollRun() {
+    clearTimeout(runTimer);
+    const res = await fetch('/api/maintenance/emby-taglines/run/status');
+    const data = await readJson(res);
+    if (!res.ok) return;
+    renderRun(data.run);
+    if (data.run?.active) {
+      runTimer = setTimeout(pollRun, 1200);
+    } else if (data.run) {
+      invalidatePlan();
+      excluded.clear();
+      await Promise.all([refreshStatus(), loadLogs()]);
+      if (scan?.status === 'success') {
+        renderedScanId = '';
+        applyScanPayload(scan);
+      }
+    }
+  }
+
+  async function loadLogs() {
+    const target = byId('taglineLogList');
+    if (!target) return;
+    const res = await fetch('/api/maintenance/emby-taglines/logs');
+    const data = await readJson(res);
+    const logs = (data.logs || []).filter(entry => entry.kind !== undefined || entry.id);
+    if (!res.ok || !logs.length) {
+      target.innerHTML = '<div class="text-muted small">No applied runs yet.</div>';
+      return;
+    }
+    target.innerHTML = logs.map(entry => {
+      const undoable = entry.kind === 'apply' && (entry.applied_count || 0) > 0;
+      return `<div class="d-flex align-items-center gap-3 py-1">` +
+        `<span class="badge ${entry.kind === 'undo' ? 'text-bg-secondary' : 'text-bg-info'}">${esc(entry.kind || 'apply')}</span>` +
+        `<span class="small">${esc(entry.created_at || '')}</span>` +
+        `<span class="small text-muted">${entry.applied_count || 0} applied, ${entry.failed_count || 0} failed</span>` +
+        (undoable
+          ? `<button class="btn btn-outline-secondary btn-sm" type="button" data-tagline-undo="${esc(entry.id)}">Undo</button>`
+          : '') +
+        `</div>`;
+    }).join('');
+  }
+
+  function selectionPayload() {
+    return { mode: 'all_eligible', excluded_item_ids: Array.from(excluded) };
+  }
+
+  function wire() {
+    byId('taglineScanButton')?.addEventListener('click', async () => {
+      invalidatePlan();
+      const res = await fetch('/api/maintenance/emby-taglines/scan', { method: 'POST' });
+      const data = await readJson(res);
+      if (!res.ok) {
+        setMessage(data.error || 'The tagline scan could not start', '');
+        return;
+      }
+      applyScanPayload(data.scan);
+      pollTimer = setTimeout(refreshStatus, 1200);
+    });
+
+    byId('taglineStatusFilter')?.addEventListener('change', event => {
+      statusFilter = event.target.value || 'ready';
+      loadItems(0);
+    });
+
+    byId('taglineLockCheckbox')?.addEventListener('change', async event => {
+      await fetch('/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emby_tagline_lock_items: Boolean(event.target.checked) }),
+      });
+      setMessage('Lock preference saved.', 'It takes effect from the next scan.');
+    });
+
+    byId('taglineItems')?.addEventListener('click', event => {
+      const pageButton = event.target.closest('[data-tagline-page]');
+      if (pageButton && !pageButton.disabled) {
+        loadItems(pageButton.getAttribute('data-tagline-page') === 'next' ? offset + PAGE_LIMIT : offset - PAGE_LIMIT);
+      }
+    });
+
+    byId('taglineItems')?.addEventListener('change', event => {
+      const box = event.target.closest('[data-tagline-select]');
+      if (!box) return;
+      const id = box.getAttribute('data-tagline-select');
+      if (box.checked) excluded.delete(id);
+      else excluded.add(id);
+      invalidatePlan();
+      updateSelectionControls();
+    });
+
+    byId('taglineSelectVisibleButton')?.addEventListener('click', () => {
+      document.querySelectorAll('[data-tagline-select]').forEach(box => excluded.delete(box.getAttribute('data-tagline-select')));
+      invalidatePlan();
+      loadItems(offset);
+    });
+
+    byId('taglineDeselectButton')?.addEventListener('click', () => {
+      document.querySelectorAll('[data-tagline-select]').forEach(box => excluded.add(box.getAttribute('data-tagline-select')));
+      invalidatePlan();
+      loadItems(offset);
+    });
+
+    byId('taglinePlanButton')?.addEventListener('click', async () => {
+      if (!scan?.id) return;
+      const res = await fetch('/api/maintenance/emby-taglines/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scan_id: scan.id, selection: selectionPayload() }),
+      });
+      const data = await readJson(res);
+      const summary = byId('taglinePlanSummary');
+      if (!res.ok) {
+        if (summary) summary.textContent = data.error || 'The plan could not be built';
+        return;
+      }
+      plan = data.plan;
+      if (summary) {
+        const preview = (plan.preview || [])
+          .map(entry => `${entry.name} → ${entry.proposed_tagline}`).join('; ');
+        summary.textContent =
+          `${plan.item_count} item${plan.item_count === 1 ? '' : 's'} will be updated in Emby` +
+          `${plan.lock_items ? ' and locked' : ''}. ${preview}${plan.item_count > 5 ? '; …' : ''}`;
+      }
+      const applyButton = byId('taglineApplyButton');
+      if (applyButton) applyButton.disabled = false;
+    });
+
+    byId('taglineApplyButton')?.addEventListener('click', async () => {
+      if (!plan?.id) return;
+      byId('taglineApplyButton').disabled = true;
+      const res = await fetch('/api/maintenance/emby-taglines/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_id: plan.id }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) {
+        renderRun(null);
+        const summary = byId('taglinePlanSummary');
+        if (summary) summary.textContent = data.error || 'The apply could not start';
+        return;
+      }
+      renderRun(data.run);
+      runTimer = setTimeout(pollRun, 1200);
+    });
+
+    byId('taglineLogsButton')?.addEventListener('click', loadLogs);
+
+    byId('taglineLogList')?.addEventListener('click', async event => {
+      const undo = event.target.closest('[data-tagline-undo]');
+      if (!undo) return;
+      undo.disabled = true;
+      const res = await fetch('/api/maintenance/emby-taglines/undo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ log_id: undo.getAttribute('data-tagline-undo') }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) {
+        undo.disabled = false;
+        setMessage(data.error || 'The undo could not start', '');
+        return;
+      }
+      renderRun(data.run);
+      runTimer = setTimeout(pollRun, 1200);
+    });
+  }
+
+  async function init() {
+    if (initialised) return;
+    initialised = true;
+    wire();
+    try {
+      const res = await fetch('/api/settings');
+      const data = await readJson(res);
+      const lock = byId('taglineLockCheckbox');
+      if (lock && data.settings) lock.checked = Boolean(data.settings.emby_tagline_lock_items);
+    } catch (_e) {}
+    refreshStatus();
+    loadLogs();
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (!byId('taglineScanButton')) return;
+    const tab = document.getElementById('tab-emby-operations');
+    tab?.addEventListener('shown.bs.tab', init);
+    if (location.hash === '#emby-operations') init();
+  });
+}());

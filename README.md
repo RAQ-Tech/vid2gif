@@ -300,6 +300,29 @@ decisions persist in `/state/actor-images/exceptions.json` and survive rescans,
 so a name that will never match automatically stops asking. Each applied run
 writes a bounded JSONL log under `/state/maintenance-logs/actor-images`.
 
+Tagline titles clean season and episode markers (`S03E12`, `s4e01`, `s03,e9`,
+`Season 3 Episode 12`) out of each Emby item's title and write the cleaned text
+into both the title and the tagline, for skins that display the tagline as the
+detail-page title. Everything happens over Emby's own HTTP API -- the same
+channel Emby's metadata editor uses -- so the Emby container keeps running and
+its database is only ever written by Emby itself.
+
+The title is only edited under one condition: the original, markers and all,
+must be preserved in Emby's original-title field first. An empty original-title
+field receives the copy in the same write; one already mirroring the title is
+the copy; one holding anything else (a real original-language title, for
+example) means the title is left alone and only the tagline is written, and the
+review table says so for that item. Updated items get Emby's per-item metadata
+lock so a library refresh cannot undo the work; the lock is a setting and can
+be turned off.
+
+The workflow lives on the Library Maintenance page under Emby Operations and
+follows the usual shape: Scan classifies every item and shows exactly what
+would be written, nothing changes until a reviewed plan is applied, and every
+applied run records the previous title, original title, tagline, and lock per
+item. Undo restores precisely those fields onto a fresh copy of the item, so
+edits made in Emby after the run survive an undo.
+
 The dashboard tracks maintenance impact from the first launch after this
 feature is installed, and on that first launch it replays the maintenance audit
 logs to recover the file operations they record, so the lifetime total is not

@@ -17,6 +17,7 @@ from . import actor_image_maintenance
 from . import dashboard
 from . import estimate_history
 from . import emby_sync
+from . import emby_taglines
 from . import emby_playback
 from . import emby_operations
 from . import emby_notifications
@@ -1499,6 +1500,77 @@ def api_maintenance_actor_images_log(log_id):
     if err:
         return jsonify({"error": err}), 404
     return jsonify({"log": log})
+
+
+@app.route("/api/maintenance/emby-taglines/scan", methods=["POST"])
+def api_emby_taglines_scan():
+    scan, err = emby_taglines.start_scan()
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"scan": emby_taglines.public_scan(scan)})
+
+
+@app.route("/api/maintenance/emby-taglines/status")
+def api_emby_taglines_status():
+    return jsonify(emby_taglines.scan_status(request.args.get("scan_id")))
+
+
+@app.route("/api/maintenance/emby-taglines/items")
+def api_emby_taglines_items():
+    payload, err = emby_taglines.items_payload(
+        request.args.get("scan_id"),
+        status=request.args.get("status", "ready"),
+        offset=request.args.get("offset", 0),
+        limit=request.args.get("limit", emby_taglines.ITEM_PAGE_DEFAULT),
+    )
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/maintenance/emby-taglines/plan", methods=["POST"])
+def api_emby_taglines_plan():
+    plan, err = emby_taglines.build_plan(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"plan": emby_taglines.public_plan(plan)})
+
+
+@app.route("/api/maintenance/emby-taglines/apply", methods=["POST"])
+def api_emby_taglines_apply():
+    data = request.get_json(silent=True) or {}
+    run, err = emby_taglines.start_apply(data.get("plan_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"run": emby_taglines.public_run(run)})
+
+
+@app.route("/api/maintenance/emby-taglines/run/status")
+def api_emby_taglines_run_status():
+    return jsonify(emby_taglines.run_status(request.args.get("run_id")))
+
+
+@app.route("/api/maintenance/emby-taglines/run/cancel", methods=["POST"])
+def api_emby_taglines_run_cancel():
+    data = request.get_json(silent=True) or {}
+    run, err = emby_taglines.cancel_run(data.get("run_id"))
+    if err:
+        return jsonify({"error": err}), 404
+    return jsonify({"run": run})
+
+
+@app.route("/api/maintenance/emby-taglines/logs")
+def api_emby_taglines_logs():
+    return jsonify(emby_taglines.list_logs())
+
+
+@app.route("/api/maintenance/emby-taglines/undo", methods=["POST"])
+def api_emby_taglines_undo():
+    data = request.get_json(silent=True) or {}
+    run, err = emby_taglines.start_undo(data.get("log_id"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"run": emby_taglines.public_run(run)})
 
 
 @app.route("/api/maintenance/actor-images/preview")

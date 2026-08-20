@@ -4,11 +4,11 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 643 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 633 of them, since ten need symlinks or media tools. 22
-frontend tests, 55 browser tests covering every page and maintenance tab with an
+Current state: 689 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 679 of them, since ten need symlinks or media tools. 22
+frontend tests, 59 browser tests covering every page and maintenance tab with an
 axe pass on each. `ruff check` is clean (including a C901 complexity ceiling and
-an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.70%
+an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.51%
 against an 80% floor, and CI is green on `main`.
 
 There are no open questions. Everything below is mine to do.
@@ -42,6 +42,19 @@ than changed.
 `base.html` marks the current page after load rather than the server rendering
 it, so the navigation is briefly unmarked. Milliseconds on a LAN, and it now
 carries `aria-current`, but the server already knows which page it rendered.
+
+## Emby tagline titles
+
+Built and on the Emby Operations tab (`app/emby_taglines.py`): scan, review,
+apply, undo, all over the Emby API.
+
+### 1. First live run against the real server
+
+The apply path is verified against a simulated Emby shaped like the real
+responses, not against a live server. The first real run should be: scan,
+review, apply to two or three items, check them in Emby, then do the rest. If
+Emby's item GET turns out to omit fields the POST needs, the incomplete-item
+refusal will catch it and nothing will be written.
 
 ## Emby library index
 
