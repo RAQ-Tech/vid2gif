@@ -4,12 +4,15 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 689 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 679 of them, since ten need symlinks or media tools. 22
-frontend tests, 59 browser tests covering every page and maintenance tab with an
-axe pass on each. `ruff check` is clean (including a C901 complexity ceiling and
-an enforced 120-column limit), `ruff format --check` is clean, coverage is 83.51%
-against an 80% floor, and CI is green on `main`.
+Current state: 696 Python tests, all of which pass on CI with none skipped; a
+Windows checkout runs 686 of them, since ten need symlinks or media tools. 22
+frontend tests, 61 browser tests covering every page and maintenance tab with an
+axe pass on each. A UI conformance suite (tests/test_ui_conventions.py) pins the
+shared component contract in DESIGN.md, so pagers, page sizes, selection
+wording, and master select-alls cannot drift apart again. `ruff check` is clean
+(including a C901 complexity ceiling and an enforced 120-column limit),
+`ruff format --check` is clean, coverage is 83.51% against an 80% floor, and CI
+is green on `main`.
 
 There are no open questions. Everything below is mine to do.
 
@@ -20,16 +23,7 @@ concrete cause is fixed -- the scan folder is now shared across the maintenance
 tabs -- and the rest of what a survey turned up is recorded here rather than
 guessed at later.
 
-### 1. The Video Previews tab is 1,600px tall with two primary actions
-
-Measured in a 720px viewport: 22 buttons, two `btn-primary` controls ("Scan" and
-"Generate Reviewed BIFs"), and more than two screens of scrolling. DESIGN.md
-asks for one primary action per local workflow. The two may be defensible --
-README describes cleanup and generation as deliberately separate -- but they sit
-in one pane with no visual break between them, which is what makes the tab hard
-to read. Splitting the pane, not the feature, is probably the fix.
-
-### 2. Tabs do not create history entries
+### 1. Tabs do not create history entries
 
 `history.replaceState` is used when switching maintenance tabs, so Back leaves
 the page rather than returning to the previous tab. Deep links work, which is the
@@ -37,7 +31,7 @@ important half. Whether Back should walk the tabs is a genuine judgement call --
 seven tabs deep means seven Back presses to leave -- so this is recorded rather
 than changed.
 
-### 3. The active nav link is marked by client-side script
+### 2. The active nav link is marked by client-side script
 
 `base.html` marks the current page after load rather than the server rendering
 it, so the navigation is briefly unmarked. Milliseconds on a LAN, and it now

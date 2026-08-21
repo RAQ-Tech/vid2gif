@@ -245,3 +245,21 @@ test('an empty result set explains itself instead of showing a bare table', asyn
   await page.goto('/maintenance#subtitles');
   await expect(page.locator('#subtitleItems')).toContainText('No videos in this view');
 });
+
+test('the master checkbox mirrors and drives the selection', async ({ page }) => {
+  await stubSubtitleScan(page);
+  await page.goto('/maintenance#subtitles');
+  await expect(page.locator('#subtitleItems')).toContainText('Short Subs.mkv');
+
+  // One actionable file, selected by default, so the master shows fully checked.
+  const master = page.locator('#subtitleSelectAllCheckbox');
+  await expect(master).toBeEnabled();
+  await expect(master).toBeChecked();
+
+  await master.uncheck();
+  await expect(page.locator('#subtitleSelectionSummary')).toContainText('0 selected');
+  await expect(page.locator('#subtitlePlanButton')).toBeDisabled();
+
+  await master.check();
+  await expect(page.locator('#subtitleSelectionSummary')).toContainText('1 selected');
+});

@@ -252,6 +252,20 @@
             <input id="taglineLockCheckbox" class="form-check-input" type="checkbox" checked>
             <span class="form-check-label">Lock updated items so refreshes keep the tagline</span>
           </label>
+          <div class="d-flex align-items-center gap-2">
+            <label class="small text-muted mb-0" for="taglinePageLimit">Page size</label>
+            <select id="taglinePageLimit" class="form-select form-select-sm">
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+          <label class="form-check mb-0" for="taglineSelectAllCheckbox">
+            <input id="taglineSelectAllCheckbox" class="form-check-input" type="checkbox" disabled>
+            <span class="form-check-label">Select all ready</span>
+          </label>
           <button id="taglineSelectVisibleButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Select visible</button>
           <button id="taglineDeselectButton" class="btn btn-outline-secondary btn-sm" type="button" disabled>Deselect visible</button>
           <span id="taglineSelectionSummary" class="small text-muted">0 selected across all result pages</span>
@@ -585,6 +599,18 @@
           </div>
         </div>
 
+        <div id="previewItems" class="maintenance-groups mt-3">
+          <div class="text-muted text-center py-4">Missing video previews will appear here after a scan.</div>
+        </div>
+      </section>
+
+      <section class="workspace-panel maintenance-panel mt-3">
+        <div class="panel-heading">
+          <div>
+            <h2 class="h5 mb-1">Generate Missing Previews</h2>
+            <div class="text-muted small">Build BIF previews for the videos the scan above found missing. Choose a profile, review the exact selection, then generate.</div>
+          </div>
+        </div>
         <div class="settings-panel mt-3">
           <div class="panel-subheading">
             <i class="bi bi-hdd-network" aria-hidden="true"></i>
@@ -684,9 +710,6 @@
           </label>
         </div>
 
-        <div id="previewItems" class="maintenance-groups mt-3">
-          <div class="text-muted text-center py-4">Missing video previews will appear here after a scan.</div>
-        </div>
       </section>
 
       <section class="workspace-panel maintenance-panel mt-3">
@@ -927,6 +950,10 @@
             </label>
           </div>
           <div class="toolbar-row mt-3">
+            <label class="form-check mb-0" for="subtitleSelectAllCheckbox">
+              <input id="subtitleSelectAllCheckbox" class="form-check-input" type="checkbox" disabled>
+              <span class="form-check-label">Select all flagged</span>
+            </label>
             <button id="subtitleSelectAllButton" class="btn btn-outline-secondary btn-sm" type="button">Select visible flagged</button>
             <button id="subtitleDeselectAllButton" class="btn btn-outline-secondary btn-sm" type="button">Deselect visible</button>
             <span id="subtitleSelectionSummary" class="small text-muted">0 selected across results</span>

@@ -222,3 +222,33 @@ test('the panel is accessible with populated results', async ({ page }) => {
 
   expect(accessibility.violations).toEqual([]);
 });
+
+test('the master checkbox selects everything or hands over to explicit picking', async ({ page }) => {
+  let planBody = null;
+  await stubTaglines(page);
+  await page.route('**/api/maintenance/emby-taglines/plan', async route => {
+    planBody = route.request().postDataJSON();
+    return route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ plan: { id: 'plan-2', scan_id: scan.id, item_count: 1, lock_items: true, preview: [] } }),
+    });
+  });
+
+  await page.goto('/maintenance#emby-operations');
+  await expect(page.locator('#taglineItems')).toContainText('Show S01E02');
+
+  const master = page.locator('#taglineSelectAllCheckbox');
+  await expect(master).toBeChecked();
+
+  // Unticking the master clears the selection entirely.
+  await master.uncheck();
+  await expect(page.locator('#taglineSelectionSummary')).toContainText('0 selected');
+  await expect(page.locator('#taglinePlanButton')).toBeDisabled();
+
+  // Ticking one row back in builds an explicit list, and the plan carries it.
+  await page.locator('[data-tagline-select="full-edit"]').check();
+  await expect(page.locator('#taglineSelectionSummary')).toContainText('1 selected');
+  await page.locator('#taglinePlanButton').click();
+  await expect.poll(() => planBody).not.toBeNull();
+  expect(planBody.selection).toEqual({ item_ids: ['full-edit'] });
+});

@@ -156,11 +156,16 @@
             </div>
 
             <div class="settings-panel">
-              <div class="panel-subheading">
+              <button class="panel-subheading btn btn-link p-0 text-decoration-none w-100 text-start" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#gifAdvancedSampling"
+                      aria-expanded="false" aria-controls="gifAdvancedSampling">
                 <i class="bi bi-clock-history" aria-hidden="true"></i>
-                <span>Sampling</span>
-              </div>
-              <div class="row g-3">
+                <span>Advanced sampling</span>
+                <i class="bi bi-chevron-down ms-auto" aria-hidden="true"></i>
+              </button>
+              <div class="text-muted small">The defaults sample nine points across the video. Open this only to change where clips are taken from.</div>
+              <div id="gifAdvancedSampling" class="collapse">
+              <div class="row g-3 mt-0">
                 <div class="col-12">
                   <label class="form-label" for="percent_points">Percent points</label>
                   <input id="percent_points" name="percent_points" value="{{ defaults.percent_points }}" class="form-control">
@@ -181,6 +186,7 @@
                   <label class="form-label" for="end_buffer">End buffer</label>
                   <input id="end_buffer" name="end_buffer" value="{{ defaults.end_buffer }}" class="form-control">
                 </div>
+              </div>
               </div>
             </div>
           </div>

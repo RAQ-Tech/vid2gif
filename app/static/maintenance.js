@@ -491,21 +491,10 @@
     const container = byId('overviewFolders');
     if (!container) return;
     const folders = overviewFolderPage?.folders || [];
-    const pager = `
-      <div class="maintenance-pager">
-        <div class="text-muted small">${escapeHtml(overviewRangeText(overviewFolderPage))}</div>
-        <div class="toolbar-row mb-0">
-          <button class="btn btn-outline-secondary btn-sm" type="button" data-overview-page="prev"${overviewFolderPage?.has_previous ? '' : ' disabled'}>
-            <i class="bi bi-chevron-left" aria-hidden="true"></i>
-            <span>Previous</span>
-          </button>
-          <button class="btn btn-outline-secondary btn-sm" type="button" data-overview-page="next"${overviewFolderPage?.has_next ? '' : ' disabled'}>
-            <span>Next</span>
-            <i class="bi bi-chevron-right" aria-hidden="true"></i>
-          </button>
-        </div>
-      </div>
-    `;
+    const pager = window.vid2gifUI.pagerHtml(
+      {...overviewFolderPage, count: folders.length},
+      'overview-page'
+    );
     if (!folders.length) {
       container.innerHTML = `${pager}<div class="text-muted text-center py-4">No direct subfolders match this view.</div>`;
       return;
@@ -1342,13 +1331,9 @@
 
   function renderPager(page) {
     if (!page) return '';
-    return `<div class="maintenance-pager">` +
-      `<div class="text-muted small">${escapeHtml(pageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
-      `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-maint-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
-      `</div>` +
-      `</div>`;
+    return window.vid2gifUI.pagerHtml(page, 'maint-page', {
+      suffix: page.large_result ? ' - large result set' : '',
+    });
   }
 
   function groupOption(video, recommendedId) {
@@ -2974,13 +2959,7 @@
 
   function previewPager(page) {
     if (!page) return '';
-    return `<div class="maintenance-pager">` +
-      `<div class="text-muted small">${escapeHtml(previewPageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
-      `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-preview-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
-      `</div>` +
-      `</div>`;
+    return window.vid2gifUI.pagerHtml(page, 'preview-page');
   }
 
   function previewStatusBadge(status) {
@@ -3272,7 +3251,7 @@
       previewGenerationPlan = data.plan;
       renderGenerationPlan(data.plan);
       byId('previewGenerationStartButton').disabled = !data.plan.file_count;
-      setPreviewMessage('Generation plan ready for review', `${data.plan.file_count} video(s) selected across the scan results. Generate BIFs when the plan looks right.`);
+      setPreviewMessage('Generation plan ready for review', `${data.plan.file_count} video(s) selected across all result pages. Generate BIFs when the plan looks right.`);
     } catch (e) {
       setPreviewMessage('Generation plan could not be built', e.message || '');
     }
@@ -3650,13 +3629,7 @@
 
   function qualityPager(page) {
     if (!page) return '';
-    return `<div class="maintenance-pager">` +
-      `<div class="text-muted small">${escapeHtml(qualityPageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
-      `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-quality-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-quality-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
-      `</div>` +
-      `</div>`;
+    return window.vid2gifUI.pagerHtml(page, 'quality-page');
   }
 
   function qualityStatusBadge(status) {
@@ -4056,8 +4029,9 @@
   function updateSubtitleSelectionControls() {
     const count = subtitleSelectedCount();
     const summary = byId('subtitleSelectionSummary');
-    if (summary) summary.textContent = `${count} selected across all result pages`;
+    if (summary) summary.textContent = window.vid2gifUI.selectionSummary(count);
     if (byId('subtitlePlanButton')) byId('subtitlePlanButton').disabled = !count;
+    window.vid2gifUI.syncMasterCheckbox(byId('subtitleSelectAllCheckbox'), count, subtitleSelection.total);
   }
 
   function subtitleSelectionChanged() {
@@ -4113,13 +4087,7 @@
 
   function subtitlePager(page) {
     if (!page) return '';
-    return `<div class="maintenance-pager">` +
-      `<div class="text-muted small">${escapeHtml(subtitlePageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
-      `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-subtitle-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
-      `</div>` +
-      `</div>`;
+    return window.vid2gifUI.pagerHtml(page, 'subtitle-page');
   }
 
   function subtitleStatusBadge(status) {
@@ -4417,7 +4385,7 @@
       subtitlePlan = data.plan;
       renderSubtitlePlan(subtitlePlan);
       byId('subtitleApplyButton').disabled = !subtitlePlan.file_count;
-      setSubtitleMessage('Review the subtitle cleanup plan', `${subtitlePlan.file_count} file(s) selected across the scan, ${subtitlePlan.total_size_label || '0 B'}`);
+      setSubtitleMessage('Review the subtitle cleanup plan', `${subtitlePlan.file_count} file(s) selected across all result pages, ${subtitlePlan.total_size_label || '0 B'}`);
     } catch (e) {
       setSubtitleMessage('Subtitle plan could not be built', e.message || '');
     }
@@ -4529,13 +4497,7 @@
 
   function actorPager(page) {
     if (!page) return '';
-    return `<div class="maintenance-pager">` +
-      `<div class="text-muted small">${escapeHtml(actorPageRangeText(page))}${page.large_result ? ' - large result set' : ''}</div>` +
-      `<div class="toolbar-row mb-0">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-actor-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
-      `</div>` +
-      `</div>`;
+    return window.vid2gifUI.pagerHtml(page, 'actor-page');
   }
 
   function actorStatusBadge(status) {
@@ -4620,7 +4582,7 @@
       master.indeterminate = count > 0 && count < actorSelection.total;
     }
     const summary = byId('actorSelectionSummary');
-    if (summary) summary.textContent = `${count} of ${actorSelection.total} ready actors selected across all pages`;
+    if (summary) summary.textContent = `${count} of ${actorSelection.total} ready actors selected across all result pages`;
     if (byId('actorPlanButton')) byId('actorPlanButton').disabled = !count || actorScan?.freshness?.status === 'changed';
   }
 
@@ -4861,7 +4823,7 @@
       renderActorPlan(actorPlan);
       const applyButton = byId('actorApplyButton');
       if (applyButton) applyButton.disabled = !actorPlan.file_count;
-      setActorMessage('Review the actor image import plan before applying', `${actorPlan.file_count || 0} image(s) selected across the scan`);
+      setActorMessage('Review the actor image import plan before applying', `${actorPlan.file_count || 0} image(s) selected across all result pages`);
     } catch (e) {
       setActorMessage('Actor image import plan could not be built', e.message || '');
     }
@@ -5136,7 +5098,7 @@
       master.indeterminate = count > 0 && count < posterSelection.total;
     }
     const summary = byId('posterSelectionSummary');
-    if (summary) summary.textContent = `${count} of ${posterSelection.total} safe updates selected across all pages`;
+    if (summary) summary.textContent = `${count} of ${posterSelection.total} safe updates selected across all result pages`;
     if (byId('posterPlanButton')) byId('posterPlanButton').disabled = !count || posterScan?.freshness?.status === 'changed';
   }
 
@@ -5203,7 +5165,7 @@
     const start = page?.total ? Number(page.offset || 0) + 1 : 0;
     const end = Math.min(Number(page?.total || 0), Number(page?.offset || 0) + Number(page?.count || 0));
     wrap.innerHTML =
-      `<div class="maintenance-pager"><div class="text-muted small">${start}-${end} of ${Number(page?.total || 0)}</div><div class="toolbar-row mb-0"><button class="btn btn-outline-secondary btn-sm" type="button" data-poster-page="prev"${page?.has_previous ? '' : ' disabled'}>Previous</button><button class="btn btn-outline-secondary btn-sm" type="button" data-poster-page="next"${page?.has_next ? '' : ' disabled'}>Next</button></div></div>` +
+      window.vid2gifUI.pagerHtml(page, 'poster-page') +
       `<table class="table table-hover align-middle workspace-table" data-table-id="maintenance-posters" data-sort-mode="server" data-current-sort="${escapeHtml(page.sort || posterSort.column)}" data-current-direction="${escapeHtml(page.direction || posterSort.direction)}">` +
       `<thead><tr><th data-column-id="apply" data-resizable="false">Apply</th><th data-column-id="status" data-sortable="true">Status</th><th data-column-id="background" data-sortable="true">Background</th><th data-column-id="poster" data-sortable="true">Poster</th><th data-column-id="detail" data-sortable="true">Detail</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
@@ -5719,6 +5681,16 @@
     byId('subtitleCancelScanButton')?.addEventListener('click', cancelSubtitleScan);
     byId('subtitlePlanButton')?.addEventListener('click', reviewSubtitlePlan);
     byId('subtitleApplyButton')?.addEventListener('click', applySubtitlePlan);
+    byId('subtitleSelectAllCheckbox')?.addEventListener('change', event => {
+      subtitleSelection = {
+        ...subtitleSelection,
+        mode: event.target.checked ? 'all_eligible' : 'explicit',
+        excluded: new Set(),
+        selected: new Set(),
+      };
+      subtitleSelectionChanged();
+      renderSubtitleItems(subtitleItemsPage);
+    });
     byId('subtitleSelectAllButton')?.addEventListener('click', () => {
       visibleSubtitleFiles().filter(file => file.actionable).forEach(file => {
         if (subtitleSelection.mode === 'all_eligible') subtitleSelection.excluded.delete(file.id);
@@ -6361,7 +6333,8 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
 // Emby API. Self-contained so the main maintenance module stays untouched;
 // initialises the first time the Emby Operations tab is shown.
 (function () {
-  const PAGE_LIMIT = 25;
+  const PAGE_LIMIT_KEY = 'vid2gif_tagline_page_limit';
+  let pageLimit = 25;
   let scan = null;
   let renderedScanId = '';
   let statusFilter = 'ready';
@@ -6370,8 +6343,22 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
   let pollTimer = null;
   let runTimer = null;
   let initialised = false;
-  // All eligible items are selected by default; unticking a row excludes it.
+  // The selection model every maintenance tab shares: everything eligible is
+  // selected by default and unticking a row excludes it; unticking the master
+  // switches to an explicit list built by ticking rows back in.
+  let selectionMode = 'all_eligible';
   const excluded = new Set();
+  const included = new Set();
+
+  function resetSelection() {
+    selectionMode = 'all_eligible';
+    excluded.clear();
+    included.clear();
+  }
+
+  function itemIsSelected(id) {
+    return selectionMode === 'all_eligible' ? !excluded.has(id) : included.has(id);
+  }
 
   function byId(id) {
     return document.getElementById(id);
@@ -6396,13 +6383,14 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
 
   function selectedCount() {
     const ready = scan?.counts?.ready || 0;
-    return Math.max(0, ready - excluded.size);
+    return selectionMode === 'all_eligible' ? Math.max(0, ready - excluded.size) : included.size;
   }
 
   function updateSelectionControls() {
     const count = selectedCount();
     const summary = byId('taglineSelectionSummary');
-    if (summary) summary.textContent = `${count} selected across all result pages`;
+    if (summary) summary.textContent = window.vid2gifUI.selectionSummary(count);
+    window.vid2gifUI.syncMasterCheckbox(byId('taglineSelectAllCheckbox'), count, scan?.counts?.ready || 0);
     const planButton = byId('taglinePlanButton');
     if (planButton) planButton.disabled = !count || !scan || scan.status !== 'success';
     const hasItems = Boolean(scan && scan.status === 'success');
@@ -6429,15 +6417,9 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
   }
 
   function pager(page) {
-    const total = page.total || 0;
-    const from = total ? page.offset + 1 : 0;
-    const to = page.offset + (page.count || 0);
-    return `<div class="d-flex align-items-center gap-2 mb-2">` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-tagline-page="prev"${page.has_previous ? '' : ' disabled'}>Previous</button>` +
-      `<span class="small text-muted">${from}-${to} of ${total}</span>` +
-      `<button class="btn btn-outline-secondary btn-sm" type="button" data-tagline-page="next"${page.has_next ? '' : ' disabled'}>Next</button>` +
-      `</div>`;
+    return window.vid2gifUI.pagerHtml(page, 'tagline-page');
   }
+
 
   function renderItems(page) {
     const target = byId('taglineItems');
@@ -6448,7 +6430,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     }
     const rows = page.items.map(item => {
       const selectable = item.status === 'ready';
-      const checked = selectable && !excluded.has(item.id) ? ' checked' : '';
+      const checked = selectable && itemIsSelected(item.id) ? ' checked' : '';
       const box = selectable
         ? `<input class="form-check-input" type="checkbox" data-tagline-select="${esc(item.id)}" aria-label="Update ${esc(item.name || 'item')}"${checked}>`
         : `<input class="form-check-input" type="checkbox" aria-label="Not applicable for ${esc(item.name || 'item')}" disabled>`;
@@ -6477,7 +6459,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     if (!scan?.id || scan.status !== 'success') return;
     offset = Math.max(0, nextOffset);
     const params = new URLSearchParams({
-      scan_id: scan.id, status: statusFilter, offset: String(offset), limit: String(PAGE_LIMIT),
+      scan_id: scan.id, status: statusFilter, offset: String(offset), limit: String(pageLimit),
     });
     const res = await fetch(`/api/maintenance/emby-taglines/items?${params}`);
     const data = await readJson(res);
@@ -6505,7 +6487,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
       );
       if (renderedScanId !== scan.id) {
         renderedScanId = scan.id;
-        excluded.clear();
+        resetSelection();
         invalidatePlan();
         loadItems(0);
       }
@@ -6546,7 +6528,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
       runTimer = setTimeout(pollRun, 1200);
     } else if (data.run) {
       invalidatePlan();
-      excluded.clear();
+      resetSelection();
       await Promise.all([refreshStatus(), loadLogs()]);
       if (scan?.status === 'success') {
         renderedScanId = '';
@@ -6579,7 +6561,9 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
   }
 
   function selectionPayload() {
-    return { mode: 'all_eligible', excluded_item_ids: Array.from(excluded) };
+    return selectionMode === 'all_eligible'
+      ? { mode: 'all_eligible', excluded_item_ids: Array.from(excluded) }
+      : { item_ids: Array.from(included) };
   }
 
   function wire() {
@@ -6612,7 +6596,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     byId('taglineItems')?.addEventListener('click', event => {
       const pageButton = event.target.closest('[data-tagline-page]');
       if (pageButton && !pageButton.disabled) {
-        loadItems(pageButton.getAttribute('data-tagline-page') === 'next' ? offset + PAGE_LIMIT : offset - PAGE_LIMIT);
+        loadItems(pageButton.getAttribute('data-tagline-page') === 'next' ? offset + pageLimit : offset - pageLimit);
       }
     });
 
@@ -6620,20 +6604,49 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
       const box = event.target.closest('[data-tagline-select]');
       if (!box) return;
       const id = box.getAttribute('data-tagline-select');
-      if (box.checked) excluded.delete(id);
-      else excluded.add(id);
+      if (selectionMode === 'all_eligible') {
+        if (box.checked) excluded.delete(id);
+        else excluded.add(id);
+      } else if (box.checked) {
+        included.add(id);
+      } else {
+        included.delete(id);
+      }
       invalidatePlan();
       updateSelectionControls();
     });
 
+    byId('taglineSelectAllCheckbox')?.addEventListener('change', event => {
+      selectionMode = event.target.checked ? 'all_eligible' : 'explicit';
+      excluded.clear();
+      included.clear();
+      invalidatePlan();
+      loadItems(offset);
+    });
+
+    byId('taglinePageLimit')?.addEventListener('change', event => {
+      const next = Number(event.target.value) || 25;
+      pageLimit = window.vid2gifUI.PAGE_SIZE_OPTIONS.includes(next) ? next : 25;
+      try { localStorage.setItem(PAGE_LIMIT_KEY, String(pageLimit)); } catch (_e) {}
+      loadItems(0);
+    });
+
     byId('taglineSelectVisibleButton')?.addEventListener('click', () => {
-      document.querySelectorAll('[data-tagline-select]').forEach(box => excluded.delete(box.getAttribute('data-tagline-select')));
+      document.querySelectorAll('[data-tagline-select]').forEach(box => {
+        const id = box.getAttribute('data-tagline-select');
+        if (selectionMode === 'all_eligible') excluded.delete(id);
+        else included.add(id);
+      });
       invalidatePlan();
       loadItems(offset);
     });
 
     byId('taglineDeselectButton')?.addEventListener('click', () => {
-      document.querySelectorAll('[data-tagline-select]').forEach(box => excluded.add(box.getAttribute('data-tagline-select')));
+      document.querySelectorAll('[data-tagline-select]').forEach(box => {
+        const id = box.getAttribute('data-tagline-select');
+        if (selectionMode === 'all_eligible') excluded.add(id);
+        else included.delete(id);
+      });
       invalidatePlan();
       loadItems(offset);
     });
@@ -6708,6 +6721,12 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     if (initialised) return;
     initialised = true;
     wire();
+    try {
+      const stored = Number(localStorage.getItem(PAGE_LIMIT_KEY) || 25);
+      pageLimit = window.vid2gifUI.PAGE_SIZE_OPTIONS.includes(stored) ? stored : 25;
+      const select = byId('taglinePageLimit');
+      if (select) select.value = String(pageLimit);
+    } catch (_e) {}
     try {
       const res = await fetch('/api/settings');
       const data = await readJson(res);

@@ -151,6 +151,31 @@ Category accents may distinguish dashboard streams: duplicates blue, video previ
 - Expanded rows reveal detail inline without creating nested cards.
 - Empty tables explain the state and present the next valid command when one exists.
 
+### Shared Component Contract
+
+These are enforced by `tests/test_ui_conventions.py`, so a surface that grows
+its own variant fails CI rather than shipping a second way to do the same thing.
+
+- **Pagers** are built by `vid2gifUI.pagerHtml` in `app/static/ui-kit.js`, never
+  by hand: count on the left, chevroned Previous/Next on the right, one markup
+  everywhere.
+- **Page-size selectors** offer exactly 5 / 10 / 25 / 50 / 100. Every
+  server-paged list has one.
+- **Selection summaries** always read "N selected across all result pages" —
+  whatever the noun, the scope phrase never varies, because it is a promise that
+  selection is not page-scoped.
+- **Every reviewable list has a master select-all** (checkbox with
+  checked / indeterminate / unchecked states via `vid2gifUI.syncMasterCheckbox`),
+  plus per-row checkboxes. Visible-page select/deselect buttons are optional
+  extras, not substitutes.
+- **One primary action per panel.** A workflow with two primaries is two
+  panels, each with its own heading — see the Video Previews tab, where repair
+  and generation are separate panels and the scan's results sit directly under
+  the scan that produced them.
+- **Advanced tuning is collapsed by default** behind a labelled disclosure with
+  `aria-expanded`, as on the GIF form's Advanced sampling. The basic path never
+  scrolls past tuning fields it does not need.
+
 ### Status, Progress, and Freshness
 
 - Every long operation shows a state label, progress label, percentage, and progress bar.
