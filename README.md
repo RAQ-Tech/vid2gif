@@ -320,7 +320,12 @@ The workflow lives on the Library Maintenance page under Emby Operations and
 follows the usual shape: Scan classifies every item and shows exactly what
 would be written, nothing changes until a reviewed plan is applied, and every
 applied run records the previous title, original title, tagline, and lock per
-item. Undo restores precisely those fields onto a fresh copy of the item, so
+item. Items whose fields were locked individually by hand count as protected --
+either kind of lock satisfies the check -- and an item whose text is already
+correct is never flagged as work just because it lacks a lock; those appear
+under their own "correct but unlocked" filter instead. The ready count breaks
+down into taglines to write and titles to clean, so a large first run is
+legible rather than alarming. Undo restores precisely those fields onto a fresh copy of the item, so
 edits made in Emby after the run survive an undo.
 
 The dashboard tracks maintenance impact from the first launch after this

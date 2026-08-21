@@ -6410,6 +6410,7 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     const map = {
       ready: ['Ready', 'text-bg-primary'],
       done: ['Done', 'text-bg-success'],
+      unlocked: ['Unlocked', 'text-bg-secondary'],
       unusable: ['Needs review', 'text-bg-warning'],
     };
     const [label, klass] = map[status] || [status || 'Unknown', 'text-bg-secondary'];
@@ -6481,9 +6482,16 @@ They go to the damaged quarantine folder and can be moved back by hand.`)) retur
     if (scan.active) {
       setMessage(scan.progress_label || 'Scanning titles', 'Reading the library from Emby.');
     } else if (scan.status === 'success') {
+      const breakdown = [];
+      if (counts.needs_tagline) breakdown.push(`${counts.needs_tagline} taglines`);
+      if (counts.needs_title) breakdown.push(`${counts.needs_title} titles`);
+      const readyDetail = breakdown.length ? ` (${breakdown.join(', ')})` : '';
+      const unlockedNote = counts.unlocked
+        ? ` ${counts.unlocked} are correct but unlocked; they are not counted as work.`
+        : '';
       setMessage(
-        `${counts.ready || 0} ready, ${counts.done || 0} already done, ${counts.unusable || 0} need review`,
-        scan.lock_items ? 'Updated items will be locked against metadata refreshes.' : 'Items will not be locked.'
+        `${counts.ready || 0} ready${readyDetail}, ${counts.done || 0} already done, ${counts.unusable || 0} need review`,
+        (scan.lock_items ? 'Updated items will be locked against metadata refreshes.' : 'Items will not be locked.') + unlockedNote
       );
       if (renderedScanId !== scan.id) {
         renderedScanId = scan.id;

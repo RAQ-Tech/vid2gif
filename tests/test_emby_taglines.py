@@ -131,13 +131,66 @@ def test_a_finished_item_is_done():
     assert entry["status"] == "done"
 
 
-def test_a_matching_tagline_without_the_lock_is_still_ready():
+def test_a_correct_but_unlocked_item_is_not_work():
+    """The regression that reported a whole library as ready.
+
+    An item whose text is already right must never be flagged as something to
+    do just because it lacks the whole-item lock -- the first live scan showed
+    6,886 ready out of ~6,900 items for exactly this reason. It is reported
+    under its own filter instead, and with locking disabled it is simply done.
+    """
     entry = emby_taglines.classify_item(_raw("Show", tagline="Show", lock=False))
 
-    assert entry["status"] == "ready"
-    assert "metadata lock" in entry["detail"]
-    # And with locking disabled the same item is done.
+    assert entry["status"] == "unlocked"
+    assert "not locked" in entry["detail"]
     assert emby_taglines.classify_item(_raw("Show", tagline="Show"), lock_items=False)["status"] == "done"
+
+
+def test_the_operators_manual_field_locks_count_as_protection():
+    """The manual workflow locked individual fields, not the whole item.
+
+    Years of hand-maintained items carry LockedFields entries and no LockData.
+    Those items are protected -- a metadata refresh will not undo them -- so
+    the scan must treat them as done, not as needing a different kind of lock.
+    """
+    raw = _raw("Show", tagline="Show")
+    raw["LockedFields"] = ["Name", "Overview"]
+
+    entry = emby_taglines.classify_item(raw)
+
+    assert entry["status"] == "done"
+
+
+def test_a_whitespace_only_tagline_difference_is_not_work():
+    """Hand-typed taglines are not rewritten over spacing."""
+    entry = emby_taglines.classify_item(_raw("Clean Title", tagline="Clean  Title", lock=True))
+
+    assert entry["status"] == "done"
+
+
+def test_a_fully_processed_manual_item_is_done():
+    """The operator's typical finished item, end to end.
+
+    Cleaned title, tagline matching it, the marker original preserved in the
+    original-title column, individual fields locked. The scan has nothing to
+    say about it.
+    """
+    raw = _raw("Show", tagline="Show", original="Show S01E02")
+    raw["LockedFields"] = ["Name"]
+
+    entry = emby_taglines.classify_item(raw)
+
+    assert entry["status"] == "done"
+
+
+def test_unlocked_items_are_not_eligible_for_a_plan(monkeypatch):
+    """Visible under their filter, never silently swept into an apply."""
+    scan = _run_scan(monkeypatch, [_raw("Correct", tagline="Correct", item_id="a")])
+
+    assert scan["counts"]["unlocked"] == 1
+    assert scan["counts"]["ready"] == 0
+    plan, err = emby_taglines.build_plan({"scan_id": scan["id"], "selection": {"mode": "all_eligible"}})
+    assert plan is None and err == "Nothing is selected"
 
 
 def test_a_pure_marker_title_is_unusable():
@@ -170,7 +223,14 @@ def test_scan_classifies_and_counts(monkeypatch):
         ],
     )
 
-    assert scan["counts"] == {"ready": 1, "done": 1, "unusable": 1}
+    assert scan["counts"] == {
+        "ready": 1,
+        "done": 1,
+        "unusable": 1,
+        "unlocked": 0,
+        "needs_title": 1,
+        "needs_tagline": 1,
+    }
     payload, err = emby_taglines.items_payload(scan["id"], status="ready")
     assert err is None
     assert [item["id"] for item in payload["items"]] == ["a"]

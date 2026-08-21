@@ -55,7 +55,7 @@ SWEEP_ITEM_TYPES = "Movie,Episode,Video"
 # LockData may not be an official Fields value; servers that ignore it just
 # omit the flag, in which case an already-locked item shows as ready and
 # re-applying it is a harmless identical write.
-SWEEP_FIELDS = "Path,Taglines,OriginalTitle,LockData"
+SWEEP_FIELDS = "Path,Taglines,OriginalTitle,LockData,LockedFields"
 
 # The compact marker forms the operator strips by hand: S03E12, s4e01, s03,e9,
 # s03 - e12, S01E01E02 double episodes -- plus the spelled-out pair. The season
@@ -101,12 +101,28 @@ def _first_tagline(raw):
 
 
 def classify_item(raw, lock_items=True):
-    """One library row and what, if anything, needs writing."""
+    """One library row and what, if anything, needs writing.
+
+    Two rules keep the scan honest against a library the operator has already
+    worked through by hand for years:
+
+    * Their protection scheme counts. The manual workflow locked individual
+      fields (``LockedFields``); this workflow sets the whole-item lock
+      (``LockData``). Either one means a metadata refresh will not undo the
+      work, so either one satisfies the check.
+    * A missing lock is never "work". An item whose tagline and title are
+      already correct is reported as ``unlocked`` -- visible under its own
+      filter, but not counted as ready and not selected for writing. The first
+      version flagged the operator's entire finished library as ready purely
+      to add a lock, which read as 6,886 items to do when the true backlog was
+      a few hundred.
+    """
     name = str(raw.get("Name") or "").strip()
     proposed = clean_title(name)
     current = _first_tagline(raw)
     original = str(raw.get("OriginalTitle") or "").strip()
-    locked = bool(raw.get("LockData"))
+    locked_fields = raw.get("LockedFields")
+    locked = bool(raw.get("LockData")) or bool(isinstance(locked_fields, list) and locked_fields)
 
     title_differs = bool(proposed) and proposed != name
     # The title may only be edited once the original is safe. An empty
@@ -139,29 +155,29 @@ def classify_item(raw, lock_items=True):
         "original_backup": original_backup,
         "lock_data": locked,
     }
-    tagline_ok = current == proposed
-    lock_ok = not lock_items or locked
+    tagline_ok = re.sub(r"\s+", " ", current).strip() == proposed
     pending_title = title_differs and writes_title
     if not proposed:
         entry["status"] = "unusable"
         entry["detail"] = "Nothing would be left after removing the markers"
-    elif tagline_ok and lock_ok and not pending_title:
-        entry["status"] = "done"
-        entry["detail"] = (
-            "Title held: the original-title field is in use" if title_differs else "Tagline already matches"
-        )
-    else:
+    elif not tagline_ok or pending_title:
         entry["status"] = "ready"
         if pending_title and not tagline_ok:
             entry["detail"] = "Title and tagline will be written"
         elif pending_title:
             entry["detail"] = "Tagline is set; the title still needs cleaning"
-        elif title_differs and not tagline_ok:
+        elif title_differs:
             entry["detail"] = "Tagline only: the original-title field is in use"
-        elif not tagline_ok:
-            entry["detail"] = "Tagline will be written"
         else:
-            entry["detail"] = "Tagline is set; the item still needs its metadata lock"
+            entry["detail"] = "Tagline will be written"
+    elif lock_items and not locked:
+        entry["status"] = "unlocked"
+        entry["detail"] = "Text is correct; the item is not locked against metadata refreshes"
+    else:
+        entry["status"] = "done"
+        entry["detail"] = (
+            "Title held: the original-title field is in use" if title_differs else "Tagline already matches"
+        )
     return entry
 
 
@@ -205,7 +221,7 @@ def start_scan(settings=None, synchronous=False, opener=None):
         "status": "queued",
         "progress_label": "Waiting to start",
         "item_total": 0,
-        "counts": {"ready": 0, "done": 0, "unusable": 0},
+        "counts": {"ready": 0, "done": 0, "unusable": 0, "unlocked": 0, "needs_title": 0, "needs_tagline": 0},
         "items": [],
         "lock_items": lock_items,
         "error": "",
@@ -246,9 +262,16 @@ def start_scan(settings=None, synchronous=False, opener=None):
             return
         fetched["count"] = len(items)
         entries = [classify_item(raw, lock_items) for raw in items if isinstance(raw, dict) and raw.get("Id")]
-        counts = {"ready": 0, "done": 0, "unusable": 0}
+        counts = {"ready": 0, "done": 0, "unusable": 0, "unlocked": 0, "needs_title": 0, "needs_tagline": 0}
         for entry in entries:
             counts[entry["status"]] += 1
+            if entry["status"] == "ready":
+                # The breakdown that makes a large number legible: how much is
+                # the one-time title catch-up versus new taglines.
+                if entry["title_differs"] and entry["writes_title"]:
+                    counts["needs_title"] += 1
+                if "Tagline will be written" in entry["detail"] or "Title and tagline" in entry["detail"]:
+                    counts["needs_tagline"] += 1
         scan.update(
             items=entries,
             item_total=len(entries),
