@@ -67,8 +67,17 @@ accuracy percentage.
 Remote qualification of implementation `b8f5dc6`: [CI run 36287673953](https://github.com/RAQ-Tech/vid2gif/actions/runs/36287673953)
 passed all 721 Python tests with no skips, all 22 frontend tests, all 63 browser
 tests, dependency audits, formatting, lint, and build consistency. Coverage was
-84.05%. PR #45 remains pending explicit merge approval after automatic approval
-review rejected the merge. The existing deployment was inspected and is unchanged.
+84.05%. [PR #45](https://github.com/RAQ-Tech/vid2gif/pull/45) was merged with
+explicit approval. [Main CI run 36288109409](https://github.com/RAQ-Tech/vid2gif/actions/runs/36288109409)
+passed and published revision `54b329e`.
+
+The existing DockerMan container was updated to that exact revision and verified
+healthy. All five application pages and the progress script returned HTTP 200.
+Constant-rate and stalled-progress assertions passed inside the deployed image.
+Existing library/state mappings, port, restart policy, and autostart choice were
+preserved. DockerMan removed the superseded image; its removal was independently
+confirmed and only the current project image remained. Private installation
+details are retained only in the ignored local deployment evidence.
 
 Efficiency: one local full Python and one full browser qualification, with focused
 checks for repairs. No helper agents. Token usage was unavailable.
