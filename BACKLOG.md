@@ -4,17 +4,17 @@ Outstanding work observed while surveying the repository. The codebase contains
 no `TODO` or `FIXME` markers, so every item below was derived from reading the
 code, the docs, and CI -- each one cites what it is based on.
 
-Current state: 696 Python tests, all of which pass on CI with none skipped; a
-Windows checkout runs 686 of them, since ten need symlinks or media tools. 22
-frontend tests, 61 browser tests covering every page and maintenance tab with an
+Current state: 721 Python tests, all of which pass on CI with none skipped; a
+Windows checkout can run 711 of them, since ten need symlinks or media tools. 22
+frontend tests, 63 browser tests covering every page and maintenance tab with an
 axe pass on each. A UI conformance suite (tests/test_ui_conventions.py) pins the
 shared component contract in DESIGN.md, so pagers, page sizes, selection
 wording, and master select-alls cannot drift apart again. `ruff check` is clean
 (including a C901 complexity ceiling and an enforced 120-column limit),
-`ruff format --check` is clean, coverage is 83.51% against an 80% floor, and CI
+`ruff format --check` is clean, coverage is 84.05% against an 80% floor, and CI
 is green on `main`.
 
-The timing batch below is the current authorized work. Other items remain outside it.
+The timing batch below is complete. Other items remain outside its scope.
 
 ## Remaining-time repair (ETA)
 
@@ -31,18 +31,16 @@ without changing media processing or scan/review/apply behavior.
   and limitations: [timing report](docs/TIMING.md). Remote CI passed on implementation
   `b8f5dc6`: 721 Python tests, 22 frontend tests, 63 browser tests, 84.05% coverage,
   and all dependency/style/build checks.
-- **ETA-003 — Publish and verify deployment: blocked.** ETA-003-A: green
-  default-branch CI publishes the image. ETA-003-B: update the existing DockerMan
-  container, preserve state/mappings, check the live app, and account for
-  superseded images. Automatic approval review rejected the main-branch merge;
-  [PR #45](https://github.com/RAQ-Tech/vid2gif/pull/45) is open and conflict-free.
-  Next owner: Chris. Reply to the merge/deploy approval request in the timing-fix
-  chat to authorize merging this verified PR and updating the existing container.
-  The deployed instance remains on its previous revision until then.
+- **ETA-003 — Publish and verify deployment: complete.** ETA-003-A: approved
+  [PR #45](https://github.com/RAQ-Tech/vid2gif/pull/45) merged as `54b329e`;
+  [default-branch CI](https://github.com/RAQ-Tech/vid2gif/actions/runs/36288109409)
+  passed and published the image. ETA-003-B: the existing DockerMan container
+  runs that revision, reports healthy, serves every application page, and passes
+  live estimator smoke checks. State/mappings and autostart were preserved.
+  The superseded image was removed and the final image inventory verified.
 
-Stop when this batch is qualified, published, and live-verified, or record the
-specific access/release blocker. Synthetic results are not real-library accuracy
-measurements.
+This batch is qualified, published, and live-verified. Synthetic results are not
+real-library accuracy measurements.
 
 ## Interface
 
