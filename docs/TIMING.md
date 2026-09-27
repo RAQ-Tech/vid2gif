@@ -64,5 +64,11 @@ accuracy percentage.
   affected tests passed. Coverage was 83.63%, above the unchanged 80% floor.
   Linux CI is the release gate, including actual FFmpeg/gifsicle integration.
 
+Remote qualification of implementation `b8f5dc6`: [CI run 36287673953](https://github.com/RAQ-Tech/vid2gif/actions/runs/36287673953)
+passed all 721 Python tests with no skips, all 22 frontend tests, all 63 browser
+tests, dependency audits, formatting, lint, and build consistency. Coverage was
+84.05%. PR #45 remains pending explicit merge approval after automatic approval
+review rejected the merge. The existing deployment was inspected and is unchanged.
+
 Efficiency: one local full Python and one full browser qualification, with focused
 checks for repairs. No helper agents. Token usage was unavailable.

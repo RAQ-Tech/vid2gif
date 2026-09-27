@@ -25,14 +25,20 @@ without changing media processing or scan/review/apply behavior.
   wall-clock duration remain separate; live work rates and measured finishing
   stages replace display-percent extrapolation. ETA-001-B: unknown totals, stalls,
   pauses, and library waits do not produce false deadlines.
-- **ETA-002 — Qualify the integrated change: underway.** ETA-002-A: estimator/API
+- **ETA-002 — Qualify the integrated change: complete.** ETA-002-A: estimator/API
   regressions pass. ETA-002-B: frontend/browser checks pass at desktop/mobile widths.
   ETA-002-C: required remote CI passes for the delivered revision. Local evidence
-  and limitations: [timing report](docs/TIMING.md). Next owner: Codex.
-- **ETA-003 — Publish and verify deployment: not started.** ETA-003-A: green
+  and limitations: [timing report](docs/TIMING.md). Remote CI passed on implementation
+  `b8f5dc6`: 721 Python tests, 22 frontend tests, 63 browser tests, 84.05% coverage,
+  and all dependency/style/build checks.
+- **ETA-003 — Publish and verify deployment: blocked.** ETA-003-A: green
   default-branch CI publishes the image. ETA-003-B: update the existing DockerMan
   container, preserve state/mappings, check the live app, and account for
-  superseded images. Next owner: Codex after ETA-002.
+  superseded images. Automatic approval review rejected the main-branch merge;
+  [PR #45](https://github.com/RAQ-Tech/vid2gif/pull/45) is open and conflict-free.
+  Next owner: Chris. Reply to the merge/deploy approval request in the timing-fix
+  chat to authorize merging this verified PR and updating the existing container.
+  The deployed instance remains on its previous revision until then.
 
 Stop when this batch is qualified, published, and live-verified, or record the
 specific access/release blocker. Synthetic results are not real-library accuracy
