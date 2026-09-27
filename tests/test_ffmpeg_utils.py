@@ -69,7 +69,7 @@ def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
     video = "input.mp4"
     segs = [{"start": 0.0, "end": 1.0}, {"start": 2.0, "end": 3.0}]
     cfg = {"fps": 10, "height": 320, "loop_forever": True}
-    job = {"logger": DummyLogger(), "progress_text": ""}
+    job = {"logger": DummyLogger(), "progress_text": "", "expected_duration_seconds": 600}
 
     captured = {}
     _patch_probe(monkeypatch)
@@ -87,6 +87,8 @@ def test_make_gif_multi_inputs_includes_input_flag(monkeypatch):
 
     ffmpeg_utils.make_gif_multi_inputs(video, segs, "out.gif", cfg, job)
 
+    assert job["expected_duration_seconds"] == 600
+    assert job["render_duration_seconds"] == 2
     args = captured["args"]
     indices = [i for i, a in enumerate(args) if a == video]
     assert len(indices) == len(segs)

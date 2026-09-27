@@ -87,8 +87,9 @@ def test_queue_status_returns_public_payloads():
     _clear_jobs()
 
 
-def test_queue_status_reports_overall_batch_progress():
+def test_queue_status_reports_overall_batch_progress(monkeypatch):
     _clear_jobs()
+    monkeypatch.setattr(jobs.time, "time", lambda: 115)
     jobs.jobs["done"] = _make_job(job_id="done", status="success")
     jobs.jobs["done"].update(
         {
@@ -108,6 +109,9 @@ def test_queue_status_reports_overall_batch_progress():
             "eta_seconds": 5,
             "eta_confidence": "history",
             "_started_ts": 110,
+            "_stage_started_ts": 115,
+            "progress_stage": "Optimizing",
+            "_stage_estimates": {"Optimizing": 3, "Installing": 2},
         }
     )
     jobs.jobs["queued"] = _make_job(job_id="queued", status="queued")
@@ -129,7 +133,7 @@ def test_queue_status_reports_overall_batch_progress():
     assert payload["completed_active_items"] == 1
     assert payload["queue_progress_percent"] == 50
     assert payload["queue_eta_seconds"] == 15
-    assert payload["queue_eta_confidence"] == "history"
+    assert payload["queue_eta_confidence"] == "learning"
     assert payload["summary"]["queue_progress_percent"] == 50
     _clear_jobs()
 

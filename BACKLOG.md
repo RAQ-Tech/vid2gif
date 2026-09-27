@@ -14,7 +14,35 @@ wording, and master select-alls cannot drift apart again. `ruff check` is clean
 `ruff format --check` is clean, coverage is 83.51% against an 80% floor, and CI
 is green on `main`.
 
-There are no open questions. Everything below is mine to do.
+The timing batch below is the current authorized work. Other items remain outside it.
+
+## Remaining-time repair (ETA)
+
+Scope: fix estimates across GIFs, Test Lab, maintenance, queue, and activity views
+without changing media processing or scan/review/apply behavior.
+
+- **ETA-001 — Diagnose and repair timing: complete.** ETA-001-A: playback and
+  wall-clock duration remain separate; live work rates and measured finishing
+  stages replace display-percent extrapolation. ETA-001-B: unknown totals, stalls,
+  pauses, and library waits do not produce false deadlines.
+- **ETA-002 — Qualify the integrated change: complete.** ETA-002-A: estimator/API
+  regressions pass. ETA-002-B: frontend/browser checks pass at desktop/mobile widths.
+  ETA-002-C: required remote CI passes for the delivered revision. Local evidence
+  and limitations: [timing report](docs/TIMING.md). Remote CI passed on implementation
+  `b8f5dc6`: 721 Python tests, 22 frontend tests, 63 browser tests, 84.05% coverage,
+  and all dependency/style/build checks.
+- **ETA-003 — Publish and verify deployment: blocked.** ETA-003-A: green
+  default-branch CI publishes the image. ETA-003-B: update the existing DockerMan
+  container, preserve state/mappings, check the live app, and account for
+  superseded images. Automatic approval review rejected the main-branch merge;
+  [PR #45](https://github.com/RAQ-Tech/vid2gif/pull/45) is open and conflict-free.
+  Next owner: Chris. Reply to the merge/deploy approval request in the timing-fix
+  chat to authorize merging this verified PR and updating the existing container.
+  The deployed instance remains on its previous revision until then.
+
+Stop when this batch is qualified, published, and live-verified, or record the
+specific access/release blocker. Synthetic results are not real-library accuracy
+measurements.
 
 ## Interface
 

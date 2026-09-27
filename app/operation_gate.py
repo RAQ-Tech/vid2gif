@@ -28,6 +28,20 @@ class OperationCancelled(RuntimeError):
     pass
 
 
+def _timed_state(state):
+    # Activity is polled independently of each workbench. Refresh its copy so
+    # blocked work cannot keep displaying an expired estimate here.
+    if "_stage_started_ts" in state:
+        from .progress import update_job_label
+
+        return update_job_label(dict(state))
+    if "_eta_updated_ts" in state:
+        from .task_progress import public_fields
+
+        return {**state, **public_fields(state)}
+    return state
+
+
 class OperationLease:
     def __init__(self, gate, record):
         self._gate = gate
@@ -56,6 +70,7 @@ class LibraryOperationGate:
 
     def _public(self, record, *, waiting=False, finished=False):
         state = record.get("state") if isinstance(record.get("state"), dict) else {}
+        state = _timed_state(state)
         status = str(_state_value(state, "status", default="") or "").lower()
         if waiting:
             status = "waiting"

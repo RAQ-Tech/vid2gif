@@ -6,7 +6,7 @@ import time
 
 from .config import GIF_GENERATION_STALL_TIMEOUT
 from .process_runner import run_streaming_process
-from .progress import update_render_progress
+from .progress import update_job_stage, update_render_progress
 
 
 FFMPEG_PROGRESS_KEYS = {
@@ -438,7 +438,8 @@ def make_gif_multi_inputs(video, segs, out_gif, cfg, job, background_image=None)
     expected_seconds = sum(max(0.0, s["end"] - s["start"]) for s in segs)
     if background_image:
         expected_seconds += 1.0 / target_fps_float
-    job["expected_duration_seconds"] = expected_seconds
+    job["render_duration_seconds"] = expected_seconds
+    update_job_stage(job, 0, "Rendering")
     job["logger"].info("GIF generation started")
 
     last_logged_percent = -5

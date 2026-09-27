@@ -29,6 +29,11 @@ redaction covers the archive only -- the key itself is stored in plain text in
 
 ## Testing
 
+Remaining-time estimates use recent measured work rates and separately learned
+processing stages. Early estimates are labeled; unknown workloads, stalled work,
+and overdue stages show uncertainty instead of a false zero. Queues refresh their
+estimates as jobs finish. See [timing behavior and validation](docs/TIMING.md).
+
 Install development dependencies, audit runtime dependencies, build the checked-in
 Test Lab bundle, and run tests:
 

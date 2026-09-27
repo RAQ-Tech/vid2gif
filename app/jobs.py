@@ -165,6 +165,18 @@ def prune_job_history():
     _prune_job_logs(active_log_paths)
 
 
+def _refresh_queued_estimates(queued):
+    estimates = {}
+    for job in queued:
+        if job.get("cfg"):
+            key = json.dumps(job["cfg"], sort_keys=True)
+            if key not in estimates:
+                estimates[key] = job_duration_estimate(job["cfg"])
+            estimate = estimates[key]
+            job["expected_duration_seconds"] = estimate["seconds"]
+            job["eta_confidence"] = estimate["confidence"]
+
+
 def _queue_summary(all_jobs):
     active_batch_ids = {
         j.get("batch_id")
@@ -196,6 +208,8 @@ def _queue_summary(all_jobs):
     completed_units = float(len(completed))
     completed_units += sum(max(0, min(100, j.get("progress_percent") or 0)) / 100.0 for j in running)
     percent = max(0, min(100, int(round(100 * completed_units / total))))
+    if len(completed) < total:
+        percent = min(99, percent)
 
     starts = [
         j.get("_started_ts") or j.get("_created_ts") for j in relevant if j.get("_started_ts") or j.get("_created_ts")
@@ -208,7 +222,8 @@ def _queue_summary(all_jobs):
 
     eta = None
     confidence = "none"
-    if len(completed) < total:
+    if len(completed) < total and not queue_paused.is_set():
+        _refresh_queued_estimates(queued)
         remaining = [j.get("eta_seconds") for j in running]
         remaining.extend(j.get("expected_duration_seconds") for j in queued)
         if remaining and all(value is not None for value in remaining):
@@ -218,9 +233,17 @@ def _queue_summary(all_jobs):
             )
         elif running or queued:
             confidence = "calibrating"
+    elif queue_paused.is_set() and len(completed) < total:
+        confidence = "paused"
+    elif len(completed) == total:
+        eta, confidence = 0, "complete"
+    if any(job.get("operation_waiting") for job in queued):
+        eta, confidence = None, "waiting"
 
-    if percent >= 100:
+    if len(completed) == total:
         label = f"Complete · {total} item{'s' if total != 1 else ''}"
+    elif confidence == "paused":
+        label = f"{percent}% complete · queue paused"
     elif eta is not None:
         label = f"{percent}% complete · about {format_duration(eta)} remaining"
     else:

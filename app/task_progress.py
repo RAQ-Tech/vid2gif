@@ -5,9 +5,8 @@ import statistics
 import threading
 import time
 
-from . import config
+from . import config, time_estimate
 from .progress import format_duration, rounded_seconds
-
 
 SCHEMA_VERSION = 2
 MAX_SAMPLES_PER_WORKFLOW = 20
@@ -190,8 +189,10 @@ def plan_estimate(stages):
     for raw in stages:
         stage = {"workflow": raw} if isinstance(raw, str) else dict(raw or {})
         units = stage.get("total_units")
-        if units is not None and not _valid_units(units):
+        if time_estimate.number(units) == 0:
             continue
+        if not _valid_units(units):
+            return {"seconds": None, "confidence": "calibrating", "sample_count": sample_count}
         estimate = duration_estimate(stage.get("workflow"), units)
         if estimate.get("seconds") is None:
             return {
@@ -245,6 +246,7 @@ def _begin_or_update_stage(task, workflow, now, completed_units, total_units):
     if workflow and not current:
         task["_progress_stage_workflow"] = workflow
         task["_progress_stage_started_ts"] = float(now)
+        task["_stage_observations"] = {}
     if completed_units is not None:
         task["_progress_stage_completed"] = max(0.0, float(completed_units))
     if total_units is not None:
@@ -252,52 +254,12 @@ def _begin_or_update_stage(task, workflow, now, completed_units, total_units):
 
 
 def _live_stage_estimate(task, workflow, now, completed_units, total_units):
-    completed = max(0.0, float(completed_units or 0))
-    total = _valid_units(total_units)
-    history = duration_estimate(workflow, total)
-    historical_total = history.get("seconds")
-    historical_rate = history.get("seconds_per_unit")
-    started = task.get("_progress_stage_started_ts")
-    stage_elapsed = max(0.0, float(now) - float(started)) if started is not None else 0.0
-
-    if total is not None and completed >= total:
-        return 0, history.get("confidence"), history
-
-    expected_units = total or history.get("typical_units")
-    if total is None and expected_units and completed >= expected_units:
-        return None, "calibrating", history
-    live_rate = None
-    if completed > 0 and stage_elapsed >= 1 and expected_units and expected_units >= completed:
-        live_rate = stage_elapsed / completed
-
-    if historical_rate is not None and live_rate is not None and expected_units is not None:
-        fraction = min(1.0, completed / max(float(expected_units), 1.0))
-        # Once a run has produced a measurable rate, favor it quickly. Hardware,
-        # filesystem cache, and Emby response time can make consecutive scans
-        # several times faster or slower; a history-heavy blend otherwise keeps
-        # displaying minutes after the current run is nearly finished.
-        live_weight = min(0.95, max(0.6, fraction))
-        if max(historical_rate, live_rate) / max(min(historical_rate, live_rate), 0.000001) >= 3:
-            live_weight = max(live_weight, 0.8)
-        rate = historical_rate * (1.0 - live_weight) + live_rate * live_weight
-        remaining = max(0.0, float(expected_units) - completed)
-        confidence = history.get("confidence")
-        return rounded_seconds(remaining * rate), confidence, history
-    if live_rate is not None and expected_units is not None:
-        remaining = max(0.0, float(expected_units) - completed)
-        confidence = "learning"
-        return rounded_seconds(remaining * live_rate), confidence, history
-    if historical_rate is not None and expected_units is not None:
-        remaining = max(0.0, float(expected_units) - completed)
-        confidence = history.get("confidence")
-        return rounded_seconds(remaining * historical_rate), confidence, history
-    if historical_total is not None:
-        return (
-            rounded_seconds(max(0, historical_total - stage_elapsed)),
-            history.get("confidence"),
-            history,
-        )
-    return None, "calibrating", history
+    history = duration_estimate(workflow, total_units)
+    observation = task.setdefault("_stage_observations", {})
+    if completed_units is not None:
+        time_estimate.observe(observation, completed_units, now)
+    eta, confidence = time_estimate.remaining(observation, total_units, now, history.get("seconds_per_unit"))
+    return eta, confidence, history
 
 
 def _instrumented_update(
@@ -325,15 +287,18 @@ def _instrumented_update(
     future_eta = future.get("seconds")
     if current_eta is None or future_eta is None:
         eta = None
-        confidence = "calibrating"
+        confidence = "recalculating" if current_confidence == "recalculating" else "calibrating"
+    elif current_eta + future_eta == 0:
+        eta, confidence = None, "finishing"
     else:
-        eta = rounded_seconds(current_eta + future_eta)
+        eta = max(1, rounded_seconds(current_eta + future_eta))
         confidence = (
-            "history"
-            if current_confidence == "history" and future.get("confidence") in {"history", "complete"}
+            "live"
+            if current_confidence == "live" and future.get("confidence") in {"history", "complete"}
             else "learning"
         )
-
+    task["_eta_updated_ts"] = now
+    task["_eta_future_seconds"] = future_eta
     completed = None if completed_units is None else max(0, int(completed_units))
     total = None if total_units is None else max(0, int(total_units))
     has_known_total = completed is not None and total is not None
@@ -341,21 +306,32 @@ def _instrumented_update(
     task["progress_indeterminate"] = not has_known_total
     task["eta_seconds"] = eta
     task["eta_confidence"] = confidence
+    task["stage_eta_seconds"] = current_eta
     task["progress_stage"] = stage_workflow
     task["current_stage"] = str(label or task.get("current_stage") or "In progress")
     task["work_completed"] = completed
     task["work_total"] = total
     task["work_unit_label"] = str(unit_label or "items")
-
     if eta is not None:
-        prefix = "About" if confidence == "history" else "Early estimate: about"
+        prefix = "About" if confidence == "live" else "Early estimate: about"
         detail = f"{prefix} {format_duration(eta)} remaining"
+    elif confidence == "finishing":
+        detail = "Finishing current stage"
+    elif current_confidence == "recalculating":
+        detail = "Progress has slowed; recalculating remaining time"
+    elif total_units is None:
+        detail = "Discovering work; remaining time unavailable until the total is known"
     elif remaining_stages and future_eta is None:
-        detail = "Learning timing for later stages"
+        detail = (
+            f"Current stage: about {format_duration(current_eta)} remaining; later stages still unknown"
+            if current_eta is not None and current_eta > 0
+            else "Learning timing for later stages"
+        )
     elif history.get("seconds") is not None and history.get("typical_units") and completed:
         detail = "Current workload is larger than recent runs; recalculating"
     else:
         detail = "Learning timing from this run"
+    task["_eta_detail"] = detail
     task["progress_detail"] = detail
     task["progress_label"] = f"{label} · {detail}"
     return task
@@ -385,7 +361,6 @@ def update_scan(
     task["progress_label_base"] = str(label or status.title())
     task["elapsed_seconds"] = _elapsed(task, now)
     instrumented = any(value is not None for value in (stage_workflow, completed_units, total_units, remaining_stages))
-
     if _active(status) and use_history and instrumented:
         return _instrumented_update(
             task,
@@ -399,29 +374,16 @@ def update_scan(
             remaining_stages,
             unit_label,
         )
-
     if _active(status) and use_history:
-        estimate = duration_estimate(workflow)
-        estimated_total = estimate.get("seconds")
-        elapsed = task.get("elapsed_seconds") or 0
-        eta = None
-        if estimated_total is not None and elapsed < estimated_total:
-            eta = max(0, estimated_total - elapsed)
-            detail = f"About {format_duration(eta)} remaining"
-        elif estimated_total is not None:
-            detail = "Taking longer than previous runs"
-        else:
-            detail = "Learning timing from this run"
         task.update(
             progress_percent=0,
             progress_indeterminate=True,
-            eta_seconds=eta,
-            eta_confidence=estimate.get("confidence"),
-            progress_detail=detail,
-            progress_label=f"{label} · {detail}",
+            eta_seconds=None,
+            eta_confidence="calibrating",
+            progress_detail="Discovering work; remaining time unavailable until the total is known",
+            progress_label=f"{label} · remaining time unavailable until the total is known",
         )
         return task
-
     if _active(status):
         detail = str(task.get("progress_detail") or "Remaining time varies with library and Emby response time")
         task.update(
@@ -433,8 +395,7 @@ def update_scan(
             progress_label=str(label or status.title()),
         )
         return task
-
-    if status == "success" and instrumented:
+    if status == "success" and (instrumented or task.get("_progress_stage_workflow")):
         active_stage = str(task.get("_progress_stage_workflow") or "")
         _begin_or_update_stage(
             task,
@@ -444,7 +405,6 @@ def update_scan(
             total_units,
         )
         _finish_stage(task, now)
-
     task["progress_indeterminate"] = False
     task["progress_percent"] = max(0, min(100, int(round(float(percent or 0)))))
     task["eta_seconds"] = 0 if status in {"success", "failed", "cancelled"} else None
@@ -462,7 +422,19 @@ def update_scan(
 
 
 def public_fields(task):
-    task = task or {}
+    task = dict(task or {})
+    if _active(task.get("status")) and task.get("_eta_updated_ts") is not None:
+        now = time.time()
+        task["elapsed_seconds"] = _elapsed(task, now)
+        state = task.get("_stage_observations") or {}
+        eta, confidence = time_estimate.remaining(state, task.get("work_total"), now)
+        # Expire stale estimates even when a worker is blocked inside an item.
+        if confidence == "recalculating" or now - task["_eta_updated_ts"] > 30:
+            task["eta_seconds"] = None
+            task["stage_eta_seconds"] = None
+            task["eta_confidence"] = "recalculating"
+            task["progress_detail"] = "Progress has slowed; recalculating remaining time"
+            task["progress_label"] = f"{task.get('progress_label_base', '')} · {task['progress_detail']}"
     return {
         "progress_percent": task.get("progress_percent", 0),
         "progress_indeterminate": bool(task.get("progress_indeterminate")),
@@ -472,6 +444,7 @@ def public_fields(task):
         "elapsed_seconds": task.get("elapsed_seconds"),
         "eta_seconds": task.get("eta_seconds"),
         "eta_confidence": task.get("eta_confidence", "none"),
+        "stage_eta_seconds": task.get("stage_eta_seconds"),
         "current_stage": task.get("current_stage", ""),
         "progress_stage": task.get("progress_stage", ""),
         "work_completed": task.get("work_completed"),

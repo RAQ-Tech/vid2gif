@@ -12,10 +12,10 @@ def test_first_scan_is_indeterminate_and_explains_calibration(monkeypatch, tmp_p
     assert scan["progress_indeterminate"] is True
     assert scan["progress_percent"] == 0
     assert scan["eta_seconds"] is None
-    assert "Learning timing" in scan["progress_label"]
+    assert "total is known" in scan["progress_label"]
 
 
-def test_history_produces_stable_countdown_instead_of_reprojecting(monkeypatch, tmp_path):
+def test_different_scan_scope_cannot_borrow_a_whole_run_countdown(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path / "state"))
     for duration in (100, 110, 120):
         assert task_progress.record_duration("video-previews", duration)
@@ -25,9 +25,9 @@ def test_history_produces_stable_countdown_instead_of_reprojecting(monkeypatch, 
     first_eta = scan["eta_seconds"]
     task_progress.update_scan(scan, "video-previews", 80, "Scanning", now=140.0)
 
-    assert first_eta == 80
-    assert scan["eta_seconds"] == 70
-    assert scan["eta_confidence"] == "history"
+    assert first_eta is None
+    assert scan["eta_seconds"] is None
+    assert scan["eta_confidence"] == "calibrating"
     assert scan["progress_indeterminate"] is True
 
 
@@ -126,7 +126,7 @@ def test_live_throughput_corrects_a_slow_historical_estimate(monkeypatch, tmp_pa
     )
 
     assert initial_eta == 480
-    assert 20 <= scan["eta_seconds"] <= 35
+    assert scan["eta_seconds"] == 12  # 20 remaining at the measured 0.6 seconds/item.
     assert scan["progress_percent"] == 80
     assert scan["progress_indeterminate"] is False
 
@@ -211,7 +211,7 @@ def test_unknown_live_total_stops_countdown_after_exceeding_recent_workload(monk
 
     assert scan["eta_seconds"] is None
     assert scan["eta_confidence"] == "calibrating"
-    assert "larger than recent runs" in scan["progress_detail"]
+    assert "total is known" in scan["progress_detail"]
 
 
 def test_version_one_duration_history_is_migrated_without_losing_samples(monkeypatch, tmp_path):
@@ -236,3 +236,67 @@ def test_version_one_duration_history_is_migrated_without_losing_samples(monkeyp
     assert migrated["schema_version"] == 2
     assert len(migrated["workflows"]["duplicate_scan"]) == 4
     assert migrated["workflows"]["duplicate_scan"][-1]["work_units"] == 100
+
+
+def test_stalled_scan_expires_on_read_without_waiting_for_worker(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path))
+    scan = {"status": "running", "_started_ts": 0}
+    for now, completed in [(0, 0), (10, 10)]:
+        task_progress.update_scan(
+            scan,
+            "test",
+            completed,
+            "Checking",
+            now=now,
+            stage_workflow="test.items",
+            completed_units=completed,
+            total_units=100,
+            remaining_stages=[],
+        )
+    assert scan["eta_seconds"] == 90
+    monkeypatch.setattr(task_progress.time, "time", lambda: 30)
+    public = task_progress.public_fields(scan)
+    assert public["eta_seconds"] is None
+    assert public["stage_eta_seconds"] is None
+    assert "recalculating" in public["progress_label"]
+    assert scan["eta_seconds"] == 90  # Reading cannot train or mutate the worker.
+
+
+def test_future_stage_unknown_total_cannot_borrow_a_different_library_size(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path))
+    task_progress.record_duration("scan.items", 30, 100)
+    assert task_progress.plan_estimate([{"workflow": "scan.items"}])["seconds"] is None
+    assert task_progress.plan_estimate([{"workflow": "scan.items", "total_units": 0}])["seconds"] == 0
+
+
+def test_stage_switch_resets_rate_and_unknown_future_is_explicit(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STATE_ROOT", str(tmp_path))
+    scan = {"status": "running", "_started_ts": 0}
+    for now, completed in [(0, 0), (10, 10)]:
+        task_progress.update_scan(
+            scan,
+            "test",
+            completed,
+            "Checking",
+            now=now,
+            stage_workflow="test.first",
+            completed_units=completed,
+            total_units=100,
+            remaining_stages=[{"workflow": "unknown"}],
+        )
+    assert scan["eta_seconds"] is None
+    assert scan["stage_eta_seconds"] == 90
+    assert "Current stage: about 1m 30s remaining; later stages still unknown" in scan["progress_label"]
+    task_progress.update_scan(
+        scan,
+        "test",
+        20,
+        "Next",
+        now=11,
+        stage_workflow="test.second",
+        completed_units=0,
+        total_units=2,
+        remaining_stages=[],
+    )
+    assert scan["eta_seconds"] is None
+    assert scan["_stage_observations"]["points"] == [[11, 0]]
