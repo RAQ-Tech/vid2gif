@@ -620,15 +620,27 @@ def request_preview(file_id):
     return status_payload(), None
 
 
+def _refresh_variant_estimates(variants, now):
+    for variant in variants:
+        if variant.get("status") == "running":
+            update_job_label(variant, now=now)
+        elif variant.get("status") == "queued" and variant.get("cfg"):
+            estimate = job_duration_estimate(variant["cfg"])
+            variant["expected_duration_seconds"] = estimate["seconds"]
+            variant["eta_confidence"] = estimate["confidence"]
+
+
 def _run_progress(run, now=None):
     now = time.time() if now is None else now
     variants = run.get("variants") or []
+    _refresh_variant_estimates(variants, now)
     total = max(1, len(variants))
     completed = [v for v in variants if v.get("status") in TERMINAL_STATUSES]
     running = [v for v in variants if v.get("status") == "running"]
     units = float(len(completed))
     units += sum(clamp_percent(v.get("progress_percent")) / 100.0 for v in running)
     percent = clamp_percent(100 * units / total)
+    percent = min(100 if len(completed) == total else 99, percent)
 
     started = run.get("_started_ts")
     finished = run.get("_finished_ts")

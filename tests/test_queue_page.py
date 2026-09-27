@@ -35,6 +35,42 @@ def _queue_body(html: str) -> str:
     return html[start:end]
 
 
+def test_paused_queue_does_not_promise_a_finish_time():
+    _clear_jobs()
+    jobs.queue_paused.set()
+    try:
+        result = jobs._queue_summary([{"status": "queued", "expected_duration_seconds": 10}])
+        assert result["queue_eta_seconds"] is None
+        assert result["queue_eta_confidence"] == "paused"
+    finally:
+        _clear_jobs()
+
+
+def test_queued_jobs_relearn_after_first_completion(monkeypatch):
+    _clear_jobs()
+    monkeypatch.setattr(jobs, "job_duration_estimate", lambda cfg: {"seconds": 25, "confidence": "learning"})
+    result = jobs._queue_summary(
+        [
+            {"status": "success"},
+            {"status": "queued", "cfg": {"height": 480}, "expected_duration_seconds": None},
+            {"status": "queued", "cfg": {"height": 480}, "expected_duration_seconds": None},
+        ]
+    )
+    assert result["queue_eta_seconds"] == 50
+
+
+def test_rounding_progress_cannot_claim_queue_complete():
+    _clear_jobs()
+    result = jobs._queue_summary(
+        [
+            *({"status": "success"} for _ in range(200)),
+            {"status": "running", "progress_percent": 99, "eta_seconds": None},
+        ]
+    )
+    assert result["queue_progress_percent"] == 99
+    assert not result["queue_progress_label"].startswith("Complete")
+
+
 def test_running_job_display_and_lock():
     _clear_jobs()
     running = _make_job("run1", "running")

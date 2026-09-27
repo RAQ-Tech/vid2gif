@@ -29,7 +29,15 @@
   }
 
   function etaLabel(seconds, confidence) {
-    if (seconds !== null && seconds !== undefined) return `About ${window.vid2gifProgress.formatDuration(seconds)} remaining`;
+    if (confidence === 'paused') return 'Queue paused';
+    if (confidence === 'waiting') return 'Waiting for library access';
+    if (confidence === 'recalculating') return 'Recalculating remaining time';
+    if (confidence === 'finishing') return 'Finishing';
+    if (seconds !== null && seconds !== undefined && Number.isFinite(Number(seconds))) {
+      if (Number(seconds) <= 0) return confidence === 'complete' ? 'Complete' : 'Finishing';
+      const prefix = confidence === 'learning' ? 'Early estimate: about' : 'About';
+      return `${prefix} ${window.vid2gifProgress.formatDuration(seconds)} remaining`;
+    }
     if (confidence === 'calibrating' || confidence === 'learning') return 'Learning timing from this run';
     return 'Remaining time unavailable';
   }

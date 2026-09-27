@@ -10,6 +10,7 @@ from .config import DEFAULTS, STATE_ROOT
 
 SCHEMA_VERSION = 1
 MAX_SAMPLES = 500
+ESTIMATE_SAMPLE_WINDOW = 12
 HISTORY_PATH = os.path.join(STATE_ROOT, "estimate_history.json")
 ORIGINAL_FPS_ESTIMATE = 24.0
 
@@ -71,13 +72,23 @@ def _coerce_sample(raw):
     size = _to_float(raw.get("output_size_bytes"), 0)
     if unit <= 0 or elapsed <= 0 or size <= 0:
         return None
-    return {
+    sample = {
         "settings_unit": unit,
         "elapsed_seconds": elapsed,
         "output_size_bytes": int(round(size)),
         "optimize": _to_bool(raw.get("optimize"), DEFAULTS.get("optimize", True)),
         "created_at": _to_float(raw.get("created_at"), time.time()),
     }
+    if "smooth" in raw:
+        sample["smooth"] = _to_bool(raw["smooth"])
+    if isinstance(raw.get("stages"), dict):
+        sample["stages"] = {
+            name: value
+            for name, raw_value in raw["stages"].items()
+            if name in {"Preparing", "Rendering", "Optimizing", "Finalizing", "Installing"}
+            and (value := _to_float(raw_value, -1)) >= 0
+        }
+    return sample
 
 
 def sample_from_job(job):
@@ -93,6 +104,8 @@ def sample_from_job(job):
         "output_size_bytes": size,
         "optimize": optimize_enabled(job.get("cfg") or {}),
         "created_at": job.get("_finished_ts") or time.time(),
+        "smooth": _to_bool((job.get("cfg") or {}).get("smooth")),
+        "stages": job.get("_stage_durations") or {},
     }
     return _coerce_sample(sample)
 
@@ -153,17 +166,33 @@ def record_successful_job(job):
     return save_sample(sample)
 
 
-def job_duration_estimate(cfg, in_memory_samples=None):
-    samples = []
-    samples.extend(load_history())
-    samples.extend(in_memory_samples or [])
-    target_optimize = optimize_enabled(cfg or {})
-    rates = []
-    for raw in samples:
+def comparable_samples(cfg, in_memory_samples=None):
+    samples = {}
+    for raw in [*load_history(), *(in_memory_samples or [])]:
         sample = _coerce_sample(raw)
-        if not sample or sample["optimize"] != target_optimize:
+        if not sample or sample["optimize"] != optimize_enabled(cfg or {}):
             continue
-        rates.append(sample["elapsed_seconds"] / sample["settings_unit"])
+        # Legacy samples cannot establish the cost of motion interpolation.
+        if sample.get("smooth", False) != _to_bool((cfg or {}).get("smooth")):
+            continue
+        key = (sample["created_at"], sample["settings_unit"], sample["elapsed_seconds"], sample["output_size_bytes"])
+        samples[key] = sample
+    return sorted(samples.values(), key=lambda sample: sample["created_at"])[-ESTIMATE_SAMPLE_WINDOW:]
+
+
+def stage_duration_estimates(cfg, in_memory_samples=None):
+    samples = comparable_samples(cfg, in_memory_samples)
+    stages = {}
+    for name in ("Preparing", "Rendering", "Optimizing", "Finalizing", "Installing"):
+        rates = [s["stages"][name] / s["settings_unit"] for s in samples if name in s.get("stages", {})]
+        if rates:
+            stages[name] = statistics.median(rates) * settings_unit(cfg or {})
+    return stages
+
+
+def job_duration_estimate(cfg, in_memory_samples=None):
+    samples = comparable_samples(cfg, in_memory_samples)
+    rates = [sample["elapsed_seconds"] / sample["settings_unit"] for sample in samples]
     if not rates:
         return {"seconds": None, "sample_count": 0, "confidence": "calibrating"}
     seconds = statistics.median(rates) * settings_unit(cfg or {})
@@ -222,9 +251,7 @@ def estimate_payload(compatible_count, cfg, in_memory_samples=None):
             "message": "No compatible files found",
         }
 
-    samples = []
-    samples.extend(load_history())
-    samples.extend(in_memory_samples or [])
+    samples = comparable_samples(cfg, in_memory_samples)
 
     seconds_per_unit = []
     bytes_per_unit = []

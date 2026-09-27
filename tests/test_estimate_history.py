@@ -150,6 +150,8 @@ def test_sample_from_job_contains_only_aggregate_metrics():
         "output_size_bytes": 1234,
         "optimize": True,
         "created_at": 99.0,
+        "smooth": False,
+        "stages": {},
     }
 
 
@@ -166,3 +168,37 @@ def test_job_duration_estimate_uses_median_normalized_history(monkeypatch):
     )
 
     assert estimate == {"seconds": 15, "sample_count": 2, "confidence": "learning"}
+
+
+def test_recent_matching_history_ignores_old_hardware_and_interpolation(monkeypatch):
+    samples = [
+        {"settings_unit": 1, "elapsed_seconds": 1000, "output_size_bytes": 100, "created_at": i} for i in range(100)
+    ]
+    samples += [
+        {"settings_unit": 1, "elapsed_seconds": 10, "output_size_bytes": 100, "created_at": i} for i in range(100, 112)
+    ]
+    monkeypatch.setattr(estimate_history, "load_history", lambda: samples)
+    assert estimate_history.job_duration_estimate(_cfg())["seconds"] == 10
+    assert estimate_history.job_duration_estimate(_cfg(smooth=True))["seconds"] is None
+
+
+def test_disk_and_in_memory_samples_are_not_counted_twice(monkeypatch):
+    sample = {"settings_unit": 1, "elapsed_seconds": 20, "output_size_bytes": 100, "created_at": 1}
+    monkeypatch.setattr(estimate_history, "load_history", lambda: [sample])
+    assert estimate_history.job_duration_estimate(_cfg(), [sample])["sample_count"] == 1
+
+
+def test_stage_timings_survive_restart_without_private_data(monkeypatch, tmp_path):
+    path = tmp_path / "history.json"
+    sample = {
+        "settings_unit": 1,
+        "elapsed_seconds": 20,
+        "output_size_bytes": 100,
+        "created_at": 1,
+        "smooth": True,
+        "stages": {"Rendering": 10, "Optimizing": 9, "Installing": 1},
+    }
+    assert estimate_history.save_sample(sample, str(path))
+    monkeypatch.setattr(estimate_history, "HISTORY_PATH", str(path))
+    assert estimate_history.stage_duration_estimates(_cfg(smooth=True))["Optimizing"] == 9
+    assert estimate_history.stage_duration_estimates(_cfg()) == {}

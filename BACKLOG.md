@@ -14,7 +14,29 @@ wording, and master select-alls cannot drift apart again. `ruff check` is clean
 `ruff format --check` is clean, coverage is 83.51% against an 80% floor, and CI
 is green on `main`.
 
-There are no open questions. Everything below is mine to do.
+The timing batch below is the current authorized work. Other items remain outside it.
+
+## Remaining-time repair (ETA)
+
+Scope: fix estimates across GIFs, Test Lab, maintenance, queue, and activity views
+without changing media processing or scan/review/apply behavior.
+
+- **ETA-001 — Diagnose and repair timing: complete.** ETA-001-A: playback and
+  wall-clock duration remain separate; live work rates and measured finishing
+  stages replace display-percent extrapolation. ETA-001-B: unknown totals, stalls,
+  pauses, and library waits do not produce false deadlines.
+- **ETA-002 — Qualify the integrated change: underway.** ETA-002-A: estimator/API
+  regressions pass. ETA-002-B: frontend/browser checks pass at desktop/mobile widths.
+  ETA-002-C: required remote CI passes for the delivered revision. Local evidence
+  and limitations: [timing report](docs/TIMING.md). Next owner: Codex.
+- **ETA-003 — Publish and verify deployment: not started.** ETA-003-A: green
+  default-branch CI publishes the image. ETA-003-B: update the existing DockerMan
+  container, preserve state/mappings, check the live app, and account for
+  superseded images. Next owner: Codex after ETA-002.
+
+Stop when this batch is qualified, published, and live-verified, or record the
+specific access/release blocker. Synthetic results are not real-library accuracy
+measurements.
 
 ## Interface
 

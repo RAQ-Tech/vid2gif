@@ -3,6 +3,8 @@ import math
 import os
 import time
 
+from . import time_estimate
+
 
 TERMINAL_STATUSES = {"success", "failed", "stopped", "interrupted", "cancelled"}
 
@@ -109,7 +111,6 @@ def initialize_job_progress(job, now=None):
     job.setdefault("expected_duration_seconds", None)
     job.setdefault("eta_confidence", "none")
     job.setdefault("progress_stage", "")
-    job.setdefault("_projected_total_seconds", job.get("expected_duration_seconds"))
     job["progress_label"] = progress_label(
         job.get("status"),
         job.get("progress_percent"),
@@ -122,19 +123,57 @@ def initialize_job_progress(job, now=None):
 
 
 def mark_job_started(job, now=None):
+    from .estimate_history import stage_duration_estimates
+
     now = time.time() if now is None else now
     job["_started_ts"] = now
     job["started_at"] = utc_iso(now)
     job["status"] = "running"
     job["progress_stage"] = "Preparing"
+    job["_stage_started_ts"] = now
+    job["_stage_durations"] = {}
+    job["_stage_estimates"] = stage_duration_estimates(job.get("cfg") or {})
     update_job_label(job, now=now)
+
+
+def _job_eta(job, now):
+    stage = job.get("progress_stage")
+    estimates = job.get("_stage_estimates") or {}
+    stages = [
+        "Preparing",
+        "Rendering",
+        "Optimizing" if (job.get("cfg") or {}).get("optimize", True) else "Finalizing",
+        "Installing",
+    ]
+    if stage not in stages:
+        return None, "calibrating"
+    future = stages[stages.index(stage) + 1 :]
+    elapsed = max(0, now - job.get("_stage_started_ts", now))
+    confidence = "learning"
+    if stage == "Rendering":
+        current, confidence = time_estimate.remaining(
+            job.get("_render_observations") or {}, job.get("render_duration_seconds"), now
+        )
+        if current is None and confidence != "recalculating":
+            current = time_estimate.historical_remaining(estimates.get(stage), elapsed)
+    else:
+        current = time_estimate.historical_remaining(estimates.get(stage), elapsed)
+    eta = time_estimate.serial_sum([current, *(estimates.get(name) for name in future)])
+    if eta is not None:
+        return max(1, eta), "learning" if future or confidence != "live" else "live"
+    # Whole-job history is a fallback only before measurable rendering. Never let
+    # an old total mask an unknown/overdue optimizer or installer.
+    if stage == "Preparing" or (stage == "Rendering" and not job.get("_render_observations", {}).get("points")):
+        eta = time_estimate.historical_remaining(job.get("expected_duration_seconds"), job.get("elapsed_seconds") or 0)
+        return eta, "learning" if eta is not None else "recalculating"
+    return None, "recalculating" if confidence == "recalculating" or stage in estimates else "calibrating"
 
 
 def update_job_label(job, now=None):
     now = time.time() if now is None else now
     started = job.get("_started_ts")
     finished = job.get("_finished_ts")
-    if started:
+    if started is not None:
         end = finished if finished is not None else now
         job["elapsed_seconds"] = rounded_seconds(end - started)
     else:
@@ -142,10 +181,11 @@ def update_job_label(job, now=None):
 
     if job.get("status") in TERMINAL_STATUSES:
         job["eta_seconds"] = 0
+        job["eta_confidence"] = "complete"
     elif job.get("status") == "running":
-        projected = job.get("_projected_total_seconds") or job.get("expected_duration_seconds")
-        if projected is not None and job.get("elapsed_seconds") is not None:
-            job["eta_seconds"] = rounded_seconds(max(0, float(projected) - float(job["elapsed_seconds"])))
+        job["eta_seconds"], job["eta_confidence"] = _job_eta(job, now)
+    elif job.get("status") == "cancelling":
+        job["eta_seconds"], job["eta_confidence"] = None, "none"
 
     job["progress_percent"] = clamp_percent(job.get("progress_percent", 0))
     job["progress_label"] = progress_label(
@@ -170,55 +210,53 @@ def update_render_progress(
     now=None,
 ):
     now = time.time() if now is None else now
-    percent = None
+    completed = None
 
     if out_time_seconds is not None and expected_seconds and expected_seconds > 0:
-        percent = 100 * float(out_time_seconds) / float(expected_seconds)
+        completed = time_estimate.number(out_time_seconds)
     elif frame is not None and fps and expected_seconds and expected_seconds > 0:
-        expected_frames = float(fps) * float(expected_seconds)
-        if expected_frames > 0:
-            percent = 100 * float(frame) / expected_frames
+        completed = time_estimate.number(float(frame) / float(fps))
 
-    if percent is None:
+    if completed is None:
         return update_job_label(job, now=now)
 
+    if job.get("progress_stage") != "Rendering":
+        update_job_stage(job, job.get("progress_percent", 0), "Rendering", now=now)
+    job["render_duration_seconds"] = expected_seconds
+    # The first output can follow a long palette-generation pass. Anchor the
+    # slope at that output, not at process start, to avoid extrapolating startup.
+    if completed > 0:
+        time_estimate.observe(job.setdefault("_render_observations", {}), completed, now)
+
     render_ceiling = 92 if (job.get("cfg") or {}).get("optimize", True) else 97
-    percent = float(percent) * render_ceiling / 100.0
+    percent = completed / expected_seconds * render_ceiling
     previous = clamp_percent(job.get("progress_percent", 0))
     percent = max(previous, min(render_ceiling, clamp_percent(percent)))
     job["progress_percent"] = percent
     job["progress_stage"] = "Rendering"
-
-    started = job.get("_started_ts")
-    if started and 0 < percent < 100:
-        elapsed = max(0.0, now - started)
-        job["elapsed_seconds"] = rounded_seconds(elapsed)
-        live_total = elapsed / max(0.01, percent / 100.0)
-        baseline = job.get("expected_duration_seconds")
-        if baseline:
-            live_weight = min(0.75, 0.2 + (percent / 100.0) * 0.55)
-            target_total = float(baseline) * (1 - live_weight) + live_total * live_weight
-        else:
-            target_total = live_total
-            job["eta_confidence"] = "learning"
-        previous_total = job.get("_projected_total_seconds")
-        if previous_total:
-            target_total = float(previous_total) * 0.8 + target_total * 0.2
-        job["_projected_total_seconds"] = max(elapsed, target_total)
-        job["eta_seconds"] = rounded_seconds(max(0, job["_projected_total_seconds"] - elapsed))
 
     return update_job_label(job, now=now)
 
 
 def update_job_stage(job, percent, stage, now=None):
     now = time.time() if now is None else now
+    if job.get("progress_stage") != stage:
+        _record_stage(job, now)
+        job["_stage_started_ts"] = now
     job["progress_percent"] = max(clamp_percent(job.get("progress_percent", 0)), clamp_percent(percent))
     job["progress_stage"] = str(stage or "Processing")
     return update_job_label(job, now=now)
 
 
+def _record_stage(job, now):
+    stage, started = job.get("progress_stage"), job.get("_stage_started_ts")
+    if stage and started is not None:
+        job.setdefault("_stage_durations", {})[stage] = max(0, now - started)
+
+
 def mark_job_finished(job, status, output_path=None, now=None):
     now = time.time() if now is None else now
+    _record_stage(job, now)
     job["status"] = status
     job["_finished_ts"] = now
     job["finished_at"] = utc_iso(now)
